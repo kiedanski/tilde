@@ -2757,7 +2757,7 @@
       "Step 4: Verify page is under 100 lines of HTML",
       "Step 5: Verify no external resources loaded (CSP: default-src 'self')"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2767,7 +2767,7 @@
       "Step 2: Verify form is usable and not cut off",
       "Step 3: Verify inputs are tappable and properly sized"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2778,7 +2778,7 @@
       "Step 3: Verify important information is highlighted or structured",
       "Step 4: Verify output fits standard 80-column terminal"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2788,7 +2788,7 @@
       "Step 2: Verify each check has clear pass/fail/warning indicator",
       "Step 3: Verify failed checks include actionable guidance"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2846,7 +2846,7 @@
       "Step 4: Verify sufficient color contrast for text",
       "Step 5: Verify page works with keyboard-only navigation"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2912,7 +2912,7 @@
       "Step 3: Verify field names are consistent and self-explanatory",
       "Step 4: Verify uptime format is human-readable"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -3007,7 +3007,7 @@
       "Step 3: Verify labels are consistent and useful",
       "Step 4: Verify HELP and TYPE annotations present"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -3030,7 +3030,7 @@
       "Step 3: Verify only hostname and password truly required",
       "Step 4: Verify optional features are disabled by default (email, backup)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
