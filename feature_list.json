@@ -1343,7 +1343,7 @@
       "Step 9: Verify FTS5 index updated with subject, from, body_text",
       "Step 10: Verify Message-ID deduplication prevents duplicate storage"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1354,7 +1354,7 @@
       "Step 3: Restart and verify only new UIDs fetched",
       "Step 4: Attempt to fetch duplicate Message-ID \u2192 verify deduplicated"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1365,7 +1365,7 @@
       "Step 3: Verify matching emails returned with message_id, from, subject, date, snippet",
       "Step 4: Verify FTS5 covers subject, from, to, body_text"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1376,7 +1376,7 @@
       "Step 3: Verify all messages in thread returned in order",
       "Step 4: Verify threading uses In-Reply-To and References headers"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1387,7 +1387,7 @@
       "Step 3: Verify each has independent Maildir tree",
       "Step 4: Verify search can filter by account"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1398,7 +1398,7 @@
       "Step 3: Configure folders_include = ['INBOX', 'Sent']",
       "Step 4: Verify only INBOX and Sent are synced"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1430,7 +1430,7 @@
       "Step 2: Run `tilde email attachments extract <message-id> --to /tmp/attachments`",
       "Step 3: Verify attachment files extracted to specified path"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1441,7 +1441,7 @@
       "Step 3: Verify tags_json updated in database",
       "Step 4: Verify tag is NOT synced back to IMAP"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1452,7 +1452,7 @@
       "Step 3: Run `tilde email reindex`",
       "Step 4: Verify all messages re-parsed from Maildir and database repopulated"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2572,7 +2572,7 @@
       "Step 4: Trigger prune \u2192 verify old messages removed",
       "Step 5: Verify recent messages retained"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

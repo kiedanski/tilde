@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::info;
-use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands, NotesCommands, CollectionCommands, BookmarksCommands, TrackersCommands, WebhookCommands, WebhookTokenCommands, NotificationCommands, PhotosCommands, EmailCommands, CalendarCommands, ContactsCommands};
+use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands, NotesCommands, CollectionCommands, BookmarksCommands, TrackersCommands, WebhookCommands, WebhookTokenCommands, NotificationCommands, PhotosCommands, EmailCommands, AttachmentsCommands, CalendarCommands, ContactsCommands};
 use tilde_core::{config::Config, db, auth};
 use tilde_server::{AppState, build_router, SharedState};
 use tilde_dav;
@@ -1214,52 +1214,52 @@ pub async fn run_email(config_path: Option<&str>, command: EmailCommands) -> any
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
     let migrations_dir = tilde_cli::find_migrations_dir();
     db::run_migrations(&conn, &migrations_dir)?;
+    let mail_dir = config.data_dir().join("mail");
 
     match command {
         EmailCommands::Search { query } => {
             // First try FTS search
-            let mut stmt = conn.prepare(
-                "SELECT e.message_id, e.from_address, e.subject, e.date, e.snippet
-                 FROM email_fts f
-                 JOIN email_messages e ON e.id = f.rowid
-                 WHERE email_fts MATCH ?1
-                 ORDER BY e.date DESC LIMIT 20"
-            );
+            let results = tilde_email::search_emails(&conn, &query, 20);
 
-            let results: Vec<(String, String, String, String, Option<String>)> = match stmt {
-                Ok(ref mut s) => {
-                    s.query_map([&query], |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
-                    })?.filter_map(|r| r.ok()).collect()
+            match results {
+                Ok(results) if !results.is_empty() => {
+                    println!("{:<30} {:<30} {:<20} {}", "From", "Subject", "Date", "Snippet");
+                    println!("{}", "-".repeat(100));
+                    for r in &results {
+                        let subj = if r.subject.len() > 28 { format!("{}...", &r.subject[..25]) } else { r.subject.clone() };
+                        let snip = r.snippet.as_deref().unwrap_or("").chars().take(30).collect::<String>();
+                        println!("{:<30} {:<30} {:<20} {}", r.from_address, subj, r.date, snip);
+                    }
+                    println!("{} result(s)", results.len());
                 }
-                Err(_) => {
+                _ => {
                     // FTS might be empty, try LIKE search
                     let mut s2 = conn.prepare(
                         "SELECT message_id, from_address, subject, date, snippet FROM email_messages WHERE subject LIKE ?1 OR from_address LIKE ?1 ORDER BY date DESC LIMIT 20"
                     )?;
                     let pattern = format!("%{}%", query);
-                    s2.query_map([&pattern], |row| {
+                    let results: Vec<(String, String, String, String, Option<String>)> = s2.query_map([&pattern], |row| {
                         Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
-                    })?.filter_map(|r| r.ok()).collect()
-                }
-            };
+                    })?.filter_map(|r| r.ok()).collect();
 
-            if results.is_empty() {
-                println!("No emails found matching '{}'", query);
-            } else {
-                println!("{:<30} {:<30} {:<20} {}", "From", "Subject", "Date", "Snippet");
-                println!("{}", "-".repeat(100));
-                for (_, from, subject, date, snippet) in &results {
-                    let subj = if subject.len() > 28 { format!("{}...", &subject[..25]) } else { subject.clone() };
-                    let snip = snippet.as_deref().unwrap_or("").chars().take(30).collect::<String>();
-                    println!("{:<30} {:<30} {:<20} {}", from, subj, date, snip);
+                    if results.is_empty() {
+                        println!("No emails found matching '{}'", query);
+                    } else {
+                        println!("{:<30} {:<30} {:<20} {}", "From", "Subject", "Date", "Snippet");
+                        println!("{}", "-".repeat(100));
+                        for (_, from, subject, date, snippet) in &results {
+                            let subj = if subject.len() > 28 { format!("{}...", &subject[..25]) } else { subject.clone() };
+                            let snip = snippet.as_deref().unwrap_or("").chars().take(30).collect::<String>();
+                            println!("{:<30} {:<30} {:<20} {}", from, subj, date, snip);
+                        }
+                        println!("{} result(s)", results.len());
+                    }
                 }
-                println!("{} result(s)", results.len());
             }
         }
         EmailCommands::Show { message_id } => {
             let result = conn.query_row(
-                "SELECT from_address, to_addresses, subject, date, snippet, maildir_path FROM email_messages WHERE message_id = ?1",
+                "SELECT from_address, to_addresses, subject, date, snippet, maildir_path, tags_json FROM email_messages WHERE message_id = ?1",
                 [&message_id],
                 |row| Ok((
                     row.get::<_, String>(0)?,
@@ -1268,15 +1268,21 @@ pub async fn run_email(config_path: Option<&str>, command: EmailCommands) -> any
                     row.get::<_, String>(3)?,
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 )),
             );
             match result {
-                Ok((from, to, subject, date, snippet, path)) => {
+                Ok((from, to, subject, date, snippet, path, tags)) => {
                     println!("From:    {}", from);
                     println!("To:      {}", to);
                     println!("Subject: {}", subject);
                     println!("Date:    {}", date);
                     println!("Path:    {}", path);
+                    if let Some(t) = tags {
+                        if t != "null" && !t.is_empty() {
+                            println!("Tags:    {}", t);
+                        }
+                    }
                     if let Some(s) = snippet {
                         println!();
                         println!("{}", s);
@@ -1285,19 +1291,88 @@ pub async fn run_email(config_path: Option<&str>, command: EmailCommands) -> any
                 Err(_) => println!("Message not found: {}", message_id),
             }
         }
-        EmailCommands::Thread { message_id: _ } => {
-            println!("Email threading not yet implemented");
+        EmailCommands::Thread { message_id } => {
+            match tilde_email::get_thread(&conn, &message_id) {
+                Ok(thread) if !thread.is_empty() => {
+                    println!("Thread ({} messages):", thread.len());
+                    println!("{}", "-".repeat(80));
+                    for msg in &thread {
+                        let from_display = msg.from_name.as_deref().unwrap_or(&msg.from_address);
+                        println!("  {} — {} — {}", msg.date, from_display, msg.subject);
+                        if let Some(ref s) = msg.snippet {
+                            let preview: String = s.chars().take(60).collect();
+                            println!("    {}", preview);
+                        }
+                        println!();
+                    }
+                }
+                Ok(_) => println!("No messages found in thread for: {}", message_id),
+                Err(e) => println!("Error fetching thread: {}", e),
+            }
+        }
+        EmailCommands::Attachments { command: att_cmd } => {
+            match att_cmd {
+                AttachmentsCommands::Extract { message_id, to } => {
+                    let output_dir = std::path::PathBuf::from(&to);
+                    match tilde_email::extract_attachments(&conn, &mail_dir, &message_id, &output_dir) {
+                        Ok(files) if !files.is_empty() => {
+                            println!("Extracted {} attachment(s) to {}:", files.len(), to);
+                            for f in &files {
+                                println!("  - {}", f);
+                            }
+                        }
+                        Ok(_) => println!("No attachments found for message: {}", message_id),
+                        Err(e) => println!("Error extracting attachments: {}", e),
+                    }
+                }
+            }
+        }
+        EmailCommands::Tag { message_id, operation, tag } => {
+            match operation.as_str() {
+                "add" => {
+                    tilde_email::add_tag(&conn, &message_id, &tag)?;
+                    println!("Tag '{}' added to message {}", tag, message_id);
+                }
+                "remove" => {
+                    tilde_email::remove_tag(&conn, &message_id, &tag)?;
+                    println!("Tag '{}' removed from message {}", tag, message_id);
+                }
+                _ => println!("Unknown operation '{}'. Use 'add' or 'remove'.", operation),
+            }
         }
         EmailCommands::Reindex => {
-            println!("Email reindex rebuilds SQLite from Maildir files");
-            println!("(IMAP sync must run first to populate Maildir)");
+            println!("Rebuilding email index from Maildir...");
+            match tilde_email::reindex_from_maildir(&conn, &mail_dir) {
+                Ok(count) => println!("Reindexed {} messages from Maildir", count),
+                Err(e) => println!("Error during reindex: {}", e),
+            }
         }
         EmailCommands::Status => {
             let count: i64 = conn.query_row("SELECT COUNT(*) FROM email_messages", [], |row| row.get(0)).unwrap_or(0);
+
+            // Try to get per-account status
+            let mut stmt = conn.prepare("SELECT DISTINCT account FROM email_messages").unwrap();
+            let accounts: Vec<String> = stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+
             println!("Email Archive Status");
             println!("====================");
             println!("Total messages: {}", count);
-            println!("Accounts configured: check config.toml [email] section");
+
+            if accounts.is_empty() {
+                println!("No accounts with indexed messages");
+            } else {
+                for acct in &accounts {
+                    let status = tilde_email::imap::get_sync_status(&conn, acct);
+                    println!();
+                    println!("Account: {}", status.account);
+                    println!("  Messages: {}", status.message_count);
+                    println!("  Last sync: {}", status.last_sync.as_deref().unwrap_or("never"));
+                    println!("  Folders: {}", status.folders.join(", "));
+                }
+            }
         }
     }
     Ok(())

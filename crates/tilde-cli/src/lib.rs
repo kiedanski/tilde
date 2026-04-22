@@ -294,8 +294,33 @@ pub enum EmailCommands {
     Search { query: String },
     Thread { message_id: String },
     Show { message_id: String },
+    /// Extract attachments from a message
+    Attachments {
+        #[command(subcommand)]
+        command: AttachmentsCommands,
+    },
+    /// Manage local tags on messages
+    Tag {
+        /// Message ID
+        message_id: String,
+        /// Operation: add or remove
+        operation: String,
+        /// Tag name
+        tag: String,
+    },
     Reindex,
     Status,
+}
+
+#[derive(clap::Subcommand)]
+pub enum AttachmentsCommands {
+    Extract {
+        /// Message ID
+        message_id: String,
+        /// Output directory
+        #[arg(long)]
+        to: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
