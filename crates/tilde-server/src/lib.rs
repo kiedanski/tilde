@@ -2,11 +2,11 @@
 
 use axum::{
     Router,
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Path as AxumPath, State},
     http::{StatusCode, header, HeaderValue, Request},
     middleware::Next,
-    response::{IntoResponse, Json},
-    routing::{get, post},
+    response::{IntoResponse, Json, Redirect},
+    routing::{any, get, post},
 };
 use base64::Engine;
 use rusqlite::Connection;
@@ -54,6 +54,9 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
         .route("/ocs/v2.php/cloud/capabilities", get(ocs_capabilities_handler))
         .route("/.well-known/caldav", get(well_known_caldav))
         .route("/.well-known/carddav", get(well_known_carddav))
+        // Nextcloud compat redirects
+        .route("/remote.php/dav/{*path}", any(remote_php_dav_redirect))
+        .route("/remote.php/webdav/{*path}", any(remote_php_webdav_redirect))
         // Auth endpoints (public)
         .route("/api/auth/login", post(login_handler))
         // Authenticated routes
@@ -377,6 +380,16 @@ async fn session_info_handler(
         }
     }
     Json(json!({"error": "session info unavailable"}))
+}
+
+/// /remote.php/dav/* → redirect to /dav/*
+async fn remote_php_dav_redirect(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
+    Redirect::permanent(&format!("/dav/{}", path))
+}
+
+/// /remote.php/webdav/* → redirect to /dav/files/*
+async fn remote_php_webdav_redirect(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
+    Redirect::permanent(&format!("/dav/files/{}", path))
 }
 
 /// Host header filter — reject requests for unknown hostnames

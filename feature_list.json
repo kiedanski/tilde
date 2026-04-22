@@ -525,7 +525,7 @@
       "Step 3: Verify response has Content-Length, Content-Type, ETag headers",
       "Step 4: Verify response body is empty"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -542,7 +542,7 @@
       "Step 9: Verify files table path column updated",
       "Step 10: Verify old paths return 404"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -592,7 +592,7 @@
       "Step 3: Verify JSON declares WebDAV chunked upload support",
       "Step 4: Verify format is compatible with Nextcloud clients"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -602,7 +602,7 @@
       "Step 2: Verify JSON response with installed: true, version: '28.0.0'",
       "Step 3: Verify format satisfies Nextcloud client checks"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -613,7 +613,7 @@
       "Step 3: Send request to /remote.php/webdav/test.txt",
       "Step 4: Verify redirect to /dav/files/test.txt"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -642,7 +642,7 @@
       "Step 2: Verify 200 OK response (not 405 or 501)",
       "Step 3: Verify file operations work after LOCK response"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -653,7 +653,7 @@
       "Step 3: Verify record with UUID id, correct path, parent_path, name, size_bytes, content_type, etag, sha256, hlc",
       "Step 4: Verify is_directory field for directories vs files"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

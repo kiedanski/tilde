@@ -61,8 +61,8 @@ tilde — Progress Notes
 - ConnectInfo<SocketAddr> required — server uses into_make_service_with_connect_info()
 - base64 crate added for Basic auth decoding
 
-### Tests Passing: 31/260
-New: 3, 4, 9, 11, 14, 15, 19, 24, 29-38
+### Tests Passing: 38/260
+New: 3, 4, 9, 11, 14, 15, 19, 24, 29-38, 40, 41, 45, 46, 47, 49, 50
 Previous: 0, 1, 2, 5, 6, 7, 8, 10, 12, 13, 18, 20, 23
 
 ### Next Steps (for future sessions)
