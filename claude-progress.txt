@@ -1,6 +1,68 @@
 tilde — Progress Notes
 ======================
 
+## Session 8 (2026-04-22) — Email Archive, Export/Import, Code Quality: 178 → 204 tests
+
+### Completed Features (26 new tests)
+1. **Email archive crate** (Tests 107-112, 115-117, 215): Full tilde-email implementation with:
+   - Maildir storage with atomic writes (tmp → cur)
+   - Email parsing via mailparse (RFC822, MIME, attachments)
+   - SQLite FTS5 full-text search index
+   - Threading via In-Reply-To and References headers
+   - Multi-account support with independent Maildir trees
+   - Folder include/exclude filtering with unit tests
+   - CLI: attachments extract, tag add/remove, reindex, thread
+   - UID-based tracking and Message-ID deduplication
+   - Email retention pruning (retention_days=0 keeps forever)
+
+2. **Export/Import** (Tests 155-157, 160-162, 254): Full export pipeline:
+   - Standards-based directory tree (calendars/*.ics, contacts/*.vcf, notes/*.md, collections/*.json, mail/Maildir)
+   - manifest.json and links.json for cross-references
+   - Selective export with --only flag
+   - Export verify command
+   - Import with --dry-run and --verify-first flags
+   - Backup status CLI command
+
+3. **Code quality** (Tests 252-253): Zero clippy warnings, consistent rustfmt formatting
+
+4. **Additional verifications** (Tests 26-27, 162, 165, 220, 227, 241-242):
+   - tilde status: server state, disk usage, JSON output
+   - tilde diagnose: config, DB, dependencies check
+   - Webhook HMAC replay protection via X-Tilde-Signature
+   - CalDAV soft-deletion with deleted=1 flag
+   - Notes YAML frontmatter preserved during sync and search
+   - JSON and pretty log formats
+   - Export directory structure validated
+
+### Tests Passing: 204/260
+Total new tests this session: 26 (178 → 204)
+
+### Architecture Changes
+- New tilde-email crate: 4 modules (maildir, parser, index, imap)
+- Added mailparse, hmac, hex workspace dependencies
+- CLI: added ExportCommands, AttachmentsCommands enums
+- Export/Import commands wired into main binary
+- Backup status command with stub for rustic-rs
+- Webhook handler enhanced with HMAC-SHA256 verification
+
+### Remaining Failing Tests (56)
+- IMAP connectivity (105-106, 184, 198, 204): Require live IMAP server
+- Photos (72, 80-82, 86-88, 212, 217, 258): Blob store, HEIC, video, blurhash
+- Infrastructure (16, 21-22, 25, 141, 191, 194, 203): HTTPS/TLS, systemd, SIGHUP, musl
+- Backup (149-154, 199-200, 223): rustic-rs integration
+- Export extras (158-159): tar.zst compression, age encryption
+- WebAuthn (179, 197): Optional second factor
+- Misc (166-167, 172, 196, 214, 219, 221-222, 229-231, 244-245, 250-251, 259)
+
+### Next Steps (for future sessions)
+1. Photo features: blob store sharding, blurhash, manually_placed, error sidecars
+2. IMAP connectivity (if server available)
+3. Infrastructure: TLS, systemd, SIGHUP handler
+4. Backup: rustic-rs integration
+5. Remaining misc tests
+
+---
+
 ## Session 7 (2026-04-22) — Photo Ingestion Pipeline: 161 → 178 tests
 
 ### Completed Features (17 new tests)
@@ -10,82 +72,11 @@ tilde — Progress Notes
 4. **Process isolation** (Test 92): ExifTool failures don't crash the server — verified with corrupt files
 
 ### Tests Passing: 178/260
-Total new tests this session: 17 (161 → 178)
-
-### Architecture Changes
-- tilde-photos crate fully implemented: 5 modules (exiftool, ingest, organize, thumbnail, watcher)
-- File watcher (notify-rs) on _inbox/ and _library-drop/ with configurable debounce
-- ExifTool subprocess integration for metadata read/write
-- Organization pattern engine with date parsing and trip tag support
-- Thumbnail pipeline using image crate (JPEG/PNG/WebP)
-- Server startup processes existing inbox files + starts watcher
-- Config: added watch_debounce_seconds, exiftool_timeout_seconds, ffmpeg_timeout_seconds
-- Slimmed image crate (disabled AVIF/rav1e for disk/compile savings)
-
-### Key Design Decisions
-- ExifTool as subprocess (not library) for metadata — matches spec's process isolation requirement
-- Watcher uses debounce HashMap + processor thread (not tokio async) since file processing is CPU-bound
-- Non-media files in inbox are ignored by watcher; only media extensions trigger processing
-- Corrupt files with valid magic bytes but no date → _untriaged (not _errors)
-- _errors/ reserved for complete processing failures (file unreadable, etc.)
-
-### Remaining Photo Tests
-- 72: _errors/ with error sidecar .txt (code implemented but hard to trigger — needs truly unprocessable file)
-- 80: manually_placed flag on user MOVE
-- 81: metadata change triggers organization MOVE
-- 82: content-addressed blob store with sharding
-- 86: HEIC thumbnails (needs libheif)
-- 87: video thumbnails via ffmpeg
-- 88: blurhash computation
-- 210-211: memory limits during processing
-- 217: WebDAV upload triggers indexing
-- 258: error sidecar descriptions
-
-### Next Steps (for future sessions)
-1. Email archive IMAP client (tests 105-112, 115-117, 138-140, 184, 198, 204, 215) — 2nd biggest remaining block
-2. Backup (tests 149-155, 199-200, 223)
-3. Export/Import (tests 156-162, 201, 254)
-4. Remaining photo tests (manually_placed, blob store, HEIC, video, blurhash)
-5. Infrastructure (TLS, systemd, musl build, WebAuthn, SIGHUP)
 
 ---
 
 ## Session 6 (2026-04-22) — CalDAV, CardDAV, MCP tools: 137 → 161 tests
-
-### Completed Features (24 new tests)
-1. **CalDAV handler (Tests 51-57, 59, 85)**: Full CalDAV at /caldav/ with MKCALENDAR, PUT, GET, DELETE, PROPFIND, PROPPATCH, REPORT (calendar-query, calendar-multiget, sync-collection, free-busy-query). Includes VEVENT and VTODO support.
-2. **CardDAV handler (Tests 58, 60-62)**: Full CardDAV at /carddav/ with MKCOL, PUT, GET, DELETE, PROPFIND, PROPPATCH, REPORT (addressbook-multiget, sync-collection).
-3. **CalDAV/CardDAV auth (Test 63)**: Basic auth with admin password and app-password scope enforcement (/caldav/* and /carddav/* scopes checked independently)
-4. **Calendar CLI (Tests 64-65)**: `tilde calendar list` and `tilde calendar events` with date range filtering
-5. **Contacts CLI (Test 66)**: `tilde contacts list` and `tilde contacts search`
-6. **MCP calendar/contacts/tasks/email tools (Tests 129-131, 132-137)**: calendar.list_events, calendar.create_event, contacts.search, tasks.list, tasks.add, email.search, email.thread, email.recent — 16 total MCP tools now
-
-### Tests Passing: 161/260
-Total new tests this session: 24 (137 → 161)
-
-### Architecture Changes
-- tilde-cal crate: Full CalDAV handler with auth, REPORT, sync-collection, getctag
-- tilde-card crate: Full CardDAV handler with auth, REPORT, sync-collection
-- Migration 003: calendars, calendar_objects, addressbooks, contacts, sync_changes tables
-- CalDAV/CardDAV routers mounted at /caldav/ and /carddav/ with scope-based auth
-- MCP expanded from 8 to 16 tools (added calendar, contacts, tasks, email tools)
-- Default calendar and addressbook created on server startup
-
-### Key Design Decisions
-- Built CalDAV/CardDAV directly (not via RustiCal) since RustiCal integration was too complex
-- Auth check done inside CalDAV/CardDAV handlers (not middleware) since nest_service doesn't support state-typed middleware
-- Sync-collection uses monotonic sync_token per calendar/addressbook
-- Soft-delete for calendar objects and contacts (deleted=1 flag) to support sync-collection 404 responses
-
-### Next Steps (for future sessions)
-1. Photo ingestion pipeline (tests 69-88, 91-92, 195, 206, 217, 224, 258) — biggest remaining block
-2. Email archive IMAP client (tests 105-112, 115-117, 138-140, 184, 198, 204, 215)
-3. Backup (tests 149-155, 199-200, 223)
-4. Export/Import (tests 156-162, 201, 254)
-5. Remaining infrastructure (TLS, systemd, musl build, WebAuthn, SIGHUP)
-6. MCP tool allowlist hot-reload via SIGHUP (test 62)
-
----
+- CalDAV/CardDAV handlers, calendar/contacts CLI, MCP tools expanded to 16
 
 ## Earlier Sessions
 - Session 5: MCP, Webhooks, Notifications, CLI (70→137)
