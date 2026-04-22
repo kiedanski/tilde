@@ -1,6 +1,55 @@
 tilde — Progress Notes
 ======================
 
+## Session 7 (2026-04-22) — Photo Ingestion Pipeline: 161 → 178 tests
+
+### Completed Features (17 new tests)
+1. **Photo ingestion pipeline** (Tests 69-71, 73-79, 83): Full pipeline from _inbox/ auto-organization by date pattern, _library-drop/ structure preservation, _untriaged/ for missing metadata, magic bytes validation, ExifTool metadata read, tag write/remove (XMP dc:Subject + IPTC Keywords), tag prefix classifier, organization pattern engine ({year}/{month:02}/{-trip}), SHA-256 computation
+2. **Thumbnail generation** (Tests 85, 91, 195, 224): JPEG/PNG/WebP → 256px square crop + 1920px longest-edge WebP thumbnails, CLI regenerate --missing/--all, configurable quality
+3. **Encrypted file detection** (Test 84): GPG/age magic bytes detected, content_readable=false, skip thumbnail/indexing
+4. **Process isolation** (Test 92): ExifTool failures don't crash the server — verified with corrupt files
+
+### Tests Passing: 178/260
+Total new tests this session: 17 (161 → 178)
+
+### Architecture Changes
+- tilde-photos crate fully implemented: 5 modules (exiftool, ingest, organize, thumbnail, watcher)
+- File watcher (notify-rs) on _inbox/ and _library-drop/ with configurable debounce
+- ExifTool subprocess integration for metadata read/write
+- Organization pattern engine with date parsing and trip tag support
+- Thumbnail pipeline using image crate (JPEG/PNG/WebP)
+- Server startup processes existing inbox files + starts watcher
+- Config: added watch_debounce_seconds, exiftool_timeout_seconds, ffmpeg_timeout_seconds
+- Slimmed image crate (disabled AVIF/rav1e for disk/compile savings)
+
+### Key Design Decisions
+- ExifTool as subprocess (not library) for metadata — matches spec's process isolation requirement
+- Watcher uses debounce HashMap + processor thread (not tokio async) since file processing is CPU-bound
+- Non-media files in inbox are ignored by watcher; only media extensions trigger processing
+- Corrupt files with valid magic bytes but no date → _untriaged (not _errors)
+- _errors/ reserved for complete processing failures (file unreadable, etc.)
+
+### Remaining Photo Tests
+- 72: _errors/ with error sidecar .txt (code implemented but hard to trigger — needs truly unprocessable file)
+- 80: manually_placed flag on user MOVE
+- 81: metadata change triggers organization MOVE
+- 82: content-addressed blob store with sharding
+- 86: HEIC thumbnails (needs libheif)
+- 87: video thumbnails via ffmpeg
+- 88: blurhash computation
+- 210-211: memory limits during processing
+- 217: WebDAV upload triggers indexing
+- 258: error sidecar descriptions
+
+### Next Steps (for future sessions)
+1. Email archive IMAP client (tests 105-112, 115-117, 138-140, 184, 198, 204, 215) — 2nd biggest remaining block
+2. Backup (tests 149-155, 199-200, 223)
+3. Export/Import (tests 156-162, 201, 254)
+4. Remaining photo tests (manually_placed, blob store, HEIC, video, blurhash)
+5. Infrastructure (TLS, systemd, musl build, WebAuthn, SIGHUP)
+
+---
+
 ## Session 6 (2026-04-22) — CalDAV, CardDAV, MCP tools: 137 → 161 tests
 
 ### Completed Features (24 new tests)
