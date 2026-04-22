@@ -1738,7 +1738,7 @@
       "Step 2: Verify response directs clients to use bearer tokens",
       "Step 3: Verify no full OAuth flow implemented"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1811,7 +1811,7 @@
       "Step 2: Run `tilde notifications test ntfy` \u2192 verify test notification sent",
       "Step 3: Run `tilde notifications list` \u2192 verify recent notifications displayed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2811,7 +2811,7 @@
       "Step 3: Run tilde with invalid config value",
       "Step 4: Verify error points to specific config field and valid values"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2834,7 +2834,7 @@
       "Step 3: Verify columns have headers",
       "Step 4: Verify long values are truncated gracefully"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",

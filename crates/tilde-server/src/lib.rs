@@ -99,6 +99,8 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
         // MCP endpoint
         .route("/mcp/", post(mcp_handler))
         .route("/mcp", post(mcp_handler))
+        // OAuth Protected Resource Metadata (RFC 9728 stub)
+        .route("/.well-known/oauth-protected-resource", get(oauth_protected_resource))
         // Webhook endpoint
         .route("/api/webhook/{token_prefix}", post(webhook_handler))
         // Authenticated routes
@@ -794,6 +796,23 @@ fn render_login_error(flow_token: &str, csrf_token: &str, error: &str) -> axum::
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
         html,
     ).into_response()
+}
+
+/// GET /.well-known/oauth-protected-resource — OAuth Protected Resource Metadata (RFC 9728 stub)
+async fn oauth_protected_resource(State(state): State<SharedState>) -> impl IntoResponse {
+    let hostname = &state.config.server.hostname;
+    let resource = if hostname.is_empty() {
+        "http://localhost".to_string()
+    } else {
+        format!("https://{}", hostname)
+    };
+
+    Json(json!({
+        "resource": resource,
+        "bearer_methods_supported": ["header"],
+        "resource_documentation": "Use CLI-issued bearer tokens: tilde mcp token create --name <name> --scopes <scopes>",
+        "resource_signing_alg_values_supported": []
+    }))
 }
 
 // ─── MCP Streamable HTTP endpoint ────────────────────────────────────────

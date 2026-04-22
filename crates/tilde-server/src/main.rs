@@ -31,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Bookmarks { command }) => commands::run_bookmarks(config_path.as_deref(), command).await,
         Some(Commands::Trackers { command }) => commands::run_trackers(config_path.as_deref(), command).await,
         Some(Commands::Webhook { command }) => commands::run_webhook(config_path.as_deref(), command).await,
+        Some(Commands::Notifications { command }) => commands::run_notifications(config_path.as_deref(), command).await,
         None => {
             println!("tilde — Personal Cloud Server");
             println!("Run `tilde --help` for usage information.");
