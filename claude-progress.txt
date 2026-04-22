@@ -1,9 +1,9 @@
 tilde — Progress Notes
 ======================
 
-## Session 8 (2026-04-22) — Email Archive, Export/Import, Code Quality: 178 → 204 tests
+## Session 8 (2026-04-22) — Email Archive, Export/Import, Code Quality: 178 → 208 tests
 
-### Completed Features (26 new tests)
+### Completed Features (30 new tests)
 1. **Email archive crate** (Tests 107-112, 115-117, 215): Full tilde-email implementation with:
    - Maildir storage with atomic writes (tmp → cur)
    - Email parsing via mailparse (RFC822, MIME, attachments)
@@ -25,17 +25,21 @@ tilde — Progress Notes
 
 3. **Code quality** (Tests 252-253): Zero clippy warnings, consistent rustfmt formatting
 
-4. **Additional verifications** (Tests 26-27, 162, 165, 220, 227, 241-242):
+4. **Photo features** (Tests 72, 82, 88, 258):
+   - Content-addressed blob store at blobs/by-id/<first2>/<next2>/<uuid>.<ext>
+   - Blurhash computed during ingestion and stored in SQLite
+   - Error sidecar .txt files in _errors/ with clear descriptions
+
+5. **Additional verifications** (Tests 26-27, 162, 165, 220, 227, 241-242):
    - tilde status: server state, disk usage, JSON output
    - tilde diagnose: config, DB, dependencies check
    - Webhook HMAC replay protection via X-Tilde-Signature
    - CalDAV soft-deletion with deleted=1 flag
    - Notes YAML frontmatter preserved during sync and search
    - JSON and pretty log formats
-   - Export directory structure validated
 
-### Tests Passing: 204/260
-Total new tests this session: 26 (178 → 204)
+### Tests Passing: 208/260
+Total new tests this session: 30 (178 → 208)
 
 ### Architecture Changes
 - New tilde-email crate: 4 modules (maildir, parser, index, imap)
@@ -44,10 +48,12 @@ Total new tests this session: 26 (178 → 204)
 - Export/Import commands wired into main binary
 - Backup status command with stub for rustic-rs
 - Webhook handler enhanced with HMAC-SHA256 verification
+- Photo blob store with two-level UUID sharding
+- Blurhash computation during photo indexing
 
-### Remaining Failing Tests (56)
+### Remaining Failing Tests (52)
 - IMAP connectivity (105-106, 184, 198, 204): Require live IMAP server
-- Photos (72, 80-82, 86-88, 212, 217, 258): Blob store, HEIC, video, blurhash
+- Photos (80-81, 86-87, 212, 217): manually_placed, metadata MOVE, HEIC, video
 - Infrastructure (16, 21-22, 25, 141, 191, 194, 203): HTTPS/TLS, systemd, SIGHUP, musl
 - Backup (149-154, 199-200, 223): rustic-rs integration
 - Export extras (158-159): tar.zst compression, age encryption
@@ -55,7 +61,7 @@ Total new tests this session: 26 (178 → 204)
 - Misc (166-167, 172, 196, 214, 219, 221-222, 229-231, 244-245, 250-251, 259)
 
 ### Next Steps (for future sessions)
-1. Photo features: blob store sharding, blurhash, manually_placed, error sidecars
+1. Photo features: manually_placed flag, metadata-triggered MOVE, HEIC, video thumbnails
 2. IMAP connectivity (if server available)
 3. Infrastructure: TLS, systemd, SIGHUP handler
 4. Backup: rustic-rs integration
@@ -64,16 +70,7 @@ Total new tests this session: 26 (178 → 204)
 ---
 
 ## Session 7 (2026-04-22) — Photo Ingestion Pipeline: 161 → 178 tests
-
-### Completed Features (17 new tests)
-1. **Photo ingestion pipeline** (Tests 69-71, 73-79, 83): Full pipeline from _inbox/ auto-organization by date pattern, _library-drop/ structure preservation, _untriaged/ for missing metadata, magic bytes validation, ExifTool metadata read, tag write/remove (XMP dc:Subject + IPTC Keywords), tag prefix classifier, organization pattern engine ({year}/{month:02}/{-trip}), SHA-256 computation
-2. **Thumbnail generation** (Tests 85, 91, 195, 224): JPEG/PNG/WebP → 256px square crop + 1920px longest-edge WebP thumbnails, CLI regenerate --missing/--all, configurable quality
-3. **Encrypted file detection** (Test 84): GPG/age magic bytes detected, content_readable=false, skip thumbnail/indexing
-4. **Process isolation** (Test 92): ExifTool failures don't crash the server — verified with corrupt files
-
-### Tests Passing: 178/260
-
----
+- Photo ingestion pipeline, thumbnails, encrypted file detection, process isolation
 
 ## Session 6 (2026-04-22) — CalDAV, CardDAV, MCP tools: 137 → 161 tests
 - CalDAV/CardDAV handlers, calendar/contacts CLI, MCP tools expanded to 16
