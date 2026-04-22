@@ -86,6 +86,12 @@ anyhow = "1"
 # UUID
 uuid = { version = "1", features = ["v4"] }
 
+# URL encoding
+urlencoding = "2"
+
+# Filesystem
+fs2 = "0.4"
+
 # HTTP client (for notifications)
 reqwest = { version = "0.12", features = ["json"] }
 

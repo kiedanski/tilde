@@ -514,7 +514,7 @@
       "Step 4: PROPPATCH to remove the custom property",
       "Step 5: PROPFIND and verify property is no longer returned"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -559,7 +559,7 @@
       "Step 9: Verify bytes were streamed (never buffered full file in memory)",
       "Step 10: Verify per-session size tracking is correct"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -571,7 +571,7 @@
       "Step 4: Verify session is marked expired in chunked_uploads table",
       "Step 5: Verify staging directory is cleaned up on next startup"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -581,7 +581,7 @@
       "Step 2: Verify server checks available disk space",
       "Step 3: If insufficient space, verify 507 Insufficient Storage response"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -632,7 +632,7 @@
       "Step 11: Verify appPassword is stored as app-password with /dav/* scope",
       "Step 12: Poll again with same token \u2192 verify 404 (one-time use)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

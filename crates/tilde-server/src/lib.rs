@@ -2,7 +2,7 @@
 
 use axum::{
     Router,
-    extract::{ConnectInfo, Path as AxumPath, State},
+    extract::{ConnectInfo, Path as AxumPath, Query, State},
     http::{StatusCode, header, HeaderValue, Request},
     middleware::Next,
     response::{IntoResponse, Json, Redirect},
@@ -25,12 +25,23 @@ pub struct RateLimitEntry {
     pub attempts: Vec<Instant>,
 }
 
+/// Nextcloud Login Flow v2 pending session
+#[derive(Debug, Clone)]
+pub struct LoginFlowSession {
+    pub poll_token: String,
+    pub csrf_token: String,
+    pub created_at: Instant,
+    pub app_password: Option<String>,
+    pub consumed: bool,
+}
+
 /// Shared application state
 pub struct AppState {
     pub config: Config,
     pub db: Arc<Mutex<Connection>>,
     pub start_time: Instant,
     pub login_attempts: Mutex<HashMap<String, RateLimitEntry>>,
+    pub login_flows: Mutex<HashMap<String, LoginFlowSession>>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -44,7 +55,8 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // WebDAV routes
-    let dav_router = tilde_dav::build_dav_router(dav_state);
+    let dav_router = tilde_dav::build_dav_router(dav_state.clone());
+    let uploads_router = tilde_dav::build_uploads_router(dav_state);
 
     Router::new()
         // Public endpoints
@@ -59,10 +71,15 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
         .route("/remote.php/webdav/{*path}", any(remote_php_webdav_redirect))
         // Auth endpoints (public)
         .route("/api/auth/login", post(login_handler))
+        // Nextcloud Login Flow v2
+        .route("/login/v2", post(login_flow_initiate))
+        .route("/login/v2/poll", post(login_flow_poll))
+        .route("/login/v2/auth", get(login_flow_auth_page).post(login_flow_auth_submit))
         // Authenticated routes
         .merge(authenticated)
         // WebDAV
         .nest_service("/dav/files", dav_router)
+        .nest_service("/dav/uploads", uploads_router)
         // Middleware
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn_with_state(state.clone(), host_filter_middleware))
@@ -426,4 +443,273 @@ async fn host_filter_middleware(
             Err(StatusCode::FORBIDDEN)
         }
     }
+}
+
+// ─── Nextcloud Login Flow v2 ──────────────────────────────────────────────
+
+/// POST /login/v2 — Initiate Login Flow v2
+async fn login_flow_initiate(
+    State(state): State<SharedState>,
+    req: Request<axum::body::Body>,
+) -> impl IntoResponse {
+    // Generate tokens
+    let poll_token = auth::generate_session_token(); // reuse token generator
+    let csrf_token = auth::hash_token(&auth::generate_session_token()); // random hash
+
+    // Build the login URL from the Host header
+    let host = req.headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let scheme = "http"; // In production behind TLS this would be https
+    let login_url = format!("{}://{}/login/v2/auth?token={}", scheme, host, poll_token);
+    let poll_endpoint = format!("{}://{}/login/v2/poll", scheme, host);
+
+    // Store flow session
+    let session = LoginFlowSession {
+        poll_token: poll_token.clone(),
+        csrf_token: csrf_token.clone(),
+        created_at: Instant::now(),
+        app_password: None,
+        consumed: false,
+    };
+
+    {
+        let mut flows = state.login_flows.lock().unwrap();
+        // Clean expired flows (older than 10 minutes)
+        flows.retain(|_, s| s.created_at.elapsed().as_secs() < 600);
+        flows.insert(poll_token.clone(), session);
+    }
+
+    Json(json!({
+        "poll": {
+            "token": poll_token,
+            "endpoint": poll_endpoint
+        },
+        "login": login_url
+    }))
+}
+
+/// POST /login/v2/poll — Poll for completed login flow
+async fn login_flow_poll(
+    State(state): State<SharedState>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    // Parse form data: token=<poll_token>
+    let form_str = String::from_utf8_lossy(&body);
+    let token = form_str.split('&')
+        .find_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            let key = parts.next()?;
+            let val = parts.next()?;
+            if key == "token" { Some(val.to_string()) } else { None }
+        });
+
+    let token = match token {
+        Some(t) => t,
+        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "token required"}))).into_response(),
+    };
+
+    let mut flows = state.login_flows.lock().unwrap();
+
+    match flows.get(&token) {
+        Some(session) if session.consumed => {
+            // Already consumed — return 404 per spec
+            (StatusCode::NOT_FOUND, Json(json!({"error": "flow already consumed"}))).into_response()
+        }
+        Some(session) if session.app_password.is_some() => {
+            let app_password = session.app_password.clone().unwrap();
+            // Mark as consumed
+            let mut session = session.clone();
+            session.consumed = true;
+            flows.insert(token, session);
+
+            let hostname = &state.config.server.hostname;
+            let server_url = if hostname.is_empty() {
+                "http://localhost".to_string()
+            } else {
+                format!("https://{}", hostname)
+            };
+
+            Json(json!({
+                "server": server_url,
+                "loginName": "admin",
+                "appPassword": app_password
+            })).into_response()
+        }
+        Some(_) => {
+            // Not yet authenticated
+            (StatusCode::NOT_FOUND, Json(json!({"error": "not yet authenticated"}))).into_response()
+        }
+        None => {
+            (StatusCode::NOT_FOUND, Json(json!({"error": "unknown token"}))).into_response()
+        }
+    }
+}
+
+/// GET /login/v2/auth — Display the login page
+async fn login_flow_auth_page(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> axum::response::Response {
+    let token = match params.get("token") {
+        Some(t) => t.clone(),
+        None => return (StatusCode::BAD_REQUEST, "Missing token parameter").into_response(),
+    };
+
+    let csrf_token = {
+        let flows = state.login_flows.lock().unwrap();
+        match flows.get(&token) {
+            Some(session) if !session.consumed => session.csrf_token.clone(),
+            _ => return (StatusCode::NOT_FOUND, "Invalid or expired login flow").into_response(),
+        }
+    };
+
+    // Render the login page HTML with CSRF token and flow token
+    let html = include_str!("../../../assets/login.html")
+        .replace("{{csrf_token}}", &csrf_token)
+        .replace("{{flow_token}}", &token);
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8"),
+         (header::HeaderName::from_static("content-security-policy"), "default-src 'self'; style-src 'unsafe-inline'")],
+        html,
+    ).into_response()
+}
+
+/// POST /login/v2/auth — Process login form submission
+async fn login_flow_auth_submit(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    // Parse form data
+    let form_str = String::from_utf8_lossy(&body);
+    let mut form_data: HashMap<String, String> = HashMap::new();
+    for pair in form_str.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
+            let decoded_val = urlencoding::decode(val).unwrap_or_else(|_| val.into());
+            form_data.insert(key.to_string(), decoded_val.to_string());
+        }
+    }
+
+    let csrf_token = form_data.get("csrf_token").cloned().unwrap_or_default();
+    let flow_token = form_data.get("token").cloned()
+        .or_else(|| params.get("token").cloned())
+        .unwrap_or_default();
+    let password = form_data.get("password").cloned().unwrap_or_default();
+
+    // Validate CSRF token
+    let expected_csrf = {
+        let flows = state.login_flows.lock().unwrap();
+        match flows.get(&flow_token) {
+            Some(session) if !session.consumed => Some(session.csrf_token.clone()),
+            _ => None,
+        }
+    };
+
+    let expected_csrf = match expected_csrf {
+        Some(c) => c,
+        None => return render_login_error(&flow_token, "", "Invalid or expired login flow"),
+    };
+
+    if csrf_token != expected_csrf {
+        return render_login_error(&flow_token, &expected_csrf, "Invalid CSRF token");
+    }
+
+    // Verify password
+    let password_valid = {
+        let db = state.db.lock().unwrap();
+        auth::verify_admin_password(&db, &password).unwrap_or(false)
+    };
+
+    if !password_valid {
+        return render_login_error(&flow_token, &expected_csrf, "Invalid password");
+    }
+
+    // Create app-password scoped to /dav/*
+    let app_password = {
+        let db = state.db.lock().unwrap();
+        match auth::create_app_password(&db, "nextcloud-login-flow", "/dav/*") {
+            Ok(pw) => pw,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to create app password for login flow");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
+            }
+        }
+    };
+
+    // Store the app-password in the flow session
+    {
+        let mut flows = state.login_flows.lock().unwrap();
+        if let Some(session) = flows.get_mut(&flow_token) {
+            session.app_password = Some(app_password);
+        }
+    }
+
+    // Return success page
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>tilde — Connected</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: #f5f5f5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            color: #333;
+        }
+        .container {
+            background: #fff;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 360px;
+            text-align: center;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+        p { font-size: 0.875rem; color: #666; margin-top: 0.5rem; }
+        .success { color: #16a34a; font-size: 2rem; margin-bottom: 0.5rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success">&#10003;</div>
+        <h1>Connected</h1>
+        <p>You can close this window and return to your app.</p>
+    </div>
+</body>
+</html>"#;
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        html,
+    ).into_response()
+}
+
+/// Render login page with error message
+fn render_login_error(flow_token: &str, csrf_token: &str, error: &str) -> axum::response::Response {
+    let html = include_str!("../../../assets/login.html")
+        .replace("{{csrf_token}}", csrf_token)
+        .replace("{{flow_token}}", flow_token);
+
+    // Insert error div before the form
+    let error_html = format!(r#"<div class="error">{}</div>"#, error);
+    let html = html.replace("<form", &format!("{}<form", error_html));
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        html,
+    ).into_response()
 }

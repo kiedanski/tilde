@@ -1,6 +1,60 @@
 tilde — Progress Notes
 ======================
 
+## Session 4 (2025-04-22) — Login Flow v2, PROPPATCH, Chunked Uploads
+
+### Completed
+1. **Nextcloud Login Flow v2 (Test 48)**:
+   - POST /login/v2: initiates flow, returns poll token + login URL
+   - POST /login/v2/poll: polls for credentials (404 until authenticated, then returns server/loginName/appPassword)
+   - GET /login/v2/auth: serves HTML login page with CSRF token
+   - POST /login/v2/auth: processes login form, creates app-password scoped to /dav/*
+   - CSRF token validation on login form
+   - Error display on wrong password
+   - One-time poll consumption (404 after first successful poll)
+   - Flow sessions stored in-memory with 10-minute expiry cleanup
+   - App password stored in DB with /dav/* scope
+
+2. **WebDAV PROPPATCH (Test 39)**:
+   - Full PROPPATCH implementation: set and remove custom properties
+   - XML parsing via quick-xml for propertyupdate requests
+   - Properties stored in new file_properties table (migration 002)
+   - PROPFIND now includes custom properties in responses
+   - Namespace-aware property handling
+
+3. **Nextcloud Chunked Upload v2 (Tests 42, 43, 44)**:
+   - MKCOL /dav/uploads/<user>/<session-id>/ creates upload session
+   - PUT chunks to session directory
+   - MOVE finalizes: assembles chunks in order, atomic rename to destination
+   - ETag and SHA-256 computed on assembly
+   - Per-session tracking in chunked_uploads table (bytes_received, chunk_count)
+   - 24-hour session expiry with expires_at timestamp
+   - Startup cleanup of expired sessions and staging directories
+   - Disk space pre-check via fs2 when OC-Total-Length header present
+   - 507 Insufficient Storage response when disk is full
+   - Separate uploads router mounted at /dav/uploads/
+
+### Architecture Changes
+- AppState now includes login_flows: Mutex<HashMap<String, LoginFlowSession>>
+- DavState now includes uploads_root: PathBuf
+- Added migration 002_file_properties.sql for custom WebDAV properties
+- Added urlencoding, fs2, jiff dependencies to tilde-server
+- Uploads router mounted separately at /dav/uploads/
+
+### Tests Passing: 43/260
+New: 39, 42, 43, 44, 48
+Previous: 0-13, 14, 15, 18-20, 23-24, 29-38, 40, 41, 45-47, 49, 50
+
+### Next Steps (for future sessions)
+1. CalDAV/CardDAV via RustiCal integration (tests 51-67)
+2. Notes FTS search
+3. Add auth to WebDAV routes (currently unauthenticated)
+4. WebDAV Range header support on GET
+5. Start MCP endpoint implementation
+6. Photo ingestion pipeline
+
+---
+
 ## Session 3 (2025-04-22) — Auth, Rate Limiting, WebDAV
 
 ### Completed
@@ -61,88 +115,17 @@ tilde — Progress Notes
 - ConnectInfo<SocketAddr> required — server uses into_make_service_with_connect_info()
 - base64 crate added for Basic auth decoding
 
-### Tests Passing: 38/260
-New: 3, 4, 9, 11, 14, 15, 19, 24, 29-38, 40, 41, 45, 46, 47, 49, 50
-Previous: 0, 1, 2, 5, 6, 7, 8, 10, 12, 13, 18, 20, 23
-
-### Next Steps (for future sessions)
-1. Add auth to WebDAV routes (currently unauthenticated)
-2. Implement Nextcloud Login Flow v2 (tests 42-47)
-3. Implement chunked upload protocol (test 40)
-4. Add WebDAV Range header support on GET (partial test 30)
-5. Implement PROPPATCH properly (test 39)
-6. Implement /remote.php/* redirects (test 48-50)
-7. Work on notes FTS search
-8. Start CalDAV/CardDAV via RustiCal integration
-
 ---
 
 ## Session 2 (2025-04-22) — Foundation Implementation
 
 ### Completed
-1. **Config loading via figment** — `Config::load()` with layered priority:
-   - Defaults → TOML file → Environment variables
-   - TILDE_HOSTNAME → server.hostname, TILDE_ADMIN_PASSWORD → auth.admin_password
-   - XDG path resolution, systemd mode detection
-   - Additional config sections: FilesConfig, PhotosConfig, NotesConfig, McpConfig
-
-2. **SQLite migration runner** — Full implementation:
-   - Reads .sql files from migrations/ directory
-   - Applies in version order (parsed from filename like 001_initial.sql)
-   - SHA-256 checksum verification (detects modified migration files)
-   - Tracks applied migrations with timestamps
-
-3. **Auth module** — Complete Argon2id implementation:
-   - `hash_password()` / `verify_password()` with Argon2id
-   - Session tokens: `tilde_session_<32 hex chars>` format (46 chars total)
-   - MCP tokens: `mcp_prod_<30 alphanumeric chars>` format
-   - App passwords: `tilde_app_<24 alphanumeric chars>` format
-   - Token SHA-256 hashing for storage (never store plaintext)
-   - Constant-time comparison via subtle crate
-   - Session creation/validation with sliding TTL
-   - App password CRUD with scope enforcement
-   - MCP token CRUD with scope and rate limit
-
-4. **HTTP server (axum)** — Endpoints working:
-   - GET /health — JSON with status, version, uptime, db status
-   - GET /metrics — Prometheus text format (uptime, db size) — localhost-only
-   - GET /status.php — Nextcloud compatibility stub
-   - GET /ocs/v2.php/cloud/capabilities — OCS capabilities
-   - GET /.well-known/caldav → 301 /caldav/
-   - GET /.well-known/carddav → 301 /carddav/
-   - POST /api/auth/login — password auth → session token
-   - GET /api/auth/verify — auth verification
-   - GET /api/auth/session — session info
-   - /dav/files/* — full WebDAV Class 1
-   - HSTS, X-Content-Type-Options, X-Frame-Options headers
-   - Host header allowlist
-   - TraceLayer for request logging
-
-5. **CLI commands implemented**:
-   - `tilde init` — Creates directories, DB, migrations, sets admin password
-   - `tilde serve` — Starts axum HTTP server
-   - `tilde status` — Shows config, DB info, disk usage
-   - `tilde diagnose` — Checks config, DB integrity, dependencies
-   - `tilde auth app-password create/list/revoke`
-   - `tilde auth session list/revoke`
-   - `tilde auth reset-password`
-   - `tilde mcp token create/list/revoke/rotate`
-   - `tilde mcp audit`
-
-6. **Unit tests** — 10 tests in tilde-core passing:
-   - Config defaults and loading
-   - DB WAL mode, busy_timeout, synchronous, foreign keys
-   - SHA-256 checksum computation
-   - Argon2id hash/verify
-   - Token format validation
-   - Constant-time comparison
-   - Admin password roundtrip
-
-### Architecture Notes
-- Cyclic dependency resolved: tilde-cli defines CLI types only, tilde-server has command implementations
-- tilde-server's main.rs dispatches commands to commands.rs module
-- SharedState = Arc<AppState> with Config + Arc<Mutex<Connection>> + Instant + login_attempts
-- SharedDavState = Arc<DavState> with Arc<Mutex<Connection>> + files_root PathBuf
+1. **Config loading via figment** — `Config::load()` with layered priority
+2. **SQLite migration runner** — Full implementation with checksums
+3. **Auth module** — Argon2id, session tokens, MCP tokens, app passwords
+4. **HTTP server (axum)** — All foundation endpoints
+5. **CLI commands** — init, serve, status, diagnose, auth, mcp
+6. **Unit tests** — 10 tests in tilde-core passing
 
 ---
 

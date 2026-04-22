@@ -34,3 +34,5 @@ serde_json = { workspace = true }
 rusqlite = { workspace = true }
 uuid = { workspace = true }
 base64 = { workspace = true }
+urlencoding = { workspace = true }
+jiff = { workspace = true }

@@ -21,6 +21,7 @@ use uuid::Uuid;
 pub struct DavState {
     pub db: Arc<Mutex<Connection>>,
     pub files_root: PathBuf,
+    pub uploads_root: PathBuf,
 }
 
 pub type SharedDavState = Arc<DavState>;
@@ -30,6 +31,13 @@ pub fn build_dav_router(state: SharedDavState) -> Router {
     Router::new()
         .route("/", any(dav_handler))
         .route("/{*path}", any(dav_handler))
+        .with_state(state)
+}
+
+/// Build the uploads router — mount at /dav/uploads/
+pub fn build_uploads_router(state: SharedDavState) -> Router {
+    Router::new()
+        .route("/{*path}", any(uploads_handler))
         .with_state(state)
 }
 
@@ -472,23 +480,483 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
     ).into_response()
 }
 
-/// PROPPATCH — set/remove custom properties (minimal stub)
-async fn handle_proppatch(_state: &SharedDavState, _rel_path: &str, _body: Body) -> Response {
-    // Minimal implementation — acknowledge the request
-    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+/// PROPPATCH — set/remove custom properties
+async fn handle_proppatch(state: &SharedDavState, rel_path: &str, body: Body) -> Response {
+    let disk_path = state.files_root.join(rel_path);
+    if !disk_path.exists() && !rel_path.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let body_bytes = match axum::body::to_bytes(body, 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let body_str = String::from_utf8_lossy(&body_bytes);
+
+    // Parse PROPPATCH XML to extract set/remove operations
+    let ops = parse_proppatch_xml(&body_str);
+
+    let href = if rel_path.is_empty() {
+        "/dav/files/".to_string()
+    } else {
+        format!("/dav/files/{}", rel_path)
+    };
+
+    let mut prop_results = Vec::new();
+
+    {
+        let db = state.db.lock().unwrap();
+        for op in &ops {
+            match op {
+                PropPatchOp::Set { namespace, name, value } => {
+                    db.execute(
+                        "INSERT INTO file_properties (file_path, namespace, name, value) VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT(file_path, namespace, name) DO UPDATE SET value = excluded.value",
+                        rusqlite::params![rel_path, namespace, name, value],
+                    ).ok();
+                    prop_results.push((namespace.clone(), name.clone(), true));
+                }
+                PropPatchOp::Remove { namespace, name } => {
+                    db.execute(
+                        "DELETE FROM file_properties WHERE file_path = ?1 AND namespace = ?2 AND name = ?3",
+                        rusqlite::params![rel_path, namespace, name],
+                    ).ok();
+                    prop_results.push((namespace.clone(), name.clone(), true));
+                }
+            }
+        }
+    }
+
+    // Build response XML
+    let mut xml = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:">
   <d:response>
+    <d:href>{}</d:href>
     <d:propstat>
+      <d:prop>
+"#, escape_xml(&href));
+
+    for (ns, name, _) in &prop_results {
+        if ns == "DAV:" {
+            xml.push_str(&format!("        <d:{}/>\n", escape_xml(name)));
+        } else {
+            xml.push_str(&format!("        <x:{} xmlns:x=\"{}\"/>\n", escape_xml(name), escape_xml(ns)));
+        }
+    }
+
+    xml.push_str(r#"      </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
   </d:response>
-</d:multistatus>"#;
+</d:multistatus>"#);
+
+    info!(path = rel_path, ops = ops.len(), "WebDAV PROPPATCH");
 
     (
         StatusCode::MULTI_STATUS,
         [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
-        xml.to_string(),
+        xml,
     ).into_response()
+}
+
+#[derive(Debug)]
+enum PropPatchOp {
+    Set { namespace: String, name: String, value: String },
+    Remove { namespace: String, name: String },
+}
+
+/// Simple XML parser for PROPPATCH requests
+fn parse_proppatch_xml(xml: &str) -> Vec<PropPatchOp> {
+    let mut ops = Vec::new();
+    let mut in_set = false;
+    let mut in_remove = false;
+    let mut in_prop = false;
+    let mut current_ns = String::new();
+    let mut current_name = String::new();
+    let mut current_value = String::new();
+    let mut in_value = false;
+
+    // Track namespace prefixes
+    let mut ns_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    ns_map.insert("d".to_string(), "DAV:".to_string());
+    ns_map.insert("D".to_string(), "DAV:".to_string());
+
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => {
+                let local_name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+
+                // Extract namespace declarations from any element
+                for attr in e.attributes().flatten() {
+                    let attr_key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                    let attr_val = String::from_utf8_lossy(&attr.value).to_string();
+                    if attr_key.starts_with("xmlns:") {
+                        let prefix = attr_key.strip_prefix("xmlns:").unwrap().to_string();
+                        ns_map.insert(prefix, attr_val);
+                    }
+                }
+
+                match local_name.as_str() {
+                    "set" => { in_set = true; in_remove = false; }
+                    "remove" => { in_remove = true; in_set = false; }
+                    "prop" => { in_prop = true; }
+                    _ if in_prop && (in_set || in_remove) => {
+                        let prefix = e.name().prefix()
+                            .map(|p| String::from_utf8_lossy(p.as_ref()).to_string());
+
+                        current_ns = prefix
+                            .and_then(|p| ns_map.get(&p).cloned())
+                            .unwrap_or_else(|| {
+                                for attr in e.attributes().flatten() {
+                                    let attr_key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                                    if attr_key == "xmlns" {
+                                        return String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                }
+                                "custom:".to_string()
+                            });
+                        current_name = local_name.clone();
+                        current_value.clear();
+                        in_value = true;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(quick_xml::events::Event::Empty(ref e)) => {
+                let local_name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+
+                for attr in e.attributes().flatten() {
+                    let attr_key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                    let attr_val = String::from_utf8_lossy(&attr.value).to_string();
+                    if attr_key.starts_with("xmlns:") {
+                        let prefix = attr_key.strip_prefix("xmlns:").unwrap().to_string();
+                        ns_map.insert(prefix, attr_val);
+                    }
+                }
+
+                if in_prop && (in_set || in_remove) && local_name != "prop" && local_name != "set" && local_name != "remove" {
+                    let prefix = e.name().prefix()
+                        .map(|p| String::from_utf8_lossy(p.as_ref()).to_string());
+
+                    let ns = prefix
+                        .and_then(|p| ns_map.get(&p).cloned())
+                        .unwrap_or_else(|| {
+                            for attr in e.attributes().flatten() {
+                                let attr_key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                                if attr_key == "xmlns" {
+                                    return String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                            }
+                            "custom:".to_string()
+                        });
+
+                    if in_remove {
+                        ops.push(PropPatchOp::Remove {
+                            namespace: ns,
+                            name: local_name,
+                        });
+                    } else if in_set {
+                        ops.push(PropPatchOp::Set {
+                            namespace: ns,
+                            name: local_name,
+                            value: String::new(),
+                        });
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::Text(ref e)) => {
+                if in_value {
+                    if let Ok(text) = e.unescape() {
+                        current_value.push_str(&text);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::End(ref e)) => {
+                let local_name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                match local_name.as_str() {
+                    "set" => { in_set = false; }
+                    "remove" => { in_remove = false; }
+                    "prop" => { in_prop = false; }
+                    _ if in_value && local_name == current_name => {
+                        in_value = false;
+                        if in_set {
+                            ops.push(PropPatchOp::Set {
+                                namespace: current_ns.clone(),
+                                name: current_name.clone(),
+                                value: current_value.clone(),
+                            });
+                        } else if in_remove {
+                            ops.push(PropPatchOp::Remove {
+                                namespace: current_ns.clone(),
+                                name: current_name.clone(),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    ops
+}
+
+// ─── Chunked Upload (Nextcloud v2 protocol) ─────────────────────────────────
+
+/// Handler for /dav/uploads/<user>/<session>/*
+async fn uploads_handler(
+    State(state): State<SharedDavState>,
+    method: Method,
+    path: Option<Path<String>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let path_str = path.map(|Path(p)| p).unwrap_or_default();
+    let rel_path = path_str.trim_start_matches('/');
+
+    // Parse the path: <user>/<session-id>[/<chunk-number>]
+    let parts: Vec<&str> = rel_path.splitn(3, '/').collect();
+
+    match method.as_str() {
+        "MKCOL" => {
+            // Create upload session: MKCOL /dav/uploads/<user>/<session-id>/
+            if parts.len() < 2 {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            let session_id = parts[1];
+
+            // Check disk space if OC-Total-Length header is present
+            if let Some(total_len) = headers.get("oc-total-length")
+                .or_else(|| headers.get("OC-Total-Length"))
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                if let Ok(stats) = fs2::available_space(&state.uploads_root) {
+                    if stats < total_len + 1024 * 1024 { // 1MB buffer
+                        return (StatusCode::INSUFFICIENT_STORAGE, "Insufficient disk space").into_response();
+                    }
+                }
+            }
+
+            let staging_dir = state.uploads_root.join(session_id);
+            if let Err(e) = tokio::fs::create_dir_all(&staging_dir).await {
+                warn!(error = %e, "Failed to create upload staging dir");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+
+            // Record in DB
+            let now = jiff::Zoned::now();
+            let now_str = now.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            let expires = now.checked_add(jiff::SignedDuration::from_hours(24))
+                .map(|e| e.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string())
+                .unwrap_or_else(|_| now_str.clone());
+
+            let total_size: Option<i64> = headers.get("oc-total-length")
+                .or_else(|| headers.get("OC-Total-Length"))
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok());
+
+            {
+                let db = state.db.lock().unwrap();
+                db.execute(
+                    "INSERT OR REPLACE INTO chunked_uploads (session_id, destination_path, total_size, bytes_received, chunk_count, created_at, expires_at, staging_dir)
+                     VALUES (?1, '', ?2, 0, 0, ?3, ?4, ?5)",
+                    rusqlite::params![session_id, total_size, now_str, expires, staging_dir.to_string_lossy()],
+                ).ok();
+            }
+
+            info!(session = session_id, "Chunked upload session created");
+            StatusCode::CREATED.into_response()
+        }
+        "PUT" => {
+            // Upload chunk: PUT /dav/uploads/<user>/<session-id>/<chunk-number>
+            if parts.len() < 3 {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            let session_id = parts[1];
+            let chunk_name = parts[2];
+
+            let staging_dir = state.uploads_root.join(session_id);
+            if !staging_dir.exists() {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+
+            let chunk_path = staging_dir.join(chunk_name);
+
+            // Stream chunk to disk
+            let content = match axum::body::to_bytes(body, 10 * 1024 * 1024 * 1024).await {
+                Ok(bytes) => bytes,
+                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+            };
+
+            let chunk_size = content.len() as i64;
+            if let Err(e) = tokio::fs::write(&chunk_path, &content).await {
+                warn!(error = %e, "Failed to write chunk");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+
+            // Update session tracking
+            {
+                let db = state.db.lock().unwrap();
+                db.execute(
+                    "UPDATE chunked_uploads SET bytes_received = bytes_received + ?1, chunk_count = chunk_count + 1 WHERE session_id = ?2",
+                    rusqlite::params![chunk_size, session_id],
+                ).ok();
+            }
+
+            info!(session = session_id, chunk = chunk_name, size = chunk_size, "Chunk uploaded");
+            StatusCode::CREATED.into_response()
+        }
+        "MOVE" => {
+            // Finalize: MOVE /dav/uploads/<user>/<session-id>/ to /dav/files/<destination>
+            if parts.len() < 2 {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            let session_id = parts[1];
+            let staging_dir = state.uploads_root.join(session_id);
+
+            if !staging_dir.exists() {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+
+            // Get destination from headers
+            let dest = match headers.get("destination")
+                .and_then(|v| v.to_str().ok())
+            {
+                Some(d) => {
+                    if let Some(idx) = d.find("/dav/files/") {
+                        d[idx + "/dav/files/".len()..].trim_end_matches('/').to_string()
+                    } else {
+                        d.trim_start_matches('/').trim_end_matches('/').to_string()
+                    }
+                }
+                None => return StatusCode::BAD_REQUEST.into_response(),
+            };
+
+            // Assemble chunks in order
+            let mut chunk_files: Vec<String> = Vec::new();
+            if let Ok(mut entries) = tokio::fs::read_dir(&staging_dir).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    chunk_files.push(entry.file_name().to_string_lossy().to_string());
+                }
+            }
+            chunk_files.sort_by(|a, b| {
+                let a_num: u64 = a.parse().unwrap_or(0);
+                let b_num: u64 = b.parse().unwrap_or(0);
+                a_num.cmp(&b_num)
+            });
+
+            let dest_path = state.files_root.join(&dest);
+            if let Some(parent) = dest_path.parent() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+
+            // Assemble into destination file
+            let tmp_path = dest_path.with_extension("tmp_tilde_chunked");
+            let mut total_size: u64 = 0;
+            let mut hasher = Sha256::new();
+
+            {
+                use tokio::io::AsyncWriteExt;
+                let mut file = match tokio::fs::File::create(&tmp_path).await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        warn!(error = %e, "Failed to create assembled file");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                };
+
+                for chunk_name in &chunk_files {
+                    let chunk_path = staging_dir.join(chunk_name);
+                    let chunk_data = match tokio::fs::read(&chunk_path).await {
+                        Ok(d) => d,
+                        Err(e) => {
+                            warn!(error = %e, chunk = %chunk_name, "Failed to read chunk");
+                            let _ = tokio::fs::remove_file(&tmp_path).await;
+                            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                        }
+                    };
+                    total_size += chunk_data.len() as u64;
+                    hasher.update(&chunk_data);
+                    if let Err(e) = file.write_all(&chunk_data).await {
+                        warn!(error = %e, "Failed to write to assembled file");
+                        let _ = tokio::fs::remove_file(&tmp_path).await;
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                }
+
+                if let Err(e) = file.flush().await {
+                    warn!(error = %e, "Failed to flush assembled file");
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
+
+            // Atomic rename to destination
+            if let Err(e) = tokio::fs::rename(&tmp_path, &dest_path).await {
+                warn!(error = %e, "Failed to rename assembled file to destination");
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+
+            let sha256 = format!("{:x}", hasher.finalize());
+            let etag = sha256[..16].to_string();
+            let content_type = mime_from_path(&dest);
+            let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+
+            // Record in files table
+            {
+                let db = state.db.lock().unwrap();
+                let file_name = std::path::Path::new(&dest)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let parent_path = std::path::Path::new(&dest)
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                let existing_id: Option<String> = db.query_row(
+                    "SELECT id FROM files WHERE path = ?1", [&dest], |row| row.get(0),
+                ).ok();
+                let id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+
+                db.execute(
+                    "INSERT INTO files (id, path, parent_path, name, size_bytes, content_type, etag, sha256, is_directory, created_at, modified_at, hlc)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11)
+                     ON CONFLICT(path) DO UPDATE SET
+                        size_bytes = excluded.size_bytes,
+                        content_type = excluded.content_type,
+                        etag = excluded.etag,
+                        sha256 = excluded.sha256,
+                        modified_at = excluded.modified_at,
+                        hlc = excluded.hlc",
+                    rusqlite::params![id, dest, parent_path, file_name, total_size, content_type, etag, sha256, now, now, now],
+                ).ok();
+
+                // Clean up upload session
+                db.execute("DELETE FROM chunked_uploads WHERE session_id = ?1", [session_id]).ok();
+            }
+
+            // Remove staging directory
+            tokio::fs::remove_dir_all(&staging_dir).await.ok();
+
+            info!(session = session_id, dest = %dest, size = total_size, "Chunked upload finalized");
+
+            let mut resp_headers = HeaderMap::new();
+            resp_headers.insert(header::ETAG, HeaderValue::from_str(&format!("\"{}\"", etag)).unwrap());
+
+            (StatusCode::CREATED, resp_headers).into_response()
+        }
+        _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+    }
 }
 
 // ---- Helper functions ----
@@ -551,6 +1019,7 @@ struct PropfindResponse {
     etag: String,
     modified: String,
     oc_id: String,
+    custom_properties: Vec<(String, String, String)>, // (namespace, name, value)
 }
 
 fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> PropfindResponse {
@@ -579,6 +1048,28 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
         ).unwrap_or_else(|_| (Uuid::new_v4().to_string(), format!("{:x}", size)))
     };
 
+    // Load custom properties
+    let custom_properties = {
+        let db = state.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT namespace, name, value FROM file_properties WHERE file_path = ?1"
+        ).ok();
+        match stmt.as_mut() {
+            Some(stmt) => {
+                stmt.query_map([rel_path], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                }).ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+            }
+            None => Vec::new(),
+        }
+    };
+
     PropfindResponse {
         href: href.to_string(),
         is_dir,
@@ -587,6 +1078,7 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
         etag,
         modified,
         oc_id,
+        custom_properties,
     }
 }
 
@@ -615,6 +1107,17 @@ fn build_multistatus_xml(responses: &[PropfindResponse]) -> String {
         xml.push_str(&format!("        <oc:fileid>{}</oc:fileid>\n", escape_xml(&resp.oc_id)));
         xml.push_str("        <oc:permissions>RDNVCK</oc:permissions>\n");
         xml.push_str(&format!("        <oc:size>{}</oc:size>\n", resp.size));
+
+        // Custom properties
+        for (ns, name, value) in &resp.custom_properties {
+            if ns == "DAV:" {
+                xml.push_str(&format!("        <d:{}>{}</d:{}>\n",
+                    escape_xml(name), escape_xml(value), escape_xml(name)));
+            } else {
+                xml.push_str(&format!("        <x:{} xmlns:x=\"{}\">{}</x:{}>\n",
+                    escape_xml(name), escape_xml(ns), escape_xml(value), escape_xml(name)));
+            }
+        }
 
         xml.push_str("      </d:prop>\n");
         xml.push_str("      <d:status>HTTP/1.1 200 OK</d:status>\n");

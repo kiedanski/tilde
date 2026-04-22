@@ -92,6 +92,29 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     let files_root = config.data_dir().join("files");
     std::fs::create_dir_all(&files_root)?;
 
+    let uploads_root = config.data_dir().join("uploads");
+    std::fs::create_dir_all(&uploads_root)?;
+
+    // Cleanup expired upload sessions on startup
+    {
+        let now_str = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        let mut stmt = conn.prepare(
+            "SELECT session_id, staging_dir FROM chunked_uploads WHERE expires_at < ?1"
+        )?;
+        let expired: Vec<(String, String)> = stmt.query_map([&now_str], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?.filter_map(|r| r.ok()).collect();
+
+        for (session_id, staging_dir) in &expired {
+            let _ = std::fs::remove_dir_all(staging_dir);
+            info!(session = %session_id, "Cleaned up expired upload session");
+        }
+        if !expired.is_empty() {
+            conn.execute("DELETE FROM chunked_uploads WHERE expires_at < ?1", [&now_str])?;
+            info!(count = expired.len(), "Expired upload sessions cleaned up");
+        }
+    }
+
     let db_arc: std::sync::Arc<Mutex<rusqlite::Connection>> = Arc::new(Mutex::new(conn));
 
     let state: SharedState = Arc::new(AppState {
@@ -99,11 +122,13 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         db: db_arc.clone(),
         start_time: Instant::now(),
         login_attempts: Mutex::new(std::collections::HashMap::new()),
+        login_flows: Mutex::new(std::collections::HashMap::new()),
     });
 
     let dav_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
         db: db_arc,
         files_root,
+        uploads_root,
     });
 
     let app = build_router(state, dav_state);
