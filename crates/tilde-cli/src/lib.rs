@@ -93,9 +93,21 @@ pub enum Commands {
         command: BackupCommands,
     },
     /// Export data
-    Export { path: String },
+    Export {
+        #[command(subcommand)]
+        command: ExportCommands,
+    },
     /// Import data
-    Import { path: String },
+    Import {
+        /// Path to import from
+        path: String,
+        /// Verify export before importing
+        #[arg(long)]
+        verify_first: bool,
+        /// Show what would be imported without doing it
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Notification management
     Notifications {
         #[command(subcommand)]
@@ -349,6 +361,23 @@ pub enum TrackersCommands {
         format: String,
         #[arg(long)]
         limit: Option<u32>,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub enum ExportCommands {
+    /// Export data to directory
+    Run {
+        /// Output directory path
+        path: String,
+        /// Selective export: comma-separated types (photos, notes, calendars, contacts, collections, email)
+        #[arg(long)]
+        only: Option<String>,
+    },
+    /// Verify an existing export
+    Verify {
+        /// Path to export directory to verify
+        path: String,
     },
 }
 

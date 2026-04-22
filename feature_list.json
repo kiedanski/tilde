@@ -1895,7 +1895,7 @@
       "Step 2: Run `tilde backup status`",
       "Step 3: Verify output includes last backup time, next scheduled, repository size"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1915,7 +1915,7 @@
       "Step 12: Verify manifest.json maps all UUIDs correctly",
       "Step 13: Verify links.json contains cross-reference index"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1926,7 +1926,7 @@
       "Step 3: Verify only photos/ and notes/ directories created",
       "Step 4: Verify calendars/ and contacts/ NOT present"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1959,7 +1959,7 @@
       "Step 4: Remove a file from export",
       "Step 5: Run verify again \u2192 verify missing file detected"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1971,7 +1971,7 @@
       "Step 4: Verify data imported correctly",
       "Step 5: Verify UUID stability via manifest.json"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

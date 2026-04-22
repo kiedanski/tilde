@@ -60,6 +60,17 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Contacts { command }) => {
             commands::run_contacts(config_path.as_deref(), command).await
         }
+        Some(Commands::Export { command }) => {
+            commands::run_export(config_path.as_deref(), command).await
+        }
+        Some(Commands::Import {
+            path,
+            verify_first,
+            dry_run,
+        }) => commands::run_import(config_path.as_deref(), &path, verify_first, dry_run).await,
+        Some(Commands::Backup { command }) => {
+            commands::run_backup(config_path.as_deref(), command).await
+        }
         None => {
             println!("tilde — Personal Cloud Server");
             println!("Run `tilde --help` for usage information.");
