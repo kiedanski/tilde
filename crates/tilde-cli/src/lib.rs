@@ -1,6 +1,7 @@
 //! tilde-cli: clap CLI with all subcommands
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::{Shell, generate};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -104,6 +105,19 @@ pub enum Commands {
         #[command(subcommand)]
         command: UpdateCommands,
     },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
+    },
+}
+
+impl Cli {
+    /// Generate shell completions and write to stdout
+    pub fn print_completions(shell: Shell) {
+        let mut cmd = Cli::command();
+        generate(shell, &mut cmd, "tilde", &mut std::io::stdout());
+    }
 }
 
 #[derive(clap::Subcommand)]

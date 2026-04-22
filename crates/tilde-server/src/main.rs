@@ -1,5 +1,5 @@
 use clap::Parser;
-use tilde_cli::{Cli, Commands};
+use tilde_cli::{Cli, Commands, NotesCommands};
 
 mod commands;
 
@@ -22,6 +22,11 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Diagnose) => commands::run_diagnose(config_path.as_deref()).await,
         Some(Commands::Auth { command }) => commands::run_auth(config_path.as_deref(), command).await,
         Some(Commands::Mcp { command }) => commands::run_mcp(config_path.as_deref(), command).await,
+        Some(Commands::Completions { shell }) => {
+            Cli::print_completions(shell);
+            Ok(())
+        }
+        Some(Commands::Notes { command }) => commands::run_notes(config_path.as_deref(), command).await,
         None => {
             println!("tilde — Personal Cloud Server");
             println!("Run `tilde --help` for usage information.");

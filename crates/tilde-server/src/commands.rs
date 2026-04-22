@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::info;
-use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands};
+use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands, NotesCommands};
 use tilde_core::{config::Config, db, auth};
 use tilde_server::{AppState, build_router, SharedState};
 use tilde_dav;
@@ -91,6 +91,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     let files_root = config.data_dir().join("files");
     std::fs::create_dir_all(&files_root)?;
+    std::fs::create_dir_all(files_root.join("notes"))?;
 
     let uploads_root = config.data_dir().join("uploads");
     std::fs::create_dir_all(&uploads_root)?;
@@ -406,6 +407,131 @@ pub async fn run_mcp(config_path: Option<&str>, command: McpCommands) -> anyhow:
                 let (token_name, tool_name, duration, time) = row?;
                 println!("{:<15} {:<25} {:<8} {:<20}", token_name, tool_name, format!("{}ms", duration), time);
             }
+        }
+    }
+    Ok(())
+}
+
+pub async fn run_notes(config_path: Option<&str>, command: NotesCommands) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let conn = db::init_db(config.db_path().to_str().unwrap())?;
+    let migrations_dir = tilde_cli::find_migrations_dir();
+    db::run_migrations(&conn, &migrations_dir)?;
+
+    let notes_dir = config.data_dir().join("files/notes");
+
+    match command {
+        NotesCommands::Search { query } => {
+            // First, rebuild FTS index from disk
+            index_notes_fts(&conn, &notes_dir)?;
+
+            // Search FTS
+            let mut stmt = conn.prepare(
+                "SELECT path, snippet(notes_fts, 2, '[', ']', '...', 30) FROM notes_fts WHERE notes_fts MATCH ?1 ORDER BY rank LIMIT 20"
+            )?;
+            let results: Vec<(String, String)> = stmt.query_map([&query], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?.filter_map(|r| r.ok()).collect();
+
+            if results.is_empty() {
+                println!("No notes found matching '{}'", query);
+            } else {
+                for (path, snippet) in &results {
+                    println!("{}", path);
+                    println!("  {}", snippet);
+                    println!();
+                }
+                println!("{} note(s) found", results.len());
+            }
+        }
+        NotesCommands::List { path } => {
+            let target = match &path {
+                Some(p) => notes_dir.join(p),
+                None => notes_dir.clone(),
+            };
+
+            if !target.exists() {
+                println!("Notes directory not found: {}", target.display());
+                return Ok(());
+            }
+
+            list_notes_recursive(&target, &notes_dir)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn index_notes_fts(conn: &rusqlite::Connection, notes_dir: &std::path::Path) -> anyhow::Result<()> {
+    // Clear and rebuild
+    conn.execute("DELETE FROM notes_fts", [])?;
+
+    if !notes_dir.exists() {
+        return Ok(());
+    }
+
+    fn walk_and_index(conn: &rusqlite::Connection, dir: &std::path::Path, base: &std::path::Path) -> anyhow::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk_and_index(conn, &path, base)?;
+            } else if path.extension().map(|e| e == "md").unwrap_or(false) {
+                let rel_path = path.strip_prefix(base)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
+
+                // Extract title from first heading or filename
+                let title = content.lines()
+                    .find(|l| l.starts_with("# "))
+                    .map(|l| l.trim_start_matches("# ").to_string())
+                    .unwrap_or_else(|| {
+                        path.file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    });
+
+                conn.execute(
+                    "INSERT INTO notes_fts (path, title, content) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![rel_path, title, content],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    walk_and_index(conn, notes_dir, notes_dir)?;
+    Ok(())
+}
+
+fn list_notes_recursive(dir: &std::path::Path, base: &std::path::Path) -> anyhow::Result<()> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let rel_path = path.strip_prefix(base)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| path.to_string_lossy().to_string());
+
+        if path.is_dir() {
+            list_notes_recursive(&path, base)?;
+        } else if path.extension().map(|e| e == "md").unwrap_or(false) {
+            let meta = path.metadata()?;
+            let modified = meta.modified()
+                .ok()
+                .map(|t| {
+                    let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                    let ts = jiff::Timestamp::from_second(d.as_secs() as i64)
+                        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+                    ts.strftime("%Y-%m-%d %H:%M").to_string()
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            let size = meta.len();
+            println!("{:<40} {:>8} B  {}", rel_path, size, modified);
         }
     }
     Ok(())

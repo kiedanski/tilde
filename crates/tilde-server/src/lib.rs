@@ -3,7 +3,7 @@
 use axum::{
     Router,
     extract::{ConnectInfo, Path as AxumPath, Query, State},
-    http::{StatusCode, header, HeaderValue, Request},
+    http::{Method, StatusCode, header, HeaderValue, Request},
     middleware::Next,
     response::{IntoResponse, Json, Redirect},
     routing::{any, get, post},
@@ -56,7 +56,15 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
 
     // WebDAV routes
     let dav_router = tilde_dav::build_dav_router(dav_state.clone());
-    let uploads_router = tilde_dav::build_uploads_router(dav_state);
+    let uploads_router = tilde_dav::build_uploads_router(dav_state.clone());
+
+    // Notes DAV — separate DavState pointing to notes directory
+    let notes_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
+        db: dav_state.db.clone(),
+        files_root: dav_state.files_root.join("notes"),
+        uploads_root: dav_state.uploads_root.clone(),
+    });
+    let notes_router = tilde_dav::build_dav_router(notes_state);
 
     Router::new()
         // Public endpoints
@@ -77,8 +85,11 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
         .route("/login/v2/auth", get(login_flow_auth_page).post(login_flow_auth_submit))
         // Authenticated routes
         .merge(authenticated)
+        // Principals (RFC 5397)
+        .route("/principals/{*path}", any(principals_handler))
         // WebDAV
         .nest_service("/dav/files", dav_router)
+        .nest_service("/dav/notes", notes_router)
         .nest_service("/dav/uploads", uploads_router)
         // Middleware
         .layer(TraceLayer::new_for_http())
@@ -407,6 +418,42 @@ async fn remote_php_dav_redirect(AxumPath(path): AxumPath<String>) -> impl IntoR
 /// /remote.php/webdav/* → redirect to /dav/files/*
 async fn remote_php_webdav_redirect(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
     Redirect::permanent(&format!("/dav/files/{}", path))
+}
+
+/// PROPFIND /principals/<user>/ — current-user-principal (RFC 5397)
+async fn principals_handler(
+    method: Method,
+    path: Option<AxumPath<String>>,
+) -> axum::response::Response {
+    if method.as_str() != "PROPFIND" {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+
+    let _path = path.map(|AxumPath(p)| p).unwrap_or_default();
+
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>/principals/admin/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:current-user-principal>
+          <d:href>/principals/admin/</d:href>
+        </d:current-user-principal>
+        <d:resourcetype>
+          <d:principal/>
+        </d:resourcetype>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"#;
+
+    (
+        StatusCode::MULTI_STATUS,
+        [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
+        xml.to_string(),
+    ).into_response()
 }
 
 /// Host header filter — reject requests for unknown hostnames

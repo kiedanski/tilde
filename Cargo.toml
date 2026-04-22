@@ -37,6 +37,7 @@ rusqlite = { version = "0.32", features = ["bundled", "modern_sqlite"] }
 
 # CLI & config
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 figment = { version = "0.10", features = ["toml", "env"] }
 
 # Serialization
