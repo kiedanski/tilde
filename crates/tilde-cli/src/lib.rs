@@ -25,6 +25,10 @@ pub struct Cli {
     /// Increase log verbosity
     #[arg(short, long, global = true)]
     pub verbose: bool,
+
+    /// Skip confirmation prompts (for scripting)
+    #[arg(long, short = 'y', global = true)]
+    pub yes: bool,
 }
 
 #[derive(clap::Subcommand)]
@@ -128,6 +132,8 @@ pub enum Commands {
         #[command(subcommand)]
         command: UpdateCommands,
     },
+    /// Install systemd unit file and configure system service
+    Install,
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for

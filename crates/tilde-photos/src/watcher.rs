@@ -97,7 +97,21 @@ pub fn start_watcher(
                         destination,
                     }) => {
                         info!(photo_id = %photo_id, dest = %destination.display(), "File watcher: photo ingested");
-                        // Attempt thumbnail generation
+
+                        // Create a job in the queue for thumbnail generation
+                        {
+                            if let Ok(c) = debounce_conn.lock() {
+                                let _ = crate::create_thumbnail_job(
+                                    &c,
+                                    &photo_id,
+                                    &destination.to_string_lossy(),
+                                    &debounce_cache.to_string_lossy(),
+                                    thumbnail_quality,
+                                );
+                            }
+                        }
+
+                        // Also do thumbnail generation immediately
                         drop(conn);
                         let ext = destination
                             .extension()
@@ -127,6 +141,14 @@ pub fn start_watcher(
                                     if let Ok(c) = debounce_conn.lock() {
                                         let _ = crate::thumbnail::mark_thumbnails_generated(
                                             &c, &photo_id, true, true,
+                                        );
+                                        // Mark job as completed since we did it inline
+                                        let _ = c.execute(
+                                            "UPDATE jobs SET status = 'completed', completed_at = ?1 WHERE job_type = 'thumbnail' AND payload_json LIKE ?2 AND status = 'pending'",
+                                            rusqlite::params![
+                                                jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+                                                format!("%{}%", photo_id),
+                                            ],
                                         );
                                     }
                                 }

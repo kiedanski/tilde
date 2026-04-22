@@ -286,3 +286,122 @@ pub fn index_photo(
 
     Ok(photo_id)
 }
+
+/// Create a thumbnail generation job in the jobs queue.
+/// Returns the job ID.
+pub fn create_thumbnail_job(
+    conn: &Connection,
+    photo_id: &str,
+    file_path: &str,
+    cache_dir: &str,
+    quality: u8,
+) -> anyhow::Result<i64> {
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    let payload = serde_json::json!({
+        "photo_id": photo_id,
+        "file_path": file_path,
+        "cache_dir": cache_dir,
+        "quality": quality,
+    });
+    conn.execute(
+        "INSERT INTO jobs (job_type, payload_json, status, created_at) VALUES ('thumbnail', ?1, 'pending', ?2)",
+        rusqlite::params![payload.to_string(), now],
+    )?;
+    let id = conn.last_insert_rowid();
+    Ok(id)
+}
+
+/// Process pending jobs from the jobs queue.
+/// Returns the number of jobs processed.
+pub fn process_pending_jobs(
+    conn: &Connection,
+    max_jobs: usize,
+) -> anyhow::Result<usize> {
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+
+    let mut processed = 0;
+    for _ in 0..max_jobs {
+        // Fetch next pending job
+        let job = conn.query_row(
+            "SELECT id, job_type, payload_json, attempts, max_attempts FROM jobs WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        );
+
+        let (job_id, job_type, payload_json, attempts, max_attempts) = match job {
+            Ok(j) => j,
+            Err(rusqlite::Error::QueryReturnedNoRows) => break,
+            Err(e) => return Err(e.into()),
+        };
+
+        // Mark as running
+        conn.execute(
+            "UPDATE jobs SET status = 'running', started_at = ?1, attempts = attempts + 1 WHERE id = ?2",
+            rusqlite::params![now, job_id],
+        )?;
+
+        let result = match job_type.as_str() {
+            "thumbnail" => process_thumbnail_job(&payload_json),
+            _ => Err(anyhow::anyhow!("Unknown job type: {}", job_type)),
+        };
+
+        match result {
+            Ok(()) => {
+                conn.execute(
+                    "UPDATE jobs SET status = 'completed', completed_at = ?1 WHERE id = ?2",
+                    rusqlite::params![now, job_id],
+                )?;
+            }
+            Err(e) => {
+                let error_msg = format!("{}", e);
+                if attempts + 1 >= max_attempts {
+                    conn.execute(
+                        "UPDATE jobs SET status = 'failed', error_message = ?1 WHERE id = ?2",
+                        rusqlite::params![error_msg, job_id],
+                    )?;
+                } else {
+                    conn.execute(
+                        "UPDATE jobs SET status = 'pending', error_message = ?1, started_at = NULL WHERE id = ?2",
+                        rusqlite::params![error_msg, job_id],
+                    )?;
+                }
+            }
+        }
+
+        processed += 1;
+    }
+
+    Ok(processed)
+}
+
+fn process_thumbnail_job(payload_json: &str) -> anyhow::Result<()> {
+    let payload: serde_json::Value = serde_json::from_str(payload_json)?;
+    let photo_id = payload.get("photo_id").and_then(|v| v.as_str()).unwrap_or("");
+    let file_path = payload.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+    let cache_dir = payload.get("cache_dir").and_then(|v| v.as_str()).unwrap_or("");
+    let quality = payload.get("quality").and_then(|v| v.as_u64()).unwrap_or(80) as u8;
+
+    let file = std::path::Path::new(file_path);
+    let cache = std::path::Path::new(cache_dir);
+    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    if is_photo_ext(ext) {
+        thumbnail::generate_thumbnails(file, photo_id, cache, quality)?;
+    } else if is_video_ext(ext) {
+        thumbnail::generate_video_thumbnail(file, photo_id, cache, quality, 60)?;
+    }
+
+    Ok(())
+}

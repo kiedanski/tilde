@@ -2395,6 +2395,7 @@ dependencies = [
  "hex",
  "hmac",
  "jiff",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",

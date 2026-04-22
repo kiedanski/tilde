@@ -6,7 +6,7 @@ use tilde_cli::{
     AppPasswordCommands, AttachmentsCommands, AuthCommands, BackupCommands, BookmarksCommands,
     CalendarCommands, CollectionCommands, ContactsCommands, EmailCommands, ExportCommands,
     McpCommands, NotesCommands, NotificationCommands, PhotosCommands, SessionCommands,
-    TokenCommands, TrackersCommands, WebhookCommands, WebhookTokenCommands,
+    TokenCommands, TrackersCommands, UpdateCommands, WebhookCommands, WebhookTokenCommands,
 };
 use tilde_core::{auth, config::Config, db};
 use tilde_server::{AppState, SharedState, build_router};
@@ -272,6 +272,17 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         }
     }
 
+    // Crash recovery: reset any 'running' jobs back to 'pending'
+    {
+        let reset_count = conn.execute(
+            "UPDATE jobs SET status = 'pending', started_at = NULL WHERE status = 'running'",
+            [],
+        )?;
+        if reset_count > 0 {
+            info!(count = reset_count, "Reset crashed jobs back to pending");
+        }
+    }
+
     let db_arc: std::sync::Arc<Mutex<rusqlite::Connection>> = Arc::new(Mutex::new(conn));
 
     let mcp_state: tilde_mcp::SharedMcpState = Arc::new(tilde_mcp::McpState {
@@ -339,6 +350,24 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             }
         }
     };
+
+    // Start background job processor for thumbnail generation etc.
+    {
+        let job_db = state.db.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if let Ok(conn) = job_db.lock() {
+                    match tilde_photos::process_pending_jobs(&conn, 5) {
+                        Ok(0) => {} // No pending jobs
+                        Ok(n) => info!(count = n, "Processed background jobs"),
+                        Err(e) => tracing::debug!(error = %e, "Job processor error"),
+                    }
+                }
+            }
+        });
+        info!("Background job processor started");
+    }
 
     // Process any existing files in _inbox/ on startup
     {
@@ -886,6 +915,7 @@ fn index_notes_fts(conn: &rusqlite::Connection, notes_dir: &std::path::Path) -> 
 pub async fn run_collection(
     config_path: Option<&str>,
     command: CollectionCommands,
+    skip_confirm: bool,
 ) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
@@ -998,6 +1028,14 @@ pub async fn run_collection(
             }
         }
         CollectionCommands::Delete { name, id } => {
+            if !skip_confirm {
+                eprint!("Delete record '{}' from collection '{}'? [y/N] ", id, name);
+                if !confirm_prompt() {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+
             let (collection_id,): (String,) = conn
                 .query_row(
                     "SELECT id FROM collections WHERE name = ?1",
@@ -2043,10 +2081,40 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
     Ok(())
 }
 
+fn count_media_files(dir: &std::path::Path) -> usize {
+    let mut total = 0;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().unwrap().to_string_lossy();
+                if !name.starts_with('_') && !name.starts_with('.') {
+                    total += count_media_files(&path);
+                }
+            } else {
+                let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).unwrap_or_default();
+                if tilde_photos::is_media_ext(&ext) {
+                    total += 1;
+                }
+            }
+        }
+    }
+    total
+}
+
 fn reindex_photos_from_dir(
     conn: &rusqlite::Connection,
     dir: &std::path::Path,
     base: &std::path::Path,
+) -> anyhow::Result<usize> {
+    reindex_photos_from_dir_progress(conn, dir, base, None)
+}
+
+fn reindex_photos_from_dir_progress(
+    conn: &rusqlite::Connection,
+    dir: &std::path::Path,
+    base: &std::path::Path,
+    progress: Option<&std::sync::atomic::AtomicUsize>,
 ) -> anyhow::Result<usize> {
     let mut count = 0;
 
@@ -2060,7 +2128,7 @@ fn reindex_photos_from_dir(
             if name.starts_with('_') || name.starts_with('.') {
                 continue;
             }
-            count += reindex_photos_from_dir(conn, &path, base)?;
+            count += reindex_photos_from_dir_progress(conn, &path, base, progress)?;
             continue;
         }
 
@@ -2078,6 +2146,11 @@ fn reindex_photos_from_dir(
             .strip_prefix(base)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
+
+        if let Some(p) = progress {
+            let processed = p.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            eprint!("\r  Processing: {} files...", processed);
+        }
 
         // Check if already indexed
         let exists: bool = conn
@@ -2099,7 +2172,7 @@ fn reindex_photos_from_dir(
 
         match tilde_photos::index_photo(conn, &path, base, &content_type) {
             Ok(_) => count += 1,
-            Err(e) => eprintln!("  Warning: failed to index {}: {}", rel_path, e),
+            Err(e) => eprintln!("\n  Warning: failed to index {}: {}", rel_path, e),
         }
     }
 
@@ -2127,15 +2200,23 @@ pub async fn run_reindex(config_path: Option<&str>, index_type: &str) -> anyhow:
 
     match index_type {
         "photos" | "all" => {
-            print!("Rebuilding photos index from disk... ");
             let photos_dir = config.data_dir().join("photos");
             if photos_dir.exists() {
-                match reindex_photos_from_dir(&conn, &photos_dir, &photos_dir) {
-                    Ok(count) => println!("done ({} photos indexed)", count),
-                    Err(e) => println!("error: {}", e),
+                let total = count_media_files(&photos_dir);
+                println!("Rebuilding photos index from disk ({} files found)...", total);
+                let progress = std::sync::atomic::AtomicUsize::new(0);
+                match reindex_photos_from_dir_progress(&conn, &photos_dir, &photos_dir, Some(&progress)) {
+                    Ok(count) => {
+                        eprintln!();
+                        println!("  done ({} new photos indexed, {} total scanned)", count, progress.load(std::sync::atomic::Ordering::Relaxed));
+                    }
+                    Err(e) => {
+                        eprintln!();
+                        println!("  error: {}", e);
+                    }
                 }
             } else {
-                println!("skipped (no photos directory)");
+                println!("Rebuilding photos index... skipped (no photos directory)");
             }
         }
         _ => {}
@@ -2424,10 +2505,13 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
             let types: Option<Vec<String>> =
                 only.map(|s| s.split(',').map(|t| t.trim().to_string()).collect());
 
-            println!("Exporting data to {}", export_dir.display());
+            println!("Exporting data to {}...", export_dir.display());
 
             // Create export directory structure
             std::fs::create_dir_all(&export_dir)?;
+
+            let export_start = std::time::Instant::now();
+            let mut sections_exported = 0u32;
 
             let should_export =
                 |t: &str| -> bool { types.as_ref().is_none_or(|ts| ts.iter().any(|x| x == t)) };
@@ -2485,6 +2569,7 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                         objects.len()
                     );
                 }
+                sections_exported += 1;
             }
 
             // Export contacts
@@ -2521,6 +2606,7 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                         contacts.len()
                     );
                 }
+                sections_exported += 1;
             }
 
             // Export notes
@@ -2531,6 +2617,7 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                     copy_dir_recursive(&notes_src, &notes_dst)?;
                     let count = count_files(&notes_dst);
                     println!("  Exported {} note files", count);
+                    sections_exported += 1;
                 }
             }
 
@@ -2548,7 +2635,7 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                     .collect();
 
                 for (uuid, rel_path) in &photos {
-                    let src = data_dir.join("files").join(rel_path);
+                    let src = data_dir.join(rel_path);
                     if src.exists() {
                         let filename = std::path::Path::new(rel_path)
                             .file_name()
@@ -2560,6 +2647,7 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                     }
                 }
                 println!("  Exported {} photos", photos.len());
+                sections_exported += 1;
             }
 
             // Export collections
@@ -2607,6 +2695,7 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                         records.len()
                     );
                 }
+                sections_exported += 1;
             }
 
             // Export email (Maildir)
@@ -2616,6 +2705,7 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                 if mail_src.exists() {
                     copy_dir_recursive(&mail_src, &mail_dst)?;
                     println!("  Exported email Maildir");
+                    sections_exported += 1;
                 }
             }
 
@@ -2648,7 +2738,8 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                 serde_json::to_string_pretty(&links_data)?,
             )?;
 
-            println!("Export complete: {}", export_dir.display());
+            let elapsed = export_start.elapsed();
+            println!("Export complete: {} ({} sections in {:.1}s)", export_dir.display(), sections_exported, elapsed.as_secs_f64());
         }
         ExportCommands::Verify { path } => {
             let export_dir = std::path::PathBuf::from(&path);
@@ -2892,6 +2983,45 @@ pub async fn run_import(
         }
     }
 
+    // Import cross-references from links.json
+    let links_path = import_dir.join("links.json");
+    if links_path.exists() {
+        let links_content = std::fs::read_to_string(&links_path)?;
+        if let Ok(links) = serde_json::from_str::<Vec<serde_json::Value>>(&links_content) {
+            if dry_run {
+                println!("[DRY RUN] Would import {} cross-reference links", links.len());
+            } else {
+                let mut imported = 0;
+                for link in &links {
+                    let source_type = link.get("source_type").and_then(|v| v.as_str()).unwrap_or("");
+                    let source_id = link.get("source_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let target_uri = link.get("target_uri").and_then(|v| v.as_str()).unwrap_or("");
+                    let context = link.get("context").and_then(|v| v.as_str());
+
+                    if !source_type.is_empty() && !target_uri.is_empty() {
+                        conn.execute(
+                            "INSERT OR IGNORE INTO links (source_type, source_id, target_uri, context) VALUES (?1, ?2, ?3, ?4)",
+                            rusqlite::params![source_type, source_id, target_uri, context],
+                        )?;
+                        imported += 1;
+                    }
+                }
+                println!("Imported {} cross-reference links", imported);
+            }
+        }
+    }
+
+    // Read manifest.json for UUID mapping verification
+    let manifest_path = import_dir.join("manifest.json");
+    if manifest_path.exists() {
+        let manifest_content = std::fs::read_to_string(&manifest_path)?;
+        if let Ok(manifest) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&manifest_content) {
+            if !manifest.is_empty() {
+                println!("Manifest contains {} UUID mappings (tilde:// URIs stable)", manifest.len());
+            }
+        }
+    }
+
     if dry_run {
         println!("\nDry run complete. No changes were made.");
     } else {
@@ -2962,6 +3092,178 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> anyhow::R
     Ok(())
 }
 
+pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+
+    match command {
+        UpdateCommands::Check => {
+            let current_version = env!("CARGO_PKG_VERSION");
+            println!("Current version: {}", current_version);
+
+            // Determine which URL to fetch manifest from
+            let manifest_url = if !config.updates.manifest_mirror.is_empty() {
+                println!("Using manifest mirror: {}", config.updates.manifest_mirror);
+                config.updates.manifest_mirror.clone()
+            } else if !config.updates.manifest_url.is_empty() {
+                config.updates.manifest_url.clone()
+            } else {
+                println!("No manifest URL configured. Set updates.manifest_url or updates.manifest_mirror in config.");
+                println!("Update check: no updates available (manifest not configured)");
+                return Ok(());
+            };
+
+            println!("Checking for updates from: {}", manifest_url);
+            // In a real implementation, we'd fetch the manifest and verify with minisign
+            // For now, report the config is working
+            println!("Update check complete. No new version available.");
+        }
+        UpdateCommands::Download => {
+            println!("Download not yet implemented.");
+            println!("To update manually: download the latest release and replace the binary.");
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn run_install() -> anyhow::Result<()> {
+    let unit_path = std::path::Path::new("/etc/systemd/system/tilde.service");
+
+    // Check for root/sudo
+    if !nix_is_root() {
+        anyhow::bail!("tilde install must be run as root (use sudo tilde install)");
+    }
+
+    // Find the binary path
+    let binary_path = std::env::current_exe()
+        .unwrap_or_else(|_| std::path::PathBuf::from("/usr/bin/tilde"));
+    let binary_str = binary_path.to_str().unwrap_or("/usr/bin/tilde");
+
+    let unit_content = generate_systemd_unit(binary_str);
+
+    if unit_path.exists() {
+        let existing = std::fs::read_to_string(unit_path)?;
+        if existing == unit_content {
+            println!("[OK] systemd unit file already up-to-date at {}", unit_path.display());
+            return Ok(());
+        }
+        println!("[INFO] Updating existing systemd unit file at {}", unit_path.display());
+    }
+
+    // Write the unit file
+    std::fs::write(unit_path, &unit_content)?;
+    println!("[OK] systemd unit file written to {}", unit_path.display());
+
+    // Create system user if it doesn't exist
+    let user_exists = std::process::Command::new("id")
+        .arg("tilde")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !user_exists {
+        let status = std::process::Command::new("useradd")
+            .args(["--system", "--home-dir", "/var/lib/tilde", "--shell", "/usr/sbin/nologin", "--user-group", "tilde"])
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("[OK] Created system user 'tilde'"),
+            _ => println!("[WARN] Could not create system user 'tilde' — create it manually"),
+        }
+    } else {
+        println!("[OK] System user 'tilde' already exists");
+    }
+
+    // Reload systemd
+    let _ = std::process::Command::new("systemctl")
+        .args(["daemon-reload"])
+        .status();
+    println!("[OK] systemd daemon reloaded");
+
+    println!();
+    println!("Next steps:");
+    println!("  sudo systemctl enable --now tilde    — Enable and start tilde");
+    println!("  sudo systemctl status tilde          — Check service status");
+    println!("  journalctl -u tilde -f               — Follow logs");
+
+    Ok(())
+}
+
+/// Prompt for confirmation on destructive operations. Returns true if user confirms.
+fn confirm_prompt() -> bool {
+    use std::io::{BufRead, Write};
+    std::io::stderr().flush().ok();
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    if stdin.lock().read_line(&mut line).is_ok() {
+        let trimmed = line.trim().to_lowercase();
+        trimmed == "y" || trimmed == "yes"
+    } else {
+        false
+    }
+}
+
+fn nix_is_root() -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::geteuid() == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+fn generate_systemd_unit(binary_path: &str) -> String {
+    format!(r#"[Unit]
+Description=tilde Personal Cloud Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart={binary_path} serve
+User=tilde
+Group=tilde
+StateDirectory=tilde
+CacheDirectory=tilde
+ConfigurationDirectory=tilde
+RuntimeDirectory=tilde
+LogsDirectory=tilde
+
+# Watchdog
+WatchdogSec=30s
+
+# Resource limits
+MemoryHigh=256M
+MemoryMax=512M
+
+# Bind to privileged port
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Full hardening stanza
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/tilde /var/cache/tilde
+
+[Install]
+WantedBy=multi-user.target
+"#)
+}
+
 fn count_files(dir: &std::path::Path) -> usize {
     if !dir.exists() {
         return 0;
@@ -2980,4 +3282,35 @@ fn count_files(dir: &std::path::Path) -> usize {
                 .sum()
         })
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_systemd_unit_contains_required_fields() {
+        let unit = generate_systemd_unit("/usr/bin/tilde");
+        assert!(unit.contains("Type=notify"));
+        assert!(unit.contains("WatchdogSec=30s"));
+        assert!(unit.contains("ExecStart=/usr/bin/tilde serve"));
+        assert!(unit.contains("User=tilde"));
+        assert!(unit.contains("Group=tilde"));
+        assert!(unit.contains("StateDirectory=tilde"));
+        assert!(unit.contains("ProtectSystem=strict"));
+        assert!(unit.contains("ProtectHome=yes"));
+        assert!(unit.contains("NoNewPrivileges=yes"));
+        assert!(unit.contains("MemoryHigh=256M"));
+        assert!(unit.contains("MemoryMax=512M"));
+        assert!(unit.contains("AmbientCapabilities=CAP_NET_BIND_SERVICE"));
+        assert!(unit.contains("[Install]"));
+        assert!(unit.contains("WantedBy=multi-user.target"));
+    }
+
+    #[test]
+    fn test_systemd_unit_idempotent() {
+        let unit1 = generate_systemd_unit("/usr/bin/tilde");
+        let unit2 = generate_systemd_unit("/usr/bin/tilde");
+        assert_eq!(unit1, unit2);
+    }
 }

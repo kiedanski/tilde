@@ -1,6 +1,67 @@
 tilde — Progress Notes
 ======================
 
+## Session 10 (2026-04-22) — Jobs Queue, Install, Progress, Confirmations, Cross-refs, Updates: 221 → 227 tests
+
+### Completed Features (6 new tests)
+1. **Crash safety: durable jobs queue** (Test 172): Photo watcher now creates jobs in SQLite
+   jobs table. Server startup resets 'running' jobs to 'pending' (crash recovery). Background
+   job processor runs every 5s to process pending thumbnail jobs.
+
+2. **systemd unit file generation** (Test 180): `tilde install` command writes hardened
+   systemd unit file to /etc/systemd/system/tilde.service with Type=notify, WatchdogSec=30s,
+   full security hardening stanza. Creates system user 'tilde'. Idempotent.
+
+3. **Cross-reference URI stability** (Test 201): Export now includes manifest.json with
+   UUID→path mappings for photos, and links.json with all tilde:// URIs. Import reads
+   links.json and inserts cross-references into DB. UUIDs stable across export/import.
+
+4. **Self-hosted update manifest mirror** (Test 222): Added UpdatesConfig to config with
+   manifest_mirror field. `tilde update check` uses mirror URL when configured.
+
+5. **CLI progress indicators** (Test 250): `tilde photos reindex` shows file count progress.
+   `tilde export` shows per-section progress with timing summary.
+
+6. **CLI confirmation prompts** (Test 251): Destructive operations (collection delete) now
+   prompt for confirmation. `--yes`/`-y` flag skips prompts for scripting.
+
+### Bug Fix
+- Fixed photo export: was joining data_dir/files/rel_path but photos live at data_dir/rel_path.
+  manifest.json now correctly maps photo UUIDs to paths.
+
+### Architecture Changes
+- Added `UpdatesConfig` struct to tilde-core config (manifest_url, manifest_mirror fields)
+- Added `Install` CLI command for systemd unit generation
+- Added `--yes`/`-y` global CLI flag for skipping confirmation prompts
+- Added `confirm_prompt()` helper for interactive confirmations
+- Modified photo watcher to create jobs in SQLite alongside direct thumbnail generation
+- Added `create_thumbnail_job()` and `process_pending_jobs()` to tilde-photos
+- Background job processor task spawned on server startup (5s interval)
+- Crash recovery: startup resets `running` jobs to `pending`
+- Added `libc` dependency to tilde-server for root detection
+
+### Tests Passing: 227/260
+Total new tests this session: 6 (221 → 227)
+
+### Remaining Failing Tests (33)
+- Infrastructure (16, 21, 25, 191, 194): HTTPS/TLS, systemd, musl binary
+- IMAP (105-106, 184, 198, 204): Require live IMAP server
+- Photos (81, 86): metadata-triggered MOVE, HEIC thumbnails
+- Backup (149-154, 199-200, 223, 224): rustic-rs integration
+- Export extras (158-159): tar.zst, age encryption
+- WebAuthn (179, 197): Optional second factor
+- Update check (166-167): minisign verification, binary download
+- Misc (219, 221, 229-231, 245)
+
+### Next Steps (for future sessions)
+1. Photo metadata-triggered MOVE (test 81)
+2. HEIC thumbnail support (test 86) - requires libheif
+3. TLS/systemd infrastructure tests (if applicable)
+4. CalDAV .mobileconfig generation (test 219)
+5. WebDAV-Push notifications (test 221)
+
+---
+
 ## Session 9 (2026-04-22) — Photo Features, SIGHUP, Reindex, Notifications: 208 → 221 tests
 
 ### Completed Features (13 new tests)

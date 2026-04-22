@@ -13,6 +13,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let config_path = cli.config.clone();
+    let skip_confirm = cli.yes;
 
     match cli.command {
         Some(Commands::Init) => commands::run_init(config_path.as_deref()).await,
@@ -31,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
             commands::run_notes(config_path.as_deref(), command).await
         }
         Some(Commands::Collection { command }) => {
-            commands::run_collection(config_path.as_deref(), command).await
+            commands::run_collection(config_path.as_deref(), command, skip_confirm).await
         }
         Some(Commands::Bookmarks { command }) => {
             commands::run_bookmarks(config_path.as_deref(), command).await
@@ -71,13 +72,13 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Backup { command }) => {
             commands::run_backup(config_path.as_deref(), command).await
         }
+        Some(Commands::Install) => commands::run_install().await,
+        Some(Commands::Update { command }) => {
+            commands::run_update(config_path.as_deref(), command).await
+        }
         None => {
             println!("tilde — Personal Cloud Server");
             println!("Run `tilde --help` for usage information.");
-            Ok(())
-        }
-        _ => {
-            println!("Command not yet implemented");
             Ok(())
         }
     }

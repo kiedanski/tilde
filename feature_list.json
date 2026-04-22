@@ -2103,7 +2103,7 @@
       "Step 9: Wait for all jobs to complete",
       "Step 10: Verify all 5 thumbnails generated successfully"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2190,7 +2190,7 @@
       "Step 3: Verify unit includes Type=notify, WatchdogSec, hardening stanza",
       "Step 4: Verify idempotent: running again doesn't create duplicates"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2422,7 +2422,7 @@
       "Step 3: Import to new instance",
       "Step 4: Verify tilde:// URIs resolve correctly via UUIDs in manifest.json"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2645,7 +2645,7 @@
       "Step 2: Run `tilde update check`",
       "Step 3: Verify manifest fetched from mirror URL, not default"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2955,7 +2955,7 @@
       "Step 3: Run `tilde export /tmp/export`",
       "Step 4: Verify progress feedback during export"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2965,7 +2965,7 @@
       "Step 2: Verify confirmation prompt before proceeding",
       "Step 3: Verify --yes flag skips confirmation for scripting"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",

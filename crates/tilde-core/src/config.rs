@@ -26,6 +26,8 @@ pub struct Config {
     pub notes: NotesConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub updates: UpdatesConfig,
 }
 
 impl Config {
@@ -328,6 +330,33 @@ impl Default for McpConfig {
             audit_log_retention_days: default_audit_retention(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdatesConfig {
+    #[serde(default = "default_true")]
+    pub check_enabled: bool,
+    #[serde(default = "default_check_interval")]
+    pub check_interval_hours: u32,
+    #[serde(default)]
+    pub manifest_url: String,
+    #[serde(default)]
+    pub manifest_mirror: String,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            check_enabled: true,
+            check_interval_hours: 24,
+            manifest_url: String::new(),
+            manifest_mirror: String::new(),
+        }
+    }
+}
+
+fn default_check_interval() -> u32 {
+    24
 }
 
 fn default_tool_allowlist() -> Vec<String> {
