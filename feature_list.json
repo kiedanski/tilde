@@ -344,7 +344,7 @@
       "Step 6: Verify output includes certificate expiry date",
       "Step 7: Verify --json flag produces valid JSON output"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -358,7 +358,7 @@
       "Step 6: Verify it checks for exiftool, libheif, ffmpeg dependencies",
       "Step 7: Verify it reports missing dependencies clearly"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1988,7 +1988,7 @@
       "Step 9: Verify cross-references preserved",
       "Step 10: Verify UUIDs are stable between export and import"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2857,7 +2857,7 @@
       "Step 3: Verify timestamps are ISO 8601 with timezone",
       "Step 4: Verify request logs include method, path, status, duration_ms"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2868,7 +2868,7 @@
       "Step 3: Verify timestamps readable",
       "Step 4: Verify reasonable verbosity at info level"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2996,7 +2996,7 @@
       "Step 3: Verify file formats are standard (ICS, VCF, MD, JSON)",
       "Step 4: Verify manifest.json is human-readable"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
