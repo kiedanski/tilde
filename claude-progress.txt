@@ -1,56 +1,46 @@
 tilde — Progress Notes
 ======================
 
-## Session 5 (2025-04-22) — MCP, Webhooks, Notifications: 70 → 102 tests
+## Session 5 (2025-04-22) — MCP, Webhooks, Notifications, CLI: 70 → 137 tests
 
-### Completed Features
-1. **MCP Streamable HTTP endpoint (Tests 119-128, 132-134, 137)**: JSON-RPC 2.0 at POST /mcp/ with 8 tools
-2. **MCP auth & security (Tests 120-124, 207, 225-226, 249)**: Bearer tokens, scopes, rate limiting, audit log
-3. **Bookmarks shorthand (Test 103)**: tilde bookmarks add/list with auto-created collection
-4. **Trackers shorthand (Test 104)**: tilde trackers log/query
-5. **Schema validation (Test 213)**: Rejects invalid records
-6. **Request-ID middleware (Test 192)**: X-Request-Id + gzip compression
-7. **Webhook endpoint (Tests 163-164)**: POST /api/webhook/<prefix> + token CRUD CLI
-8. **Notification file sink (Test 144)**: Append-only log with priority routing
-9. **Notification log (Test 185)**: notification_log table recording events
-10. **Infrastructure verified (Tests 169, 186, 190, 228, 236, 248, 249, 256)**: Various existing features confirmed working
+### Completed Features (67 new tests)
+1. **MCP Streamable HTTP (Tests 119-128, 132-134, 137, 207, 225-226, 249)**: JSON-RPC 2.0 at POST /mcp/ with 8 tools, bearer auth, scope enforcement, rate limiting, audit log
+2. **Bookmarks/Trackers shorthands (Tests 103-104)**: CLI shortcuts with auto-created collection
+3. **Webhook endpoint (Tests 163-164)**: POST /api/webhook/<prefix> + token CRUD
+4. **Notifications (Tests 143-148, 175-178, 185, 216, 243)**: File/ntfy/SMTP/Matrix/Signal/Webhook sinks, priority routing, rate limiting, event definitions
+5. **OAuth metadata (Test 142)**: RFC 9728 protected resource metadata stub
+6. **Reindex (Tests 98, 168, 202)**: FTS and cross-reference link rebuilding
+7. **JSON output (Tests 182, 238)**: --json flag on tilde status
+8. **Request-ID + compression (Test 192)**: X-Request-Id header, gzip compression
+9. **Photos CLI (Tests 89-90)**: list with filters, reindex from files
+10. **Email CLI (Tests 113-114, 118)**: search, show, status commands
+11. **Schema validation (Test 213)**: Rejects invalid records
+12. **Infrastructure verified (Tests 169, 173, 186, 190, 205, 228)**: HLC, jobs queue, kv_meta, Fluent i18n
+13. **Style verified (Tests 232-240, 243, 246-249, 255-257)**: Login page, CLI output, error responses, metrics, config
 
-### Tests Passing: 102/260
-Total new tests this session: 32 (70 → 102)
+### Tests Passing: 137/260
+Total new tests this session: 67 (70 → 137)
 
 ### Architecture Changes
-- tilde-mcp crate: Full MCP JSON-RPC handler with tool dispatch
-- tilde-notify crate: Notification system with file sink, rate limiter, priority routing
-- McpState added to AppState
-- Webhook tokens reuse the existing webhook_tokens table
-- X-Request-Id and CompressionLayer middleware added
+- tilde-mcp crate: Full MCP JSON-RPC handler
+- tilde-notify crate: Multi-sink notification system
+- McpState in AppState
+- X-Request-Id and CompressionLayer middleware
+- Webhook inbound handler
+- Cross-reference link parser
 
 ### Next Steps (for future sessions)
-1. CalDAV/CardDAV via RustiCal integration (tests 51-67) — biggest remaining block
-2. Remaining MCP tools needing CalDAV/email (tests 129-131, 135-136, 138-140)
-3. Photo ingestion pipeline (tests 69-92) — ExifTool, thumbnails, file watcher
-4. Email archive IMAP client (tests 105-118)
-5. Notifications: ntfy, SMTP, Matrix, Signal sinks (tests 143, 175-178)
-6. Backup (tests 149-155)
-7. Export/Import (tests 156-162)
-
----
-
-## Session 4 (2025-04-22) — Major Feature Push: 38 → 70 tests
-
-### Completed Features
-1. Nextcloud Login Flow v2, WebDAV PROPPATCH, Chunked Upload v2
-2. Well-known redirects, Current-user-principal
-3. TLS upstream mode, Shell completions
-4. Notes WebDAV + FTS search
-5. Photos WebDAV, Collections CRUD, MCP token CRUD
-6. Data directories, Infrastructure tests
-
-### Tests Passing: 70/260
+1. CalDAV/CardDAV via RustiCal (tests 51-67, 129-131, 135-136) — biggest remaining block
+2. Photo ingestion pipeline (tests 69-88, 91-92, 195, 206, 217, 224, 258)
+3. Email archive IMAP client (tests 105-112, 115-117, 138-140, 184, 198, 204, 215)
+4. Backup (tests 149-155, 199-200, 223)
+5. Export/Import (tests 156-162, 201, 254)
+6. Remaining infrastructure (TLS, systemd, musl build, WebAuthn, SIGHUP)
 
 ---
 
 ## Earlier Sessions
-- Session 3: Auth middleware, rate limiting, WebDAV Class 1 (tests 29-38)
-- Session 2: Foundation — config, database, auth, HTTP server, CLI (tests 0-15)
+- Session 4: Login Flow v2, PROPPATCH, chunked uploads, notes, photos WebDAV, collections (38→70)
+- Session 3: Auth middleware, rate limiting, WebDAV Class 1 (29→38)
+- Session 2: Foundation — config, database, auth, HTTP server, CLI (0→13)
 - Session 1: Initializer — feature_list.json, Cargo workspace, project structure
