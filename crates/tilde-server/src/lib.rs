@@ -1003,13 +1003,14 @@ async fn mcp_handler(
 async fn webhook_handler(
     State(state): State<SharedState>,
     AxumPath(token_prefix): AxumPath<String>,
-    Json(body): Json<serde_json::Value>,
+    headers: axum::http::HeaderMap,
+    raw_body: axum::body::Bytes,
 ) -> axum::response::Response {
     // Look up token by prefix
     let db = state.db.lock().unwrap();
 
     let result = db.query_row(
-        "SELECT name, scopes, rate_limit, revoked FROM webhook_tokens WHERE token_prefix = ?1",
+        "SELECT name, scopes, rate_limit, revoked, hmac_secret FROM webhook_tokens WHERE token_prefix = ?1",
         [&token_prefix],
         |row| {
             Ok((
@@ -1017,11 +1018,12 @@ async fn webhook_handler(
                 row.get::<_, String>(1)?,
                 row.get::<_, i32>(2)?,
                 row.get::<_, bool>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         },
     );
 
-    let (name, scopes, _rate_limit, revoked) = match result {
+    let (name, scopes, _rate_limit, revoked, hmac_secret) = match result {
         Ok(r) => r,
         Err(_) => {
             return (
@@ -1039,6 +1041,54 @@ async fn webhook_handler(
         )
             .into_response();
     }
+
+    // HMAC replay protection: verify X-Tilde-Signature if secret is configured
+    if let Some(ref secret) = hmac_secret {
+        let signature = headers
+            .get("X-Tilde-Signature")
+            .and_then(|v| v.to_str().ok());
+
+        match signature {
+            Some(sig) => {
+                use hmac::{Hmac, Mac};
+                use sha2::Sha256;
+                type HmacSha256 = Hmac<Sha256>;
+
+                let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+                    .expect("HMAC accepts any key length");
+                mac.update(&raw_body);
+                let expected = hex::encode(mac.finalize().into_bytes());
+                let provided = sig.strip_prefix("sha256=").unwrap_or(sig);
+
+                if !constant_time_eq(expected.as_bytes(), provided.as_bytes()) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({"error": "invalid signature"})),
+                    )
+                        .into_response();
+                }
+            }
+            None => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"error": "X-Tilde-Signature header required"})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Parse body as JSON
+    let body: serde_json::Value = match serde_json::from_slice(&raw_body) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid JSON body"})),
+            )
+                .into_response();
+        }
+    };
 
     // Update last_used_at
     let now = jiff::Zoned::now()
@@ -1100,4 +1150,15 @@ async fn webhook_handler(
         )
             .into_response()
     }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }

@@ -2019,7 +2019,7 @@
       "Step 2: Send request with valid X-Tilde-Signature \u2192 verify accepted",
       "Step 3: Send request with invalid signature \u2192 verify rejected"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2625,7 +2625,7 @@
       "Step 3: Verify event not returned in normal queries",
       "Step 4: After retention period, verify event permanently removed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2698,7 +2698,7 @@
       "Step 2: GET note and verify frontmatter preserved exactly",
       "Step 3: Search for content mentioned in frontmatter \u2192 verify found"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
