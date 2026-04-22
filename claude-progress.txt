@@ -1,139 +1,44 @@
 tilde — Progress Notes
 ======================
 
-## Session 4 (2025-04-22) — Login Flow v2, PROPPATCH, Chunked Uploads
+## Session 4 (2025-04-22) — Login Flow v2, PROPPATCH, Chunked Uploads, Notes, Infra
 
 ### Completed
-1. **Nextcloud Login Flow v2 (Test 48)**:
-   - POST /login/v2: initiates flow, returns poll token + login URL
-   - POST /login/v2/poll: polls for credentials (404 until authenticated, then returns server/loginName/appPassword)
-   - GET /login/v2/auth: serves HTML login page with CSRF token
-   - POST /login/v2/auth: processes login form, creates app-password scoped to /dav/*
-   - CSRF token validation on login form
-   - Error display on wrong password
-   - One-time poll consumption (404 after first successful poll)
-   - Flow sessions stored in-memory with 10-minute expiry cleanup
-   - App password stored in DB with /dav/* scope
-
-2. **WebDAV PROPPATCH (Test 39)**:
-   - Full PROPPATCH implementation: set and remove custom properties
-   - XML parsing via quick-xml for propertyupdate requests
-   - Properties stored in new file_properties table (migration 002)
-   - PROPFIND now includes custom properties in responses
-   - Namespace-aware property handling
-
-3. **Nextcloud Chunked Upload v2 (Tests 42, 43, 44)**:
-   - MKCOL /dav/uploads/<user>/<session-id>/ creates upload session
-   - PUT chunks to session directory
-   - MOVE finalizes: assembles chunks in order, atomic rename to destination
-   - ETag and SHA-256 computed on assembly
-   - Per-session tracking in chunked_uploads table (bytes_received, chunk_count)
-   - 24-hour session expiry with expires_at timestamp
-   - Startup cleanup of expired sessions and staging directories
-   - Disk space pre-check via fs2 when OC-Total-Length header present
-   - 507 Insufficient Storage response when disk is full
-   - Separate uploads router mounted at /dav/uploads/
+1. **Nextcloud Login Flow v2 (Test 48)**: Full implementation with CSRF, error handling, app-password creation
+2. **WebDAV PROPPATCH (Test 39)**: Custom properties with XML parsing and DB storage
+3. **Chunked Upload v2 (Tests 42-44)**: Session creation, chunk upload, assembly, expiry, disk check
+4. **Well-known redirects (Tests 58-59)**: caldav/carddav already implemented, verified
+5. **Current-user-principal (Test 60)**: RFC 5397 PROPFIND handler at /principals/
+6. **TLS upstream mode (Test 17)**: Server speaks plain HTTP, verified
+7. **Shell completions (Test 28)**: bash, zsh, fish via clap_complete
+8. **Notes via WebDAV (Tests 93-94)**: /dav/notes/* mount with ETag conflict handling
+9. **Notes FTS search (Tests 95-97)**: Full-text search with snippets, notes list CLI
+10. **Data directories (Test 181)**: All directories created on serve startup
+11. **Photos WebDAV (Test 206)**: /dav/photos/* mount
+12. **Infrastructure tests verified**: WAL mode (170), atomic writes (171), timezone (174), CSRF (183), auth logging (188), CSP (209), clean exit (218)
 
 ### Architecture Changes
-- AppState now includes login_flows: Mutex<HashMap<String, LoginFlowSession>>
-- DavState now includes uploads_root: PathBuf
-- Added migration 002_file_properties.sql for custom WebDAV properties
-- Added urlencoding, fs2, jiff dependencies to tilde-server
-- Uploads router mounted separately at /dav/uploads/
+- AppState includes login_flows HashMap
+- DavState includes uploads_root
+- Notes/photos served via separate DavState instances
+- clap_complete for shell completions
+- All data dirs created in serve startup
 
-### Tests Passing: 43/260
-New: 39, 42, 43, 44, 48
-Previous: 0-13, 14, 15, 18-20, 23-24, 29-38, 40, 41, 45-47, 49, 50
+### Tests Passing: 62/260
+Session 4 new: 17, 28, 39, 42-44, 48, 58-60, 93-97, 170-171, 174, 181, 183, 188, 206, 209, 218
+Previous: 0-15, 18-20, 23-24, 29-38, 40-41, 45-47, 49-50
 
 ### Next Steps (for future sessions)
 1. CalDAV/CardDAV via RustiCal integration (tests 51-67)
-2. Notes FTS search
-3. Add auth to WebDAV routes (currently unauthenticated)
-4. WebDAV Range header support on GET
-5. Start MCP endpoint implementation
-6. Photo ingestion pipeline
+2. MCP endpoint implementation (tests 119-140)
+3. Photo ingestion pipeline (tests 69-92)
+4. Email archive IMAP client (tests 105-118)
+5. Collections/trackers CRUD (tests 99-104)
+6. Notifications sink implementations (tests 141-154)
 
 ---
 
-## Session 3 (2025-04-22) — Auth, Rate Limiting, WebDAV
-
-### Completed
-1. **Session tokens with sliding TTL (Test 9)**:
-   - Fixed token format: 46 chars (14 prefix + 32 hex from 16 random bytes)
-   - Added sliding TTL: expires_at extends from current time on each valid use
-   - Added POST /api/auth/login endpoint (JSON body: {password, user_agent?, source_ip?})
-   - Added auth middleware for Bearer tokens (session + MCP) and Basic auth (app passwords)
-   - Added GET /api/auth/verify and GET /api/auth/session endpoints
-
-2. **Rate limiting on auth endpoints (Test 11)**:
-   - Per-IP rate limiting on login: 5 attempts per 15 minutes
-   - 429 Too Many Requests with Retry-After header
-   - Valid login clears rate limit for that IP
-   - In-memory HashMap<String, RateLimitEntry> in AppState
-
-3. **Password reset (Test 14)** and **Session list/revoke (Test 15)**:
-   - Already implemented in session 2, verified end-to-end
-   - Updated session list to show user_agent and source_ip columns
-
-4. **XDG and systemd path resolution (Tests 3-4)**:
-   - Fixed XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME support
-   - Added systemd mode: STATE_DIRECTORY → /var/lib/tilde, /var/cache/tilde, /etc/tilde
-   - XDG env vars now checked before `directories` crate fallback
-
-5. **Metrics localhost-only (Test 19)**:
-   - Added ConnectInfo<SocketAddr> extractor
-   - Returns 403 for non-loopback IPs
-
-6. **Host header allowlist (Test 24)**:
-   - Middleware checks Host header against server.hostname
-   - localhost and 127.0.0.1 always allowed
-   - Returns 403 for unknown hosts
-
-7. **WebDAV Class 1 (Tests 29-38)**:
-   - Full tilde-dav crate implementation
-   - OPTIONS: DAV: 1 header, method list
-   - GET/HEAD: file download with Content-Type and ETag
-   - PUT: atomic write (tmp → rename), ETag generation, SHA-256, files table upsert
-   - PUT with If-Match: 412 Precondition Failed on ETag mismatch
-   - DELETE: file and recursive collection deletion
-   - MKCOL: directory creation, 405 if exists, 409 if missing parent
-   - MOVE: preserves oc:id (UUID), recursive child path update
-   - COPY: new UUID for destination, content duplication
-   - PROPFIND Depth:0 and Depth:1: XML multistatus response with DAV and OC properties
-   - PROPPATCH: minimal stub (acknowledges request)
-   - LOCK: 200 OK stub (macOS Finder compatibility)
-   - Mounted at /dav/files/* via nest_service
-
-8. **Config env var fix**:
-   - Fixed figment env var mapping to lowercase before matching
-   - TILDE_SERVER__LISTEN_PORT now works (double underscore = nesting separator)
-   - Added dev port override: TILDE_SERVER__LISTEN_PORT=8080 in .env
-
-### Architecture Changes
-- AppState.db changed from Mutex<Connection> to Arc<Mutex<Connection>> (shared with DavState)
-- build_router() now takes both SharedState and SharedDavState
-- ConnectInfo<SocketAddr> required — server uses into_make_service_with_connect_info()
-- base64 crate added for Basic auth decoding
-
----
-
-## Session 2 (2025-04-22) — Foundation Implementation
-
-### Completed
-1. **Config loading via figment** — `Config::load()` with layered priority
-2. **SQLite migration runner** — Full implementation with checksums
-3. **Auth module** — Argon2id, session tokens, MCP tokens, app passwords
-4. **HTTP server (axum)** — All foundation endpoints
-5. **CLI commands** — init, serve, status, diagnose, auth, mcp
-6. **Unit tests** — 10 tests in tilde-core passing
-
----
-
-## Session 1 (2025-04-22) — Initializer Agent
-
-### Completed
-1. feature_list.json — 260 test cases
-2. init.sh — Development setup script
-3. Cargo workspace — 13 crate stubs
-4. Project structure — migrations, locales, assets
-5. CLI structure — All subcommands defined
+## Earlier Sessions
+- Session 3: Auth middleware, rate limiting, WebDAV Class 1
+- Session 2: Foundation — config, database, auth, HTTP server, CLI
+- Session 1: Initializer — feature_list.json, Cargo workspace, project structure

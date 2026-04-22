@@ -2075,7 +2075,7 @@
       "Step 3: Restart tilde",
       "Step 4: Verify database is consistent and no data corruption"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2086,7 +2086,7 @@
       "Step 3: Verify write goes to tmp file first",
       "Step 4: Verify fsync on tmp, then rename, then fsync parent dir"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2126,7 +2126,7 @@
       "Step 4: Verify API responses include UTC offset",
       "Step 5: Verify CLI respects $TZ environment variable for display"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2208,7 +2208,7 @@
       "Step 10: Verify $CACHE_DIR/thumbnails/ exists",
       "Step 11: Verify $STATE_DIR/blobs/by-id/ exists"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2230,7 +2230,7 @@
       "Step 3: POST login without CSRF token → verify rejected",
       "Step 4: POST login with invalid CSRF token → verify rejected"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2282,7 +2282,7 @@
       "Step 2: Verify each failure logged with source IP",
       "Step 3: Verify log entries suitable for fail2ban integration"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2477,7 +2477,7 @@
       "Step 3: GET a photo file → verify original served",
       "Step 4: Verify directory structure matches organization pattern"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2507,7 +2507,7 @@
       "Step 2: Verify Content-Security-Policy: default-src 'self' header",
       "Step 3: Verify no inline scripts or external resources loaded"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2604,7 +2604,7 @@
       "Step 4: Verify graceful shutdown (finish in-flight requests)",
       "Step 5: Verify clean exit code"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

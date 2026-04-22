@@ -89,12 +89,33 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     let listen_addr = format!("{}:{}", config.server.listen_addr, config.server.listen_port);
 
-    let files_root = config.data_dir().join("files");
-    std::fs::create_dir_all(&files_root)?;
-    std::fs::create_dir_all(files_root.join("notes"))?;
+    let data_dir = config.data_dir();
+    let cache_dir = config.cache_dir();
+    let files_root = data_dir.join("files");
 
-    let uploads_root = config.data_dir().join("uploads");
-    std::fs::create_dir_all(&uploads_root)?;
+    // Ensure all data directories exist
+    for dir in &[
+        files_root.clone(),
+        files_root.join("notes"),
+        files_root.join("documents"),
+        data_dir.join("photos/_inbox"),
+        data_dir.join("photos/_library-drop"),
+        data_dir.join("photos/_untriaged"),
+        data_dir.join("photos/_errors"),
+        data_dir.join("calendars"),
+        data_dir.join("contacts"),
+        data_dir.join("mail"),
+        data_dir.join("collections"),
+        data_dir.join("uploads"),
+        data_dir.join("backup"),
+        data_dir.join("blobs/by-id"),
+        cache_dir.join("thumbnails"),
+        cache_dir.join("fts"),
+    ] {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let uploads_root = data_dir.join("uploads");
 
     // Cleanup expired upload sessions on startup
     {

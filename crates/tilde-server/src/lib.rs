@@ -66,6 +66,17 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
     });
     let notes_router = tilde_dav::build_dav_router(notes_state);
 
+    // Photos DAV — points to photos directory under data dir
+    let photos_root = dav_state.files_root.parent()
+        .map(|p| p.join("photos"))
+        .unwrap_or_else(|| dav_state.files_root.join("../photos"));
+    let photos_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
+        db: dav_state.db.clone(),
+        files_root: photos_root,
+        uploads_root: dav_state.uploads_root.clone(),
+    });
+    let photos_router = tilde_dav::build_dav_router(photos_state);
+
     Router::new()
         // Public endpoints
         .route("/health", get(health_handler))
@@ -90,6 +101,7 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
         // WebDAV
         .nest_service("/dav/files", dav_router)
         .nest_service("/dav/notes", notes_router)
+        .nest_service("/dav/photos", photos_router)
         .nest_service("/dav/uploads", uploads_router)
         // Middleware
         .layer(TraceLayer::new_for_http())

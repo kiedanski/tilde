@@ -1,5 +1,5 @@
 use clap::Parser;
-use tilde_cli::{Cli, Commands, NotesCommands};
+use tilde_cli::{Cli, Commands};
 
 mod commands;
 
