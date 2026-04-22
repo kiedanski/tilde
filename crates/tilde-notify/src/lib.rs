@@ -166,6 +166,161 @@ pub fn notify(
     }
 }
 
+/// ntfy.sh notification sink
+pub struct NtfySink {
+    topic_url: String,
+    token: Option<String>,
+    min_priority: Priority,
+}
+
+impl NtfySink {
+    pub fn new(topic_url: String, token: Option<String>, min_priority: Priority) -> Self {
+        Self { topic_url, token, min_priority }
+    }
+}
+
+impl NotificationSink for NtfySink {
+    fn name(&self) -> &str {
+        "ntfy"
+    }
+
+    fn min_priority(&self) -> Priority {
+        self.min_priority
+    }
+
+    fn send(&self, event: &NotificationEvent) -> anyhow::Result<()> {
+        let ntfy_priority = match event.priority {
+            Priority::Low => "2",
+            Priority::Medium => "3",
+            Priority::High => "4",
+            Priority::Critical => "5",
+        };
+
+        let client = reqwest::blocking::Client::new();
+        let mut req = client.post(&self.topic_url)
+            .header("Title", format!("tilde: {}", event.event_type))
+            .header("Priority", ntfy_priority)
+            .header("Tags", &event.event_type)
+            .body(event.message.clone());
+
+        if let Some(ref token) = self.token {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+
+        req.send()?;
+        info!(sink = "ntfy", event_type = %event.event_type, "Notification sent to ntfy");
+        Ok(())
+    }
+}
+
+/// Webhook notification sink
+pub struct WebhookSink {
+    url: String,
+    min_priority: Priority,
+}
+
+impl WebhookSink {
+    pub fn new(url: String, min_priority: Priority) -> Self {
+        Self { url, min_priority }
+    }
+}
+
+impl NotificationSink for WebhookSink {
+    fn name(&self) -> &str {
+        "webhook"
+    }
+
+    fn min_priority(&self) -> Priority {
+        self.min_priority
+    }
+
+    fn send(&self, event: &NotificationEvent) -> anyhow::Result<()> {
+        let payload = serde_json::json!({
+            "event_type": event.event_type,
+            "priority": event.priority.to_string(),
+            "message": event.message,
+            "timestamp": jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+        });
+
+        let client = reqwest::blocking::Client::new();
+        client.post(&self.url)
+            .json(&payload)
+            .send()?;
+
+        info!(sink = "webhook", event_type = %event.event_type, "Notification sent to webhook");
+        Ok(())
+    }
+}
+
+/// Predefined notification event types
+pub mod events {
+    use super::{NotificationEvent, Priority};
+
+    pub fn backup_failed(error: &str) -> NotificationEvent {
+        NotificationEvent {
+            event_type: "backup_failed".into(),
+            priority: Priority::Critical,
+            message: format!("Backup failed: {}", error),
+        }
+    }
+
+    pub fn disk_usage_high(used_percent: u8) -> NotificationEvent {
+        NotificationEvent {
+            event_type: "disk_usage_high".into(),
+            priority: Priority::High,
+            message: format!("Disk usage at {}%", used_percent),
+        }
+    }
+
+    pub fn auth_failed_repeated(ip: &str, count: u32) -> NotificationEvent {
+        NotificationEvent {
+            event_type: "auth_failed_repeated".into(),
+            priority: Priority::High,
+            message: format!("{} failed auth attempts from {}", count, ip),
+        }
+    }
+
+    pub fn cert_expiring_soon(days: u32) -> NotificationEvent {
+        NotificationEvent {
+            event_type: "cert_expiring_soon".into(),
+            priority: Priority::High,
+            message: format!("TLS certificate expires in {} days", days),
+        }
+    }
+
+    pub fn sync_conflict_detected(path: &str) -> NotificationEvent {
+        NotificationEvent {
+            event_type: "sync_conflict_detected".into(),
+            priority: Priority::Medium,
+            message: format!("Sync conflict detected: {}", path),
+        }
+    }
+
+    pub fn update_available(version: &str) -> NotificationEvent {
+        NotificationEvent {
+            event_type: "update_available".into(),
+            priority: Priority::Low,
+            message: format!("tilde update available: {}", version),
+        }
+    }
+
+    pub fn email_sync_error(account: &str, error: &str) -> NotificationEvent {
+        NotificationEvent {
+            event_type: "email_sync_error".into(),
+            priority: Priority::Medium,
+            message: format!("Email sync error ({}): {}", account, error),
+        }
+    }
+
+    pub fn thumbnail_generation_failed(file: &str, error: &str) -> NotificationEvent {
+        NotificationEvent {
+            event_type: "thumbnail_generation_failed".into(),
+            priority: Priority::Low,
+            message: format!("Thumbnail generation failed for {}: {}", file, error),
+        }
+    }
+}
+
 /// Create the default file sink pointing to the data directory
 pub fn create_file_sink(data_dir: &Path) -> FileSink {
     FileSink::new(

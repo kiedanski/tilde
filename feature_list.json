@@ -1749,7 +1749,7 @@
       "Step 3: Verify notification sent to ntfy.sh",
       "Step 4: Run `tilde notifications test ntfy` \u2192 verify test notification received"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1772,7 +1772,7 @@
       "Step 4: Trigger high-priority event (e.g., backup_failed)",
       "Step 5: Verify both file and ntfy sinks receive it"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1783,7 +1783,7 @@
       "Step 3: Trigger 11th event",
       "Step 4: Verify it's rate-limited (not sent to sinks)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1801,7 +1801,7 @@
       "Step 10: Trigger email sync error \u2192 verify email_sync_error with medium priority",
       "Step 11: Verify each event routed to correct sinks based on priority"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2167,7 +2167,7 @@
       "Step 2: Trigger notification event",
       "Step 3: Verify JSON POST received at target URL"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
