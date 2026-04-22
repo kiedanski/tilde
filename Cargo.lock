@@ -1467,8 +1467,14 @@ name = "tilde-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
+ "jiff",
+ "rusqlite",
+ "serde",
+ "serde_json",
  "tilde-core",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

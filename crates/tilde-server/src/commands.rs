@@ -139,12 +139,19 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     let db_arc: std::sync::Arc<Mutex<rusqlite::Connection>> = Arc::new(Mutex::new(conn));
 
+    let mcp_state: tilde_mcp::SharedMcpState = Arc::new(tilde_mcp::McpState {
+        db: db_arc.clone(),
+        data_dir: data_dir.clone(),
+        rate_limits: Mutex::new(std::collections::HashMap::new()),
+    });
+
     let state: SharedState = Arc::new(AppState {
         config,
         db: db_arc.clone(),
         start_time: Instant::now(),
         login_attempts: Mutex::new(std::collections::HashMap::new()),
         login_flows: Mutex::new(std::collections::HashMap::new()),
+        mcp_state,
     });
 
     let dav_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {

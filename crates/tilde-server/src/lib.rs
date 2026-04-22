@@ -18,6 +18,7 @@ use std::time::Instant;
 use tower_http::trace::TraceLayer;
 use tilde_core::{config::Config, auth};
 use tilde_dav;
+use tilde_mcp;
 
 /// Per-IP rate limit tracking for auth endpoints
 #[derive(Debug, Clone)]
@@ -42,6 +43,7 @@ pub struct AppState {
     pub start_time: Instant,
     pub login_attempts: Mutex<HashMap<String, RateLimitEntry>>,
     pub login_flows: Mutex<HashMap<String, LoginFlowSession>>,
+    pub mcp_state: tilde_mcp::SharedMcpState,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -94,6 +96,9 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
         .route("/login/v2", post(login_flow_initiate))
         .route("/login/v2/poll", post(login_flow_poll))
         .route("/login/v2/auth", get(login_flow_auth_page).post(login_flow_auth_submit))
+        // MCP endpoint
+        .route("/mcp/", post(mcp_handler))
+        .route("/mcp", post(mcp_handler))
         // Authenticated routes
         .merge(authenticated)
         // Principals (RFC 5397)
@@ -771,4 +776,87 @@ fn render_login_error(flow_token: &str, csrf_token: &str, error: &str) -> axum::
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
         html,
     ).into_response()
+}
+
+// ─── MCP Streamable HTTP endpoint ────────────────────────────────────────
+
+/// POST /mcp/ — MCP Streamable HTTP endpoint (JSON-RPC 2.0)
+async fn mcp_handler(
+    State(state): State<SharedState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    req: Request<axum::body::Body>,
+) -> axum::response::Response {
+    // Extract auth header before consuming the request
+    let auth_header = req.headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let source_ip = addr.ip().to_string();
+
+    // Authenticate — must be a valid MCP token
+    let (token_name, token_scopes, rate_limit) = match auth_header {
+        Some(ref h) if h.starts_with("Bearer mcp_prod_") => {
+            let token = &h[7..];
+            let db = state.db.lock().unwrap();
+            match auth::validate_mcp_token(&db, token) {
+                Ok(Some((name, scopes))) => {
+                    // Get rate limit for this token
+                    let rl = db.query_row(
+                        "SELECT rate_limit FROM mcp_tokens WHERE token_hash = ?1",
+                        [&auth::hash_token(token)],
+                        |row| row.get::<_, u32>(0),
+                    ).unwrap_or(state.config.mcp.default_rate_limit);
+                    (name, scopes, rl)
+                }
+                _ => {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({"jsonrpc": "2.0", "error": {"code": -32000, "message": "invalid or revoked token"}})),
+                    ).into_response();
+                }
+            }
+        }
+        _ => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Bearer")],
+                Json(json!({"jsonrpc": "2.0", "error": {"code": -32000, "message": "MCP bearer token required"}})),
+            ).into_response();
+        }
+    };
+
+    // Read body
+    let body = match axum::body::to_bytes(req.into_body(), 1_048_576).await {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({"jsonrpc": "2.0", "error": {"code": -32700, "message": "request too large"}})),
+            ).into_response();
+        }
+    };
+
+    // Parse JSON-RPC request
+    let rpc_request: tilde_mcp::JsonRpcRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("parse error: {}", e)}})),
+            ).into_response();
+        }
+    };
+
+    let response = tilde_mcp::handle_mcp_request(
+        &state.mcp_state,
+        &rpc_request,
+        &token_name,
+        &token_scopes,
+        rate_limit,
+        &source_ip,
+        state.config.mcp.audit_log_retention_days,
+    );
+
+    (StatusCode::OK, Json(json!(response))).into_response()
 }

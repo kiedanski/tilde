@@ -143,14 +143,14 @@
     "category": "functional",
     "description": "Rate limiting on auth endpoints: 5 attempts per 15 minutes per IP",
     "steps": [
-      "Step 1: Send 1st failed login attempt → verify 401 response",
-      "Step 2: Send 2nd failed login attempt → verify 401 response",
-      "Step 3: Send 3rd failed login attempt → verify 401 response",
-      "Step 4: Send 4th failed login attempt → verify 401 response",
-      "Step 5: Send 5th failed login attempt → verify 401 response",
-      "Step 6: Send 6th failed login attempt → verify 429 Too Many Requests (lockout)",
+      "Step 1: Send 1st failed login attempt \u2192 verify 401 response",
+      "Step 2: Send 2nd failed login attempt \u2192 verify 401 response",
+      "Step 3: Send 3rd failed login attempt \u2192 verify 401 response",
+      "Step 4: Send 4th failed login attempt \u2192 verify 401 response",
+      "Step 5: Send 5th failed login attempt \u2192 verify 401 response",
+      "Step 6: Send 6th failed login attempt \u2192 verify 429 Too Many Requests (lockout)",
       "Step 7: Verify lockout response includes Retry-After header",
-      "Step 8: Attempt valid login during lockout → verify still locked out",
+      "Step 8: Attempt valid login during lockout \u2192 verify still locked out",
       "Step 9: Wait for lockout_duration_minutes (15 min) to expire",
       "Step 10: Verify valid login succeeds after lockout expires",
       "Step 11: Verify different IP address is not affected by lockout"
@@ -395,7 +395,7 @@
   },
   {
     "category": "functional",
-    "description": "WebDAV PUT uploads a file atomically (tmp → fsync → rename → fsync parent dir)",
+    "description": "WebDAV PUT uploads a file atomically (tmp \u2192 fsync \u2192 rename \u2192 fsync parent dir)",
     "steps": [
       "Step 1: PUT a new file to /dav/files/test.txt with text content 'hello world'",
       "Step 2: Verify 201 Created response with Location header",
@@ -415,8 +415,8 @@
     "description": "WebDAV PUT with If-Match ETag returns 412 on conflict",
     "steps": [
       "Step 1: Upload file and note its ETag",
-      "Step 2: Upload again with correct If-Match → verify 204 No Content",
-      "Step 3: Upload with wrong If-Match → verify 412 Precondition Failed",
+      "Step 2: Upload again with correct If-Match \u2192 verify 204 No Content",
+      "Step 3: Upload with wrong If-Match \u2192 verify 412 Precondition Failed",
       "Step 4: Verify original file is not modified after 412"
     ],
     "passes": true
@@ -446,8 +446,8 @@
       "Step 1: MKCOL /dav/files/testdir/",
       "Step 2: Verify 201 Created response",
       "Step 3: Verify directory exists on disk",
-      "Step 4: MKCOL on existing collection → verify 405 Method Not Allowed",
-      "Step 5: MKCOL with missing parent → verify 409 Conflict"
+      "Step 4: MKCOL on existing collection \u2192 verify 405 Method Not Allowed",
+      "Step 5: MKCOL with missing parent \u2192 verify 409 Conflict"
     ],
     "passes": true
   },
@@ -546,7 +546,7 @@
   },
   {
     "category": "functional",
-    "description": "Nextcloud chunked upload v2: MKCOL session → chunk PUTs → MOVE finalize",
+    "description": "Nextcloud chunked upload v2: MKCOL session \u2192 chunk PUTs \u2192 MOVE finalize",
     "steps": [
       "Step 1: MKCOL /dav/uploads/user/session-123/ to create upload session",
       "Step 2: PUT chunk 1 to /dav/uploads/user/session-123/1",
@@ -619,18 +619,18 @@
     "category": "functional",
     "description": "Nextcloud Login Flow v2: initiate, display login page, authenticate, poll for credentials",
     "steps": [
-      "Step 1: POST /login/v2 with no auth → receive 200 OK JSON",
+      "Step 1: POST /login/v2 with no auth \u2192 receive 200 OK JSON",
       "Step 2: Verify JSON has poll.token (string), poll.endpoint (URL), login (URL)",
-      "Step 3: Poll the endpoint immediately → receive 404 (not yet authenticated)",
-      "Step 4: GET the login URL → verify HTML login page served",
+      "Step 3: Poll the endpoint immediately \u2192 receive 404 (not yet authenticated)",
+      "Step 4: GET the login URL \u2192 verify HTML login page served",
       "Step 5: Verify login page has CSRF token in hidden field",
-      "Step 6: POST login form with wrong password → verify error displayed",
+      "Step 6: POST login form with wrong password \u2192 verify error displayed",
       "Step 7: POST login form with correct password and CSRF token",
-      "Step 8: Poll the endpoint with token → receive 200 OK JSON",
+      "Step 8: Poll the endpoint with token \u2192 receive 200 OK JSON",
       "Step 9: Verify response contains server (URL), loginName (string), appPassword (string)",
-      "Step 10: Use appPassword for WebDAV Basic Auth GET /dav/files/ → verify 200 OK",
+      "Step 10: Use appPassword for WebDAV Basic Auth GET /dav/files/ \u2192 verify 200 OK",
       "Step 11: Verify appPassword is stored as app-password with /dav/* scope",
-      "Step 12: Poll again with same token → verify 404 (one-time use)"
+      "Step 12: Poll again with same token \u2192 verify 404 (one-time use)"
     ],
     "passes": true
   },
@@ -808,11 +808,11 @@
     "category": "functional",
     "description": "CardDAV sync-collection REPORT with sync-token for incremental contact sync",
     "steps": [
-      "Step 1: Initial sync-collection → get sync-token",
+      "Step 1: Initial sync-collection \u2192 get sync-token",
       "Step 2: Add new contact",
-      "Step 3: Sync with previous token → verify new contact returned",
+      "Step 3: Sync with previous token \u2192 verify new contact returned",
       "Step 4: Delete a contact",
-      "Step 5: Sync → verify deletion indicated"
+      "Step 5: Sync \u2192 verify deletion indicated"
     ],
     "passes": false
   },
@@ -821,9 +821,9 @@
     "description": "CalDAV/CardDAV auth integration: app-passwords and sessions work with RustiCal handlers",
     "steps": [
       "Step 1: Create app-password scoped to /caldav/*",
-      "Step 2: Access CalDAV with app-password via Basic Auth → verify success",
+      "Step 2: Access CalDAV with app-password via Basic Auth \u2192 verify success",
       "Step 3: Create app-password scoped to /carddav/*",
-      "Step 4: Access CardDAV with that password → verify success",
+      "Step 4: Access CardDAV with that password \u2192 verify success",
       "Step 5: Verify cross-scope access is denied"
     ],
     "passes": false
@@ -855,8 +855,8 @@
     "description": "CLI: tilde contacts list and tilde contacts search",
     "steps": [
       "Step 1: Create several contacts via CardDAV",
-      "Step 2: Run `tilde contacts list` → verify all contacts listed",
-      "Step 3: Run `tilde contacts search 'John'` → verify matching contacts returned"
+      "Step 2: Run `tilde contacts list` \u2192 verify all contacts listed",
+      "Step 3: Run `tilde contacts search 'John'` \u2192 verify matching contacts returned"
     ],
     "passes": false
   },
@@ -1070,14 +1070,14 @@
   },
   {
     "category": "functional",
-    "description": "Thumbnail generation: JPEG → 256px square crop and 1920px longest-edge WebP",
+    "description": "Thumbnail generation: JPEG \u2192 256px square crop and 1920px longest-edge WebP",
     "steps": [
       "Step 1: Import a JPEG photo",
       "Step 2: Wait for async thumbnail generation",
       "Step 3: Verify 256.webp exists at $CACHE_DIR/thumbnails/<uuid>/256.webp",
       "Step 4: Verify 1920.webp exists at $CACHE_DIR/thumbnails/<uuid>/1920.webp",
       "Step 5: Verify 256px is square cropped",
-      "Step 6: Verify 1920px has longest edge ≤ 1920px",
+      "Step 6: Verify 1920px has longest edge \u2264 1920px",
       "Step 7: Verify thumbnail_256_generated and thumbnail_1920_generated flags set"
     ],
     "passes": false
@@ -1119,9 +1119,9 @@
     "description": "CLI: tilde photos list with tag, since, and until filters",
     "steps": [
       "Step 1: Import multiple photos with various tags and dates",
-      "Step 2: Run `tilde photos list` → verify all listed",
-      "Step 3: Run `tilde photos list --tag trip:jamaica` → verify filtered by tag",
-      "Step 4: Run `tilde photos list --since 2025-01-01 --until 2025-06-30` → verify date filter"
+      "Step 2: Run `tilde photos list` \u2192 verify all listed",
+      "Step 3: Run `tilde photos list --tag trip:jamaica` \u2192 verify filtered by tag",
+      "Step 4: Run `tilde photos list --since 2025-01-01 --until 2025-06-30` \u2192 verify date filter"
     ],
     "passes": false
   },
@@ -1173,11 +1173,11 @@
   },
   {
     "category": "functional",
-    "description": "Notes: ETag + If-Match on PUT with 412 conflict → sibling conflict file",
+    "description": "Notes: ETag + If-Match on PUT with 412 conflict \u2192 sibling conflict file",
     "steps": [
       "Step 1: Upload note and get ETag",
-      "Step 2: Modify note with correct If-Match → verify success",
-      "Step 3: Try PUT with stale ETag → verify 412 Precondition Failed",
+      "Step 2: Modify note with correct If-Match \u2192 verify success",
+      "Step 3: Try PUT with stale ETag \u2192 verify 412 Precondition Failed",
       "Step 4: Verify conflict file naming: filename.sync-conflict-<YYYYMMDD-HHMMSS>-<device>.md"
     ],
     "passes": true
@@ -1209,8 +1209,8 @@
     "description": "CLI: tilde notes list shows notes with optional path filter",
     "steps": [
       "Step 1: Create notes in various subdirectories",
-      "Step 2: Run `tilde notes list` → verify all listed",
-      "Step 3: Run `tilde notes list --path work` → verify filtered to work/ subdirectory"
+      "Step 2: Run `tilde notes list` \u2192 verify all listed",
+      "Step 3: Run `tilde notes list --path work` \u2192 verify filtered to work/ subdirectory"
     ],
     "passes": true
   },
@@ -1242,15 +1242,15 @@
       "Step 1: Create JSON Schema: {type: 'object', properties: {value: {type: 'number'}}, required: ['value']}",
       "Step 2: Run `tilde collection create weight --schema weight.json`",
       "Step 3: Verify collection in collections table with schema_json",
-      "Step 4: Run `tilde collection weight add --data '{\"value\": 72.5}'` → verify id returned",
-      "Step 5: Try add with invalid data '{\"value\": \"not-a-number\"}' → verify schema validation error",
-      "Step 6: Try add with missing required field '{}' → verify schema validation error",
-      "Step 7: Run `tilde collection weight list` → verify record listed with id, data, timestamp",
-      "Step 8: Run `tilde collection weight get <id>` → verify full record details",
-      "Step 9: Run `tilde collection weight update <id> --data '{\"value\": 73.0}'` → verify updated",
-      "Step 10: Run `tilde collection weight get <id>` → verify value is 73.0",
-      "Step 11: Run `tilde collection weight delete <id>` → verify removed",
-      "Step 12: Run `tilde collection weight list` → verify empty"
+      "Step 4: Run `tilde collection weight add --data '{\"value\": 72.5}'` \u2192 verify id returned",
+      "Step 5: Try add with invalid data '{\"value\": \"not-a-number\"}' \u2192 verify schema validation error",
+      "Step 6: Try add with missing required field '{}' \u2192 verify schema validation error",
+      "Step 7: Run `tilde collection weight list` \u2192 verify record listed with id, data, timestamp",
+      "Step 8: Run `tilde collection weight get <id>` \u2192 verify full record details",
+      "Step 9: Run `tilde collection weight update <id> --data '{\"value\": 73.0}'` \u2192 verify updated",
+      "Step 10: Run `tilde collection weight get <id>` \u2192 verify value is 73.0",
+      "Step 11: Run `tilde collection weight delete <id>` \u2192 verify removed",
+      "Step 12: Run `tilde collection weight list` \u2192 verify empty"
     ],
     "passes": true
   },
@@ -1312,7 +1312,7 @@
       "Step 7: Verify folders_exclude filter applied (Trash, Spam excluded)",
       "Step 8: Verify initial UID tracking set up in kv_meta",
       "Step 9: Verify email sync status shows connected",
-      "Step 10: Run `tilde email status` → verify connected status displayed"
+      "Step 10: Run `tilde email status` \u2192 verify connected status displayed"
     ],
     "passes": false
   },
@@ -1330,7 +1330,7 @@
   },
   {
     "category": "functional",
-    "description": "Email archive: Maildir storage format with atomic writes (tmp → cur)",
+    "description": "Email archive: Maildir storage format with atomic writes (tmp \u2192 cur)",
     "steps": [
       "Step 1: Fetch a new email via IMAP",
       "Step 2: Verify tmp/ file created first during write",
@@ -1352,7 +1352,7 @@
       "Step 1: Fetch emails from IMAP",
       "Step 2: Verify kv_meta tracks last seen UID per folder",
       "Step 3: Restart and verify only new UIDs fetched",
-      "Step 4: Attempt to fetch duplicate Message-ID → verify deduplicated"
+      "Step 4: Attempt to fetch duplicate Message-ID \u2192 verify deduplicated"
     ],
     "passes": false
   },
@@ -1473,7 +1473,7 @@
       "Step 3: Verify MCP protocol handshake completes",
       "Step 4: Verify tools listing returns ~15 tools"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1486,40 +1486,40 @@
       "Step 5: Verify token_hash is SHA-256 (not plaintext token)",
       "Step 6: Verify token_prefix stores 'mcp_prod_' + first 8 random chars",
       "Step 7: Verify scopes stored as 'notes:read,calendar:read'",
-      "Step 8: Use token as Authorization: Bearer <token> for MCP request → verify 200",
-      "Step 9: Use invalid token → verify 401 Unauthorized",
-      "Step 10: Use expired/revoked token → verify 401 Unauthorized"
+      "Step 8: Use token as Authorization: Bearer <token> for MCP request \u2192 verify 200",
+      "Step 9: Use invalid token \u2192 verify 401 Unauthorized",
+      "Step 10: Use expired/revoked token \u2192 verify 401 Unauthorized"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
     "description": "MCP: Scope enforcement per tool call",
     "steps": [
       "Step 1: Create token with scopes 'notes:read' only",
-      "Step 2: Call notes.search tool → verify 200 allowed",
-      "Step 3: Call notes.read tool → verify allowed (read scope)",
-      "Step 4: Call notes.append tool → verify 403 denied (needs notes:write)",
-      "Step 5: Call calendar.list_events → verify 403 denied (no calendar scope)",
-      "Step 6: Call contacts.search → verify 403 denied (no contacts scope)",
+      "Step 2: Call notes.search tool \u2192 verify 200 allowed",
+      "Step 3: Call notes.read tool \u2192 verify allowed (read scope)",
+      "Step 4: Call notes.append tool \u2192 verify 403 denied (needs notes:write)",
+      "Step 5: Call calendar.list_events \u2192 verify 403 denied (no calendar scope)",
+      "Step 6: Call contacts.search \u2192 verify 403 denied (no contacts scope)",
       "Step 7: Create second token with scopes 'notes:read,notes:write'",
-      "Step 8: Call notes.append → verify allowed",
-      "Step 9: Call calendar.create_event → verify still denied",
-      "Step 10: Create token with '*:read' → verify all read tools allowed"
+      "Step 8: Call notes.append \u2192 verify allowed",
+      "Step 9: Call calendar.create_event \u2192 verify still denied",
+      "Step 10: Create token with '*:read' \u2192 verify all read tools allowed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
     "description": "MCP: Per-token rate limiting (default 60 req/min)",
     "steps": [
       "Step 1: Create token with rate_limit = 5",
-      "Step 2: Send 5 requests rapidly → verify all succeed",
-      "Step 3: Send 6th request → verify rate limit response",
+      "Step 2: Send 5 requests rapidly \u2192 verify all succeed",
+      "Step 3: Send 6th request \u2192 verify rate limit response",
       "Step 4: Wait for rate limit window to reset",
       "Step 5: Verify next request succeeds"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1535,9 +1535,9 @@
       "Step 8: Verify duration_ms is reasonable (> 0)",
       "Step 9: Verify source_ip is recorded",
       "Step 10: Verify created_at is current ISO 8601 timestamp",
-      "Step 11: Run `tilde mcp audit --since today` → verify CLI shows the entry"
+      "Step 11: Run `tilde mcp audit --since today` \u2192 verify CLI shows the entry"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1548,16 +1548,16 @@
       "Step 3: Verify entries older than 90 days are removed",
       "Step 4: Verify recent entries are retained"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
     "description": "MCP token management: create, list, revoke, rotate via CLI",
     "steps": [
       "Step 1: Create token",
-      "Step 2: Run `tilde mcp token list` → verify token shown with name, prefix, scopes, created_at",
-      "Step 3: Run `tilde mcp token rotate <id>` → verify old revoked, new created with same scopes",
-      "Step 4: Run `tilde mcp token revoke <id>` → verify token no longer works"
+      "Step 2: Run `tilde mcp token list` \u2192 verify token shown with name, prefix, scopes, created_at",
+      "Step 3: Run `tilde mcp token rotate <id>` \u2192 verify old revoked, new created with same scopes",
+      "Step 4: Run `tilde mcp token revoke <id>` \u2192 verify token no longer works"
     ],
     "passes": true
   },
@@ -1570,7 +1570,7 @@
       "Step 3: Verify results contain path, title, snippet, modified",
       "Step 4: Verify only matching notes returned"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1580,7 +1580,7 @@
       "Step 2: Call notes.read(path: 'note-path.md')",
       "Step 3: Verify content and metadata returned"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1591,7 +1591,7 @@
       "Step 3: Verify content appended to file",
       "Step 4: Verify returns success: true"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1630,9 +1630,9 @@
       "Step 1: Upload files to various paths via WebDAV",
       "Step 2: Call files.list(path: '/', recursive: false)",
       "Step 3: Verify files listed with name, path, size, modified, type",
-      "Step 4: Call files.list(recursive: true) → verify recursive listing"
+      "Step 4: Call files.list(recursive: true) \u2192 verify recursive listing"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1641,10 +1641,10 @@
       "Step 1: Upload a text file",
       "Step 2: Call files.read(path: 'test.txt')",
       "Step 3: Verify content returned",
-      "Step 4: Try reading binary file → verify appropriate response",
-      "Step 5: Try reading file > 1MB → verify size limit enforced"
+      "Step 4: Try reading binary file \u2192 verify appropriate response",
+      "Step 5: Try reading file > 1MB \u2192 verify size limit enforced"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1654,7 +1654,7 @@
       "Step 2: Call files.search(query: 'keyword')",
       "Step 3: Verify matching files returned with path and snippet"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1686,7 +1686,7 @@
       "Step 4: Call trackers.query(collection: 'weight')",
       "Step 5: Verify record returned with id, data, timestamp"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1747,7 +1747,7 @@
       "Step 1: Configure ntfy sink with topic and token",
       "Step 2: Trigger a notification event (e.g., backup_failed)",
       "Step 3: Verify notification sent to ntfy.sh",
-      "Step 4: Run `tilde notifications test ntfy` → verify test notification received"
+      "Step 4: Run `tilde notifications test ntfy` \u2192 verify test notification received"
     ],
     "passes": false
   },
@@ -1789,16 +1789,16 @@
     "category": "functional",
     "description": "Notification events: backup_failed, disk_usage_high, auth_failed_repeated, cert_expiring_soon, sync_conflict_detected, update_available, email_sync_error",
     "steps": [
-      "Step 1: Trigger backup failure → verify backup_failed notification with critical priority",
+      "Step 1: Trigger backup failure \u2192 verify backup_failed notification with critical priority",
       "Step 2: Verify notification_log record with event_type='backup_failed'",
-      "Step 3: Simulate disk usage at 80% → verify disk_usage_high with high priority",
-      "Step 4: Simulate disk usage at 90% → verify second disk_usage_high notification",
-      "Step 5: Trigger 3+ auth failures from same IP → verify auth_failed_repeated with high priority",
+      "Step 3: Simulate disk usage at 80% \u2192 verify disk_usage_high with high priority",
+      "Step 4: Simulate disk usage at 90% \u2192 verify second disk_usage_high notification",
+      "Step 5: Trigger 3+ auth failures from same IP \u2192 verify auth_failed_repeated with high priority",
       "Step 6: Verify auth_failed notification includes source IP",
-      "Step 7: Simulate cert expiring in 14 days → verify cert_expiring_soon with high priority",
-      "Step 8: Create a sync conflict → verify sync_conflict_detected with medium priority",
-      "Step 9: Mock update availability → verify update_available with low priority",
-      "Step 10: Trigger email sync error → verify email_sync_error with medium priority",
+      "Step 7: Simulate cert expiring in 14 days \u2192 verify cert_expiring_soon with high priority",
+      "Step 8: Create a sync conflict \u2192 verify sync_conflict_detected with medium priority",
+      "Step 9: Mock update availability \u2192 verify update_available with low priority",
+      "Step 10: Trigger email sync error \u2192 verify email_sync_error with medium priority",
       "Step 11: Verify each event routed to correct sinks based on priority"
     ],
     "passes": false
@@ -1807,9 +1807,9 @@
     "category": "functional",
     "description": "CLI: tilde notifications test, list, and config commands",
     "steps": [
-      "Step 1: Run `tilde notifications config` → verify sink configuration displayed",
-      "Step 2: Run `tilde notifications test ntfy` → verify test notification sent",
-      "Step 3: Run `tilde notifications list` → verify recent notifications displayed"
+      "Step 1: Run `tilde notifications config` \u2192 verify sink configuration displayed",
+      "Step 2: Run `tilde notifications test ntfy` \u2192 verify test notification sent",
+      "Step 3: Run `tilde notifications list` \u2192 verify recent notifications displayed"
     ],
     "passes": false
   },
@@ -1821,11 +1821,11 @@
       "Step 2: Create some data files (notes, photos)",
       "Step 3: Run `tilde backup now`",
       "Step 4: Verify exit code 0 (success)",
-      "Step 5: Run `tilde backup list` → verify snapshot listed with timestamp",
-      "Step 6: Run `tilde backup status` → verify last backup time shown",
+      "Step 5: Run `tilde backup list` \u2192 verify snapshot listed with timestamp",
+      "Step 6: Run `tilde backup status` \u2192 verify last backup time shown",
       "Step 7: Modify a file and run `tilde backup now` again",
       "Step 8: Verify second snapshot created (incremental)",
-      "Step 9: Run `tilde backup list` → verify both snapshots listed",
+      "Step 9: Run `tilde backup list` \u2192 verify both snapshots listed",
       "Step 10: Verify retention policy stored correctly in config"
     ],
     "passes": false
@@ -1838,7 +1838,7 @@
       "Step 2: Run `tilde backup verify`",
       "Step 3: Verify integrity check passes",
       "Step 4: Corrupt a backup file",
-      "Step 5: Run verify again → verify corruption detected"
+      "Step 5: Run verify again \u2192 verify corruption detected"
     ],
     "passes": false
   },
@@ -1871,7 +1871,7 @@
       "Step 1: Configure B2 offsite backup with credentials",
       "Step 2: Run `tilde backup now --offsite b2`",
       "Step 3: Verify snapshot uploaded to B2",
-      "Step 4: Run `tilde backup list --offsite b2` → verify remote snapshots"
+      "Step 4: Run `tilde backup list --offsite b2` \u2192 verify remote snapshots"
     ],
     "passes": false
   },
@@ -1957,7 +1957,7 @@
       "Step 2: Run `tilde export verify /tmp/export`",
       "Step 3: Verify completeness check passes",
       "Step 4: Remove a file from export",
-      "Step 5: Run verify again → verify missing file detected"
+      "Step 5: Run verify again \u2192 verify missing file detected"
     ],
     "passes": false
   },
@@ -1966,7 +1966,7 @@
     "description": "Import: import from export with --verify-first and --dry-run",
     "steps": [
       "Step 1: Create export from source instance",
-      "Step 2: Run `tilde import /tmp/export --dry-run` → verify preview of changes",
+      "Step 2: Run `tilde import /tmp/export --dry-run` \u2192 verify preview of changes",
       "Step 3: Run `tilde import /tmp/export --verify-first`",
       "Step 4: Verify data imported correctly",
       "Step 5: Verify UUID stability via manifest.json"
@@ -1975,7 +1975,7 @@
   },
   {
     "category": "functional",
-    "description": "Export → Import roundtrip: data survives without loss",
+    "description": "Export \u2192 Import roundtrip: data survives without loss",
     "steps": [
       "Step 1: Populate instance with all data types",
       "Step 2: Run full export",
@@ -2006,8 +2006,8 @@
     "description": "Webhook token CRUD via CLI",
     "steps": [
       "Step 1: Run `tilde webhook token create --name ios-shortcut --scopes 'tracker:weight:write'`",
-      "Step 2: Run `tilde webhook token list` → verify token listed",
-      "Step 3: Run `tilde webhook token revoke <id>` → verify revoked"
+      "Step 2: Run `tilde webhook token list` \u2192 verify token listed",
+      "Step 3: Run `tilde webhook token revoke <id>` \u2192 verify revoked"
     ],
     "passes": false
   },
@@ -2016,8 +2016,8 @@
     "description": "Webhook HMAC replay protection via X-Tilde-Signature header",
     "steps": [
       "Step 1: Create webhook token with HMAC secret",
-      "Step 2: Send request with valid X-Tilde-Signature → verify accepted",
-      "Step 3: Send request with invalid signature → verify rejected"
+      "Step 2: Send request with valid X-Tilde-Signature \u2192 verify accepted",
+      "Step 3: Send request with invalid signature \u2192 verify rejected"
     ],
     "passes": false
   },
@@ -2079,7 +2079,7 @@
   },
   {
     "category": "functional",
-    "description": "Crash safety: file writes are atomic (tmp → fsync → rename → fsync parent)",
+    "description": "Crash safety: file writes are atomic (tmp \u2192 fsync \u2192 rename \u2192 fsync parent)",
     "steps": [
       "Step 1: Upload a file via WebDAV",
       "Step 2: Monitor filesystem operations",
@@ -2094,7 +2094,7 @@
     "steps": [
       "Step 1: Import 5 photos to trigger 5 thumbnail generation jobs",
       "Step 2: Verify 5 jobs created in jobs table with status='pending'",
-      "Step 3: Let 2 jobs complete → verify status='completed'",
+      "Step 3: Let 2 jobs complete \u2192 verify status='completed'",
       "Step 4: Kill server process (SIGKILL to simulate crash)",
       "Step 5: Verify 3 jobs still in pending/running status in database",
       "Step 6: Restart server",
@@ -2175,8 +2175,8 @@
     "steps": [
       "Step 1: Enable webauthn in config",
       "Step 2: Register a WebAuthn credential",
-      "Step 3: Attempt admin operation (token creation) → verify WebAuthn challenge",
-      "Step 4: Complete WebAuthn challenge → verify operation succeeds",
+      "Step 3: Attempt admin operation (token creation) \u2192 verify WebAuthn challenge",
+      "Step 4: Complete WebAuthn challenge \u2192 verify operation succeeds",
       "Step 5: Verify WebAuthn not required for normal DAV operations"
     ],
     "passes": false
@@ -2214,10 +2214,10 @@
     "category": "functional",
     "description": "Global CLI flags: --config, --json, --dry-run, --verbose work across commands",
     "steps": [
-      "Step 1: Run command with --config /custom/path → verify custom config loaded",
-      "Step 2: Run command with --json → verify JSON output format",
-      "Step 3: Run mutating command with --dry-run → verify no actual changes",
-      "Step 4: Run command with --verbose → verify increased log output"
+      "Step 1: Run command with --config /custom/path \u2192 verify custom config loaded",
+      "Step 2: Run command with --json \u2192 verify JSON output format",
+      "Step 3: Run mutating command with --dry-run \u2192 verify no actual changes",
+      "Step 4: Run command with --verbose \u2192 verify increased log output"
     ],
     "passes": false
   },
@@ -2225,10 +2225,10 @@
     "category": "functional",
     "description": "CSRF token on Login Flow v2 form prevents cross-site request forgery",
     "steps": [
-      "Step 1: GET login form → extract CSRF token from HTML",
-      "Step 2: POST login with valid CSRF token → verify accepted",
-      "Step 3: POST login without CSRF token → verify rejected",
-      "Step 4: POST login with invalid CSRF token → verify rejected"
+      "Step 1: GET login form \u2192 extract CSRF token from HTML",
+      "Step 2: POST login with valid CSRF token \u2192 verify accepted",
+      "Step 3: POST login without CSRF token \u2192 verify rejected",
+      "Step 4: POST login with invalid CSRF token \u2192 verify rejected"
     ],
     "passes": true
   },
@@ -2239,7 +2239,7 @@
       "Step 1: Start with unreachable IMAP server",
       "Step 2: Verify connection retry with exponential backoff",
       "Step 3: Verify notification on persistent sync errors",
-      "Step 4: Make IMAP server reachable → verify connection recovers"
+      "Step 4: Make IMAP server reachable \u2192 verify connection recovers"
     ],
     "passes": false
   },
@@ -2257,8 +2257,8 @@
     "category": "functional",
     "description": "kv_meta table stores sync tokens, IMAP UIDs, and other key-value metadata",
     "steps": [
-      "Step 1: Sync calendars → verify sync_token stored in kv_meta",
-      "Step 2: Sync email → verify last IMAP UID stored",
+      "Step 1: Sync calendars \u2192 verify sync_token stored in kv_meta",
+      "Step 2: Sync email \u2192 verify last IMAP UID stored",
       "Step 3: Verify updated_at timestamps on metadata entries"
     ],
     "passes": false
@@ -2377,8 +2377,8 @@
       "Step 1: Enable WebAuthn in config",
       "Step 2: Register a credential via webauthn-rs flow",
       "Step 3: Verify credential stored in webauthn_credentials table",
-      "Step 4: List credentials → verify name, created_at, last_used_at",
-      "Step 5: Remove credential → verify deleted"
+      "Step 4: List credentials \u2192 verify name, created_at, last_used_at",
+      "Step 5: Remove credential \u2192 verify deleted"
     ],
     "passes": false
   },
@@ -2387,9 +2387,9 @@
     "description": "Email archive: background initial sync fetches all history with --since scoping",
     "steps": [
       "Step 1: Configure new email account",
-      "Step 2: Start tilde serve → verify background sync begins",
+      "Step 2: Start tilde serve \u2192 verify background sync begins",
       "Step 3: Verify messages fetched progressively",
-      "Step 4: Configure with --since 2024-01-01 → verify only recent messages fetched"
+      "Step 4: Configure with --since 2024-01-01 \u2192 verify only recent messages fetched"
     ],
     "passes": false
   },
@@ -2439,10 +2439,10 @@
     "category": "functional",
     "description": "config.toml hot-reload fields vs restart-required fields enforced correctly",
     "steps": [
-      "Step 1: Modify hot-reloadable field (logging.level) and send SIGHUP → verify applied",
+      "Step 1: Modify hot-reloadable field (logging.level) and send SIGHUP \u2192 verify applied",
       "Step 2: Modify restart-required field (server.listen_port) and send SIGHUP",
       "Step 3: Verify restart-required change NOT applied until restart",
-      "Step 4: Restart server → verify change applied"
+      "Step 4: Restart server \u2192 verify change applied"
     ],
     "passes": false
   },
@@ -2463,7 +2463,7 @@
     "steps": [
       "Step 1: Trigger various background jobs",
       "Step 2: Verify jobs created in jobs table with correct job_type",
-      "Step 3: Verify status transitions: pending → running → completed (or failed)",
+      "Step 3: Verify status transitions: pending \u2192 running \u2192 completed (or failed)",
       "Step 4: Verify max_attempts and retry logic for failed jobs"
     ],
     "passes": false
@@ -2473,8 +2473,8 @@
     "description": "WebDAV serves photo library at /dav/photos/*",
     "steps": [
       "Step 1: Import photos into library",
-      "Step 2: PROPFIND /dav/photos/ → verify photo files listed",
-      "Step 3: GET a photo file → verify original served",
+      "Step 2: PROPFIND /dav/photos/ \u2192 verify photo files listed",
+      "Step 3: GET a photo file \u2192 verify original served",
       "Step 4: Verify directory structure matches organization pattern"
     ],
     "passes": true
@@ -2485,9 +2485,9 @@
     "steps": [
       "Step 1: List all MCP tools",
       "Step 2: Verify no tool accepts a URL parameter for fetching",
-      "Step 3: Attempt to pass URL in query/data fields → verify not fetched"
+      "Step 3: Attempt to pass URL in query/data fields \u2192 verify not fetched"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2536,7 +2536,7 @@
     "description": "EXIF privacy: strip EXIF by default on any hypothetical public URL",
     "steps": [
       "Step 1: Upload photo with GPS and personal EXIF data",
-      "Step 2: Access photo via WebDAV (authenticated) → verify EXIF intact",
+      "Step 2: Access photo via WebDAV (authenticated) \u2192 verify EXIF intact",
       "Step 3: Verify no full file hashes exposed in URLs (opaque UUIDs only)"
     ],
     "passes": false
@@ -2546,9 +2546,9 @@
     "description": "Collection JSON Schema validation rejects invalid records",
     "steps": [
       "Step 1: Create collection with schema requiring 'url' (string, required) field",
-      "Step 2: Try to add record without 'url' field → verify validation error",
-      "Step 3: Try to add record with wrong type for 'url' → verify error",
-      "Step 4: Add valid record → verify success"
+      "Step 2: Try to add record without 'url' field \u2192 verify validation error",
+      "Step 3: Try to add record with wrong type for 'url' \u2192 verify error",
+      "Step 4: Add valid record \u2192 verify success"
     ],
     "passes": false
   },
@@ -2556,9 +2556,9 @@
     "category": "functional",
     "description": "Notification: disk_usage_high fires at 80% and 90% thresholds",
     "steps": [
-      "Step 1: Mock disk usage at 79% → verify no notification",
-      "Step 2: Mock disk usage at 80% → verify notification with high priority",
-      "Step 3: Mock disk usage at 90% → verify second notification"
+      "Step 1: Mock disk usage at 79% \u2192 verify no notification",
+      "Step 2: Mock disk usage at 80% \u2192 verify notification with high priority",
+      "Step 3: Mock disk usage at 90% \u2192 verify second notification"
     ],
     "passes": false
   },
@@ -2566,10 +2566,10 @@
     "category": "functional",
     "description": "Email retention: retention_days = 0 keeps forever, nonzero prunes old messages",
     "steps": [
-      "Step 1: Configure retention_days = 0 → verify no messages pruned",
+      "Step 1: Configure retention_days = 0 \u2192 verify no messages pruned",
       "Step 2: Configure retention_days = 30",
       "Step 3: Insert messages older than 30 days",
-      "Step 4: Trigger prune → verify old messages removed",
+      "Step 4: Trigger prune \u2192 verify old messages removed",
       "Step 5: Verify recent messages retained"
     ],
     "passes": false
@@ -2661,8 +2661,8 @@
     "category": "functional",
     "description": "Photos: PNG and WebP image formats for thumbnails alongside JPEG and HEIC",
     "steps": [
-      "Step 1: Import PNG image → verify thumbnail generated",
-      "Step 2: Import WebP image → verify thumbnail generated",
+      "Step 1: Import PNG image \u2192 verify thumbnail generated",
+      "Step 2: Import WebP image \u2192 verify thumbnail generated",
       "Step 3: Verify both produce WebP thumbnails at 256px and 1920px"
     ],
     "passes": false
@@ -2672,12 +2672,12 @@
     "description": "MCP *:read wildcard scope grants read access to all domains",
     "steps": [
       "Step 1: Create token with scope '*:read'",
-      "Step 2: Call notes.search → verify allowed",
-      "Step 3: Call calendar.list_events → verify allowed",
-      "Step 4: Call contacts.search → verify allowed",
-      "Step 5: Call notes.append → verify denied (write scope needed)"
+      "Step 2: Call notes.search \u2192 verify allowed",
+      "Step 3: Call calendar.list_events \u2192 verify allowed",
+      "Step 4: Call contacts.search \u2192 verify allowed",
+      "Step 5: Call notes.append \u2192 verify denied (write scope needed)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2688,7 +2688,7 @@
       "Step 3: Create token with explicit write scopes 'notes:write,calendar:write'",
       "Step 4: Verify only specified write tools allowed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2696,7 +2696,7 @@
     "steps": [
       "Step 1: Upload note with YAML frontmatter (title, tags, date)",
       "Step 2: GET note and verify frontmatter preserved exactly",
-      "Step 3: Search for content mentioned in frontmatter → verify found"
+      "Step 3: Search for content mentioned in frontmatter \u2192 verify found"
     ],
     "passes": false
   },
@@ -2705,7 +2705,7 @@
     "description": "Collection records HLC for last-writer-wins conflict resolution",
     "steps": [
       "Step 1: Create record with HLC",
-      "Step 2: Update record → verify HLC increases",
+      "Step 2: Update record \u2192 verify HLC increases",
       "Step 3: Simulate conflicting updates with different HLC values",
       "Step 4: Verify LWW using HLC determines winner"
     ],
@@ -2798,7 +2798,7 @@
       "Step 2: Verify all subcommands listed with descriptions",
       "Step 3: Run `tilde serve --help`",
       "Step 4: Verify arguments and flags documented",
-      "Step 5: Run `tilde photos --help` → verify subcommands listed"
+      "Step 5: Run `tilde photos --help` \u2192 verify subcommands listed"
     ],
     "passes": false
   },
@@ -2821,7 +2821,7 @@
       "Step 2: Verify valid JSON output",
       "Step 3: Run `tilde photos list --json`",
       "Step 4: Verify valid JSON array output",
-      "Step 5: Pipe output to jq → verify parseable"
+      "Step 5: Pipe output to jq \u2192 verify parseable"
     ],
     "passes": false
   },
@@ -2944,7 +2944,7 @@
       "Step 2: Verify each tool has clear name, description, and parameter schema",
       "Step 3: Verify parameter types and descriptions help LLMs use tools correctly"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
