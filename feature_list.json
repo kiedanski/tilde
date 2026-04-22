@@ -43,7 +43,7 @@
       "Step 5: Verify data dir defaults to $XDG_DATA_HOME/tilde/",
       "Step 6: Verify cache dir defaults to $XDG_CACHE_HOME/tilde/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -55,7 +55,7 @@
       "Step 4: Verify data dir resolves to /var/lib/tilde/",
       "Step 5: Verify cache dir resolves to /var/cache/tilde/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -126,7 +126,7 @@
       "Step 10: Verify expires_at slides forward by 24h from last use",
       "Step 11: Wait until session expired, verify token rejected"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -155,7 +155,7 @@
       "Step 10: Verify valid login succeeds after lockout expires",
       "Step 11: Verify different IP address is not affected by lockout"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -197,7 +197,7 @@
       "Step 4: Verify old password no longer works",
       "Step 5: Verify new password authenticates"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -209,7 +209,7 @@
       "Step 4: Run `tilde auth session revoke <id>`",
       "Step 5: Verify revoked session no longer authenticates"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -256,7 +256,7 @@
       "Step 4: Attempt GET /metrics from non-localhost IP",
       "Step 5: Verify non-localhost request is rejected"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -312,7 +312,7 @@
       "Step 4: Send request with Host: evil.example.com",
       "Step 5: Verify request is rejected"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -379,7 +379,7 @@
       "Step 2: Verify response includes DAV: 1 header",
       "Step 3: Verify Allow header lists: OPTIONS, GET, PUT, DELETE, MKCOL, MOVE, COPY, PROPFIND, PROPPATCH, HEAD"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -391,7 +391,7 @@
       "Step 4: Send GET with Range: bytes=0-99 header",
       "Step 5: Verify 206 Partial Content with correct byte range"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -408,7 +408,7 @@
       "Step 9: Verify no orphaned tmp file remains after write",
       "Step 10: PUT a second file and verify 201 Created"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -419,7 +419,7 @@
       "Step 3: Upload with wrong If-Match \u2192 verify 412 Precondition Failed",
       "Step 4: Verify original file is not modified after 412"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -437,7 +437,7 @@
       "Step 10: DELETE /dav/files/testcol/",
       "Step 11: Verify collection and all children removed from disk and database"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -449,7 +449,7 @@
       "Step 4: MKCOL on existing collection \u2192 verify 405 Method Not Allowed",
       "Step 5: MKCOL with missing parent \u2192 verify 409 Conflict"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -461,7 +461,7 @@
       "Step 4: Verify oc:id is preserved (same UUID)",
       "Step 5: MOVE a collection with children and verify recursive move"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -473,7 +473,7 @@
       "Step 4: Verify destination has different oc:id (new UUID)",
       "Step 5: Verify content is identical"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -484,7 +484,7 @@
       "Step 3: Verify XML response contains getcontentlength, getcontenttype, getetag, getlastmodified",
       "Step 4: Verify oc:id, oc:fileid, oc:permissions, oc:size custom properties"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -502,7 +502,7 @@
       "Step 10: Verify each file has getetag and getlastmodified",
       "Step 11: Verify oc:id present for each entry"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

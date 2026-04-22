@@ -6,6 +6,7 @@ use tracing::info;
 use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands};
 use tilde_core::{config::Config, db, auth};
 use tilde_server::{AppState, build_router, SharedState};
+use tilde_dav;
 
 pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
     println!("tilde init — Interactive Setup Wizard");
@@ -88,18 +89,29 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     let listen_addr = format!("{}:{}", config.server.listen_addr, config.server.listen_port);
 
+    let files_root = config.data_dir().join("files");
+    std::fs::create_dir_all(&files_root)?;
+
+    let db_arc: std::sync::Arc<Mutex<rusqlite::Connection>> = Arc::new(Mutex::new(conn));
+
     let state: SharedState = Arc::new(AppState {
         config,
-        db: Mutex::new(conn),
+        db: db_arc.clone(),
         start_time: Instant::now(),
+        login_attempts: Mutex::new(std::collections::HashMap::new()),
     });
 
-    let app = build_router(state);
+    let dav_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
+        db: db_arc,
+        files_root,
+    });
+
+    let app = build_router(state, dav_state);
 
     println!("tilde server listening on http://{}", listen_addr);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await?;
 
     Ok(())
 }
@@ -248,7 +260,7 @@ pub async fn run_auth(config_path: Option<&str>, command: AuthCommands) -> anyho
         AuthCommands::Session { command } => match command {
             SessionCommands::List => {
                 let mut stmt = conn.prepare(
-                    "SELECT token_prefix, created_at, last_used_at, expires_at, revoked FROM auth_sessions ORDER BY created_at DESC"
+                    "SELECT token_prefix, created_at, last_used_at, expires_at, user_agent, source_ip, revoked FROM auth_sessions ORDER BY created_at DESC"
                 )?;
                 let rows = stmt.query_map([], |row| {
                     Ok((
@@ -256,15 +268,19 @@ pub async fn run_auth(config_path: Option<&str>, command: AuthCommands) -> anyho
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, bool>(4)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, bool>(6)?,
                     ))
                 })?;
-                println!("{:<24} {:<25} {:<25} {}", "Prefix", "Created", "Last Used", "Status");
-                println!("{}", "-".repeat(100));
+                println!("{:<24} {:<20} {:<16} {:<25} {}", "Prefix", "User Agent", "Source IP", "Last Used", "Status");
+                println!("{}", "-".repeat(110));
                 for row in rows {
-                    let (prefix, created, last_used, _expires, revoked) = row?;
+                    let (prefix, _created, last_used, _expires, user_agent, source_ip, revoked) = row?;
                     let status = if revoked { "revoked" } else { "active" };
-                    println!("{:<24} {:<25} {:<25} {}", prefix, created, last_used, status);
+                    let ua = user_agent.unwrap_or_else(|| "-".to_string());
+                    let ip = source_ip.unwrap_or_else(|| "-".to_string());
+                    println!("{:<24} {:<20} {:<16} {:<25} {}", prefix, ua, ip, last_used, status);
                 }
             }
             SessionCommands::Revoke { id } => {

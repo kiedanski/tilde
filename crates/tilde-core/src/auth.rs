@@ -30,9 +30,9 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
         .is_ok()
 }
 
-/// Generate a random session token
+/// Generate a random session token (46 chars: "tilde_session_" + 32 hex chars from 16 random bytes)
 pub fn generate_session_token() -> String {
-    let mut bytes = [0u8; 32];
+    let mut bytes = [0u8; 16];
     rand::RngCore::fill_bytes(&mut OsRng, &mut bytes);
     let token_body: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
     format!("tilde_session_{}", token_body)
@@ -138,10 +138,12 @@ pub fn create_session(
     Ok(token)
 }
 
-/// Validate a session token, returns true if valid and not expired
-pub fn validate_session(conn: &Connection, token: &str) -> anyhow::Result<bool> {
+/// Validate a session token, returns true if valid and not expired.
+/// Implements sliding TTL: extends expires_at by ttl_hours from current time on each valid use.
+pub fn validate_session(conn: &Connection, token: &str, ttl_hours: u32) -> anyhow::Result<bool> {
     let token_hash = hash_token(token);
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now();
+    let now_str = now.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
 
     let result = conn.query_row(
         "SELECT expires_at, revoked FROM auth_sessions WHERE id = ?1",
@@ -159,13 +161,15 @@ pub fn validate_session(conn: &Connection, token: &str) -> anyhow::Result<bool> 
                 return Ok(false);
             }
             // Check expiry
-            if expires_at < now {
+            if expires_at < now_str {
                 return Ok(false);
             }
-            // Update last_used_at
+            // Sliding TTL: extend expires_at from now
+            let new_expires = now.checked_add(jiff::SignedDuration::from_hours(ttl_hours as i64))?;
+            let new_expires_str = new_expires.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
             conn.execute(
-                "UPDATE auth_sessions SET last_used_at = ?1 WHERE id = ?2",
-                rusqlite::params![now, token_hash],
+                "UPDATE auth_sessions SET last_used_at = ?1, expires_at = ?2 WHERE id = ?3",
+                rusqlite::params![now_str, new_expires_str, token_hash],
             )?;
             Ok(true)
         }
@@ -287,7 +291,7 @@ mod tests {
     fn test_session_token_format() {
         let token = generate_session_token();
         assert!(token.starts_with("tilde_session_"));
-        assert_eq!(token.len(), 14 + 64); // prefix + 32 bytes as hex
+        assert_eq!(token.len(), 14 + 32); // prefix + 16 bytes as hex = 46 chars
     }
 
     #[test]
@@ -308,5 +312,18 @@ mod tests {
         assert!(constant_time_compare(b"hello", b"hello"));
         assert!(!constant_time_compare(b"hello", b"world"));
         assert!(!constant_time_compare(b"hello", b"hell"));
+    }
+
+    #[test]
+    fn test_admin_password_roundtrip() {
+        use crate::db;
+        let conn = db::init_db(":memory:").unwrap();
+        let migrations_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().parent().unwrap().join("migrations");
+        db::run_migrations(&conn, &migrations_dir).unwrap();
+
+        store_admin_password(&conn, "testpass123").unwrap();
+        assert!(verify_admin_password(&conn, "testpass123").unwrap());
+        assert!(!verify_admin_password(&conn, "wrongpass").unwrap());
     }
 }

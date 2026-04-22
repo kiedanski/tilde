@@ -47,17 +47,16 @@ impl Config {
             }
         }
 
-        // Layer env vars: TILDE_SERVER__HOSTNAME -> server.hostname
+        // Layer env vars: supports both flat (TILDE_HOSTNAME) and nested (TILDE_SERVER__LISTEN_PORT)
         figment = figment.merge(
             Env::prefixed("TILDE_")
                 .map(|key| {
-                    // Map flat TILDE_HOSTNAME to server.hostname, etc.
-                    let key_str = key.as_str().to_lowercase();
-                    match key_str.as_str() {
+                    let key_lower = key.as_str().to_ascii_lowercase();
+                    match key_lower.as_str() {
                         "hostname" => "server.hostname".into(),
                         "acme_email" => "tls.acme_email".into(),
                         "admin_password" => "auth.admin_password".into(),
-                        _ => key.as_str().replace("__", ".").into()
+                        _ => key_lower.replace("__", ".").into()
                     }
                 })
         );
@@ -72,6 +71,8 @@ impl Config {
             PathBuf::from(state_dir)
         } else if let Ok(dir) = std::env::var("TILDE_DATA_DIR") {
             PathBuf::from(dir)
+        } else if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            PathBuf::from(xdg).join("tilde")
         } else if let Some(data_dir) = directories::ProjectDirs::from("", "", "tilde")
             .map(|d| d.data_dir().to_path_buf())
         {
@@ -85,8 +86,12 @@ impl Config {
     pub fn cache_dir(&self) -> PathBuf {
         if let Ok(cache_dir) = std::env::var("CACHE_DIRECTORY") {
             PathBuf::from(cache_dir)
+        } else if Self::is_systemd_mode() {
+            PathBuf::from("/var/cache/tilde")
         } else if let Ok(dir) = std::env::var("TILDE_CACHE_DIR") {
             PathBuf::from(dir)
+        } else if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+            PathBuf::from(xdg).join("tilde")
         } else if let Some(cache_dir) = directories::ProjectDirs::from("", "", "tilde")
             .map(|d| d.cache_dir().to_path_buf())
         {
@@ -102,6 +107,8 @@ impl Config {
             PathBuf::from("/etc/tilde")
         } else if let Ok(dir) = std::env::var("TILDE_CONFIG_DIR") {
             PathBuf::from(dir)
+        } else if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+            PathBuf::from(xdg).join("tilde")
         } else if let Some(config_dir) = directories::ProjectDirs::from("", "", "tilde")
             .map(|d| d.config_dir().to_path_buf())
         {
@@ -129,7 +136,17 @@ impl Config {
             paths.push(PathBuf::from("/etc/tilde/config.toml"));
         }
 
+        // Explicit TILDE_CONFIG_DIR
+        if let Ok(dir) = std::env::var("TILDE_CONFIG_DIR") {
+            paths.push(PathBuf::from(dir).join("config.toml"));
+        }
+
         // XDG config
+        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+            paths.push(PathBuf::from(xdg).join("tilde").join("config.toml"));
+        }
+
+        // directories crate fallback
         if let Some(proj_dirs) = directories::ProjectDirs::from("", "", "tilde") {
             paths.push(proj_dirs.config_dir().join("config.toml"));
         }

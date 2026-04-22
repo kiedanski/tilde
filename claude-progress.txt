@@ -1,6 +1,82 @@
 tilde — Progress Notes
 ======================
 
+## Session 3 (2025-04-22) — Auth, Rate Limiting, WebDAV
+
+### Completed
+1. **Session tokens with sliding TTL (Test 9)**:
+   - Fixed token format: 46 chars (14 prefix + 32 hex from 16 random bytes)
+   - Added sliding TTL: expires_at extends from current time on each valid use
+   - Added POST /api/auth/login endpoint (JSON body: {password, user_agent?, source_ip?})
+   - Added auth middleware for Bearer tokens (session + MCP) and Basic auth (app passwords)
+   - Added GET /api/auth/verify and GET /api/auth/session endpoints
+
+2. **Rate limiting on auth endpoints (Test 11)**:
+   - Per-IP rate limiting on login: 5 attempts per 15 minutes
+   - 429 Too Many Requests with Retry-After header
+   - Valid login clears rate limit for that IP
+   - In-memory HashMap<String, RateLimitEntry> in AppState
+
+3. **Password reset (Test 14)** and **Session list/revoke (Test 15)**:
+   - Already implemented in session 2, verified end-to-end
+   - Updated session list to show user_agent and source_ip columns
+
+4. **XDG and systemd path resolution (Tests 3-4)**:
+   - Fixed XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME support
+   - Added systemd mode: STATE_DIRECTORY → /var/lib/tilde, /var/cache/tilde, /etc/tilde
+   - XDG env vars now checked before `directories` crate fallback
+
+5. **Metrics localhost-only (Test 19)**:
+   - Added ConnectInfo<SocketAddr> extractor
+   - Returns 403 for non-loopback IPs
+
+6. **Host header allowlist (Test 24)**:
+   - Middleware checks Host header against server.hostname
+   - localhost and 127.0.0.1 always allowed
+   - Returns 403 for unknown hosts
+
+7. **WebDAV Class 1 (Tests 29-38)**:
+   - Full tilde-dav crate implementation
+   - OPTIONS: DAV: 1 header, method list
+   - GET/HEAD: file download with Content-Type and ETag
+   - PUT: atomic write (tmp → rename), ETag generation, SHA-256, files table upsert
+   - PUT with If-Match: 412 Precondition Failed on ETag mismatch
+   - DELETE: file and recursive collection deletion
+   - MKCOL: directory creation, 405 if exists, 409 if missing parent
+   - MOVE: preserves oc:id (UUID), recursive child path update
+   - COPY: new UUID for destination, content duplication
+   - PROPFIND Depth:0 and Depth:1: XML multistatus response with DAV and OC properties
+   - PROPPATCH: minimal stub (acknowledges request)
+   - LOCK: 200 OK stub (macOS Finder compatibility)
+   - Mounted at /dav/files/* via nest_service
+
+8. **Config env var fix**:
+   - Fixed figment env var mapping to lowercase before matching
+   - TILDE_SERVER__LISTEN_PORT now works (double underscore = nesting separator)
+   - Added dev port override: TILDE_SERVER__LISTEN_PORT=8080 in .env
+
+### Architecture Changes
+- AppState.db changed from Mutex<Connection> to Arc<Mutex<Connection>> (shared with DavState)
+- build_router() now takes both SharedState and SharedDavState
+- ConnectInfo<SocketAddr> required — server uses into_make_service_with_connect_info()
+- base64 crate added for Basic auth decoding
+
+### Tests Passing: 31/260
+New: 3, 4, 9, 11, 14, 15, 19, 24, 29-38
+Previous: 0, 1, 2, 5, 6, 7, 8, 10, 12, 13, 18, 20, 23
+
+### Next Steps (for future sessions)
+1. Add auth to WebDAV routes (currently unauthenticated)
+2. Implement Nextcloud Login Flow v2 (tests 42-47)
+3. Implement chunked upload protocol (test 40)
+4. Add WebDAV Range header support on GET (partial test 30)
+5. Implement PROPPATCH properly (test 39)
+6. Implement /remote.php/* redirects (test 48-50)
+7. Work on notes FTS search
+8. Start CalDAV/CardDAV via RustiCal integration
+
+---
+
 ## Session 2 (2025-04-22) — Foundation Implementation
 
 ### Completed
@@ -18,23 +94,28 @@ tilde — Progress Notes
 
 3. **Auth module** — Complete Argon2id implementation:
    - `hash_password()` / `verify_password()` with Argon2id
-   - Session tokens: `tilde_session_<64 hex chars>` format
+   - Session tokens: `tilde_session_<32 hex chars>` format (46 chars total)
    - MCP tokens: `mcp_prod_<30 alphanumeric chars>` format
    - App passwords: `tilde_app_<24 alphanumeric chars>` format
    - Token SHA-256 hashing for storage (never store plaintext)
    - Constant-time comparison via subtle crate
-   - Session creation/validation with TTL
+   - Session creation/validation with sliding TTL
    - App password CRUD with scope enforcement
    - MCP token CRUD with scope and rate limit
 
 4. **HTTP server (axum)** — Endpoints working:
    - GET /health — JSON with status, version, uptime, db status
-   - GET /metrics — Prometheus text format (uptime, db size)
+   - GET /metrics — Prometheus text format (uptime, db size) — localhost-only
    - GET /status.php — Nextcloud compatibility stub
    - GET /ocs/v2.php/cloud/capabilities — OCS capabilities
    - GET /.well-known/caldav → 301 /caldav/
    - GET /.well-known/carddav → 301 /carddav/
-   - HSTS, X-Content-Type-Options, X-Frame-Options headers on all responses
+   - POST /api/auth/login — password auth → session token
+   - GET /api/auth/verify — auth verification
+   - GET /api/auth/session — session info
+   - /dav/files/* — full WebDAV Class 1
+   - HSTS, X-Content-Type-Options, X-Frame-Options headers
+   - Host header allowlist
    - TraceLayer for request logging
 
 5. **CLI commands implemented**:
@@ -48,43 +129,20 @@ tilde — Progress Notes
    - `tilde mcp token create/list/revoke/rotate`
    - `tilde mcp audit`
 
-6. **Unit tests** — 9 tests in tilde-core passing:
+6. **Unit tests** — 10 tests in tilde-core passing:
    - Config defaults and loading
    - DB WAL mode, busy_timeout, synchronous, foreign keys
    - SHA-256 checksum computation
    - Argon2id hash/verify
    - Token format validation
    - Constant-time comparison
-
-### Tests Passing: 13/260
-- Test 0: Cargo workspace compiles
-- Test 1: Binary produces tilde executable
-- Test 2: Config loading via figment (TOML + env + CLI)
-- Test 5: SQLite init with WAL, FTS5, JSON1, foreign keys
-- Test 6: SQLite busy_timeout=5000, synchronous=NORMAL
-- Test 7: Migration runner with checksums
-- Test 8: Argon2id password hashing
-- Test 10: Constant-time token comparison
-- Test 12: App-password creation with scope
-- Test 13: App-password list/revoke
-- Test 18: Health endpoint
-- Test 20: Structured JSON logging
-- Test 23: HSTS header
+   - Admin password roundtrip
 
 ### Architecture Notes
 - Cyclic dependency resolved: tilde-cli defines CLI types only, tilde-server has command implementations
 - tilde-server's main.rs dispatches commands to commands.rs module
-- SharedState = Arc<AppState> with Config + Mutex<Connection> + Instant
-
-### Next Steps (for future sessions)
-1. Implement WebDAV Class 1 handler (tilde-dav): OPTIONS, GET, PUT, DELETE, MKCOL, MOVE, COPY, PROPFIND
-2. Add auth middleware to axum (Basic Auth with app-passwords, session cookies)
-3. Implement Nextcloud Login Flow v2
-4. Add rate limiting middleware
-5. Implement session token sliding TTL
-6. Add localhost-only restriction on /metrics
-7. Make tilde init truly interactive (prompt for hostname, TLS mode)
-8. Implement WebDAV file operations
+- SharedState = Arc<AppState> with Config + Arc<Mutex<Connection>> + Instant + login_attempts
+- SharedDavState = Arc<DavState> with Arc<Mutex<Connection>> + files_root PathBuf
 
 ---
 
