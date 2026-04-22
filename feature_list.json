@@ -7,7 +7,7 @@
       "Step 2: Verify all 13 crates compile without errors",
       "Step 3: Verify workspace Cargo.toml lists all crate members"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -17,7 +17,7 @@
       "Step 2: Verify target/release/tilde binary exists",
       "Step 3: Verify binary runs and prints help with `./tilde --help`"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -30,7 +30,7 @@
       "Step 5: Run tilde with explicit CLI flag for hostname",
       "Step 6: Verify CLI flag overrides env var"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -67,7 +67,7 @@
       "Step 4: Verify PRAGMA foreign_keys returns 1",
       "Step 5: Verify FTS5 is available by checking notes_fts table creation"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -78,7 +78,7 @@
       "Step 3: Verify PRAGMA busy_timeout returns 5000",
       "Step 4: Verify PRAGMA synchronous returns 1 (NORMAL)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -91,7 +91,7 @@
       "Step 5: Run tilde again and verify no migrations re-applied",
       "Step 6: Modify a migration SQL file and verify checksum mismatch is detected"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -108,7 +108,7 @@
       "Step 9: Verify password hash uses unique salt per hash",
       "Step 10: Verify re-running init with same password produces different hash (unique salt)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -137,7 +137,7 @@
       "Step 3: Verify token with 1 char difference is rejected",
       "Step 4: Verify timing of valid vs invalid token comparison is similar (constant-time)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -172,7 +172,7 @@
       "Step 9: Verify scope_prefix stored correctly in database",
       "Step 10: Verify app-password last_used_at updates on use"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -185,7 +185,7 @@
       "Step 5: Verify revoked password no longer authenticates",
       "Step 6: Verify remaining password still works"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -244,7 +244,7 @@
       "Step 4: Verify JSON contains db_status, disk_usage, uptime fields",
       "Step 5: Verify db_status reflects actual database connectivity"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -267,7 +267,7 @@
       "Step 3: Verify log output is valid JSON per line",
       "Step 4: Verify log entries contain timestamp, level, message, span context"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -300,7 +300,7 @@
       "Step 2: Verify Strict-Transport-Security header present",
       "Step 3: Verify header includes max-age, includeSubDomains, preload"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

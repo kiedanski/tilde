@@ -1,8 +1,10 @@
 use clap::Parser;
+use tilde_cli::{Cli, Commands};
+
+mod commands;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -10,6 +12,24 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let cli = tilde_cli::Cli::parse();
-    cli.run().await
+    let cli = Cli::parse();
+    let config_path = cli.config.clone();
+
+    match cli.command {
+        Some(Commands::Init) => commands::run_init(config_path.as_deref()).await,
+        Some(Commands::Serve) => commands::run_serve(config_path.as_deref()).await,
+        Some(Commands::Status) => commands::run_status(config_path.as_deref()).await,
+        Some(Commands::Diagnose) => commands::run_diagnose(config_path.as_deref()).await,
+        Some(Commands::Auth { command }) => commands::run_auth(config_path.as_deref(), command).await,
+        Some(Commands::Mcp { command }) => commands::run_mcp(config_path.as_deref(), command).await,
+        None => {
+            println!("tilde — Personal Cloud Server");
+            println!("Run `tilde --help` for usage information.");
+            Ok(())
+        }
+        _ => {
+            println!("Command not yet implemented");
+            Ok(())
+        }
+    }
 }

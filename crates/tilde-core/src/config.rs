@@ -1,8 +1,11 @@
 //! Configuration loading via figment (TOML + env + CLI)
 
-use serde::Deserialize;
+use figment::{Figment, providers::{Format, Toml, Env, Serialized}};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use tracing::info;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
@@ -12,9 +15,148 @@ pub struct Config {
     pub auth: AuthConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub files: FilesConfig,
+    #[serde(default)]
+    pub photos: PhotosConfig,
+    #[serde(default)]
+    pub notes: NotesConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
-#[derive(Debug, Deserialize)]
+impl Config {
+    /// Load configuration with layered priority: defaults < TOML file < env vars
+    pub fn load(config_path: Option<&str>) -> anyhow::Result<Self> {
+        let mut figment = Figment::from(Serialized::defaults(Config::default()));
+
+        // Layer TOML file if provided or found at default locations
+        if let Some(path) = config_path {
+            if Path::new(path).exists() {
+                figment = figment.merge(Toml::file(path));
+                info!(path = path, "Loaded config from explicit path");
+            }
+        } else {
+            // Try default locations
+            for candidate in Self::default_config_paths() {
+                if candidate.exists() {
+                    figment = figment.merge(Toml::file(&candidate));
+                    info!(path = %candidate.display(), "Loaded config from default path");
+                    break;
+                }
+            }
+        }
+
+        // Layer env vars: TILDE_SERVER__HOSTNAME -> server.hostname
+        figment = figment.merge(
+            Env::prefixed("TILDE_")
+                .map(|key| {
+                    // Map flat TILDE_HOSTNAME to server.hostname, etc.
+                    let key_str = key.as_str().to_lowercase();
+                    match key_str.as_str() {
+                        "hostname" => "server.hostname".into(),
+                        "acme_email" => "tls.acme_email".into(),
+                        "admin_password" => "auth.admin_password".into(),
+                        _ => key.as_str().replace("__", ".").into()
+                    }
+                })
+        );
+
+        let config: Config = figment.extract()?;
+        Ok(config)
+    }
+
+    /// Resolve data directory based on mode (systemd vs user)
+    pub fn data_dir(&self) -> PathBuf {
+        if let Ok(state_dir) = std::env::var("STATE_DIRECTORY") {
+            PathBuf::from(state_dir)
+        } else if let Ok(dir) = std::env::var("TILDE_DATA_DIR") {
+            PathBuf::from(dir)
+        } else if let Some(data_dir) = directories::ProjectDirs::from("", "", "tilde")
+            .map(|d| d.data_dir().to_path_buf())
+        {
+            data_dir
+        } else {
+            PathBuf::from(".dev-data")
+        }
+    }
+
+    /// Resolve cache directory
+    pub fn cache_dir(&self) -> PathBuf {
+        if let Ok(cache_dir) = std::env::var("CACHE_DIRECTORY") {
+            PathBuf::from(cache_dir)
+        } else if let Ok(dir) = std::env::var("TILDE_CACHE_DIR") {
+            PathBuf::from(dir)
+        } else if let Some(cache_dir) = directories::ProjectDirs::from("", "", "tilde")
+            .map(|d| d.cache_dir().to_path_buf())
+        {
+            cache_dir
+        } else {
+            PathBuf::from(".dev-cache")
+        }
+    }
+
+    /// Resolve config directory
+    pub fn config_dir() -> PathBuf {
+        if std::env::var("STATE_DIRECTORY").is_ok() {
+            PathBuf::from("/etc/tilde")
+        } else if let Ok(dir) = std::env::var("TILDE_CONFIG_DIR") {
+            PathBuf::from(dir)
+        } else if let Some(config_dir) = directories::ProjectDirs::from("", "", "tilde")
+            .map(|d| d.config_dir().to_path_buf())
+        {
+            config_dir
+        } else {
+            PathBuf::from(".")
+        }
+    }
+
+    /// Database file path
+    pub fn db_path(&self) -> PathBuf {
+        self.data_dir().join("tilde.db")
+    }
+
+    /// Whether running in systemd mode
+    pub fn is_systemd_mode() -> bool {
+        std::env::var("STATE_DIRECTORY").is_ok()
+    }
+
+    fn default_config_paths() -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+
+        // Systemd mode
+        if Self::is_systemd_mode() {
+            paths.push(PathBuf::from("/etc/tilde/config.toml"));
+        }
+
+        // XDG config
+        if let Some(proj_dirs) = directories::ProjectDirs::from("", "", "tilde") {
+            paths.push(proj_dirs.config_dir().join("config.toml"));
+        }
+
+        // Current directory fallback
+        paths.push(PathBuf::from("config.toml"));
+
+        paths
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: ServerConfig::default(),
+            tls: TlsConfig::default(),
+            auth: AuthConfig::default(),
+            logging: LoggingConfig::default(),
+            files: FilesConfig::default(),
+            photos: PhotosConfig::default(),
+            notes: NotesConfig::default(),
+            mcp: McpConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerConfig {
     #[serde(default)]
     pub hostname: String,
@@ -37,7 +179,7 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TlsConfig {
     #[serde(default = "default_tls_mode")]
     pub mode: String,
@@ -60,7 +202,7 @@ impl Default for TlsConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AuthConfig {
     #[serde(default = "default_session_ttl")]
     pub session_ttl_hours: u32,
@@ -68,6 +210,8 @@ pub struct AuthConfig {
     pub max_login_attempts: u32,
     #[serde(default = "default_lockout_duration")]
     pub lockout_duration_minutes: u32,
+    #[serde(default)]
+    pub admin_password: String,
 }
 
 impl Default for AuthConfig {
@@ -76,11 +220,12 @@ impl Default for AuthConfig {
             session_ttl_hours: default_session_ttl(),
             max_login_attempts: default_max_login_attempts(),
             lockout_duration_minutes: default_lockout_duration(),
+            admin_password: String::new(),
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
@@ -97,6 +242,80 @@ impl Default for LoggingConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FilesConfig {
+    #[serde(default = "default_max_upload_size")]
+    pub max_upload_size_mb: u64,
+    #[serde(default = "default_chunked_ttl")]
+    pub chunked_upload_session_ttl_hours: u32,
+}
+
+impl Default for FilesConfig {
+    fn default() -> Self {
+        Self {
+            max_upload_size_mb: default_max_upload_size(),
+            chunked_upload_session_ttl_hours: default_chunked_ttl(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PhotosConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_org_pattern")]
+    pub organization_pattern: String,
+    #[serde(default = "default_thumbnail_sizes")]
+    pub thumbnail_sizes: Vec<u32>,
+    #[serde(default = "default_thumbnail_quality")]
+    pub thumbnail_quality: u32,
+}
+
+impl Default for PhotosConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            organization_pattern: default_org_pattern(),
+            thumbnail_sizes: default_thumbnail_sizes(),
+            thumbnail_quality: default_thumbnail_quality(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NotesConfig {
+    #[serde(default = "default_notes_root")]
+    pub root_path: String,
+}
+
+impl Default for NotesConfig {
+    fn default() -> Self {
+        Self {
+            root_path: default_notes_root(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct McpConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_mcp_rate_limit")]
+    pub default_rate_limit: u32,
+    #[serde(default = "default_audit_retention")]
+    pub audit_log_retention_days: u32,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            default_rate_limit: default_mcp_rate_limit(),
+            audit_log_retention_days: default_audit_retention(),
+        }
+    }
+}
+
 fn default_listen_addr() -> String { "0.0.0.0".to_string() }
 fn default_listen_port() -> u16 { 443 }
 fn default_tls_mode() -> String { "acme".to_string() }
@@ -105,3 +324,33 @@ fn default_max_login_attempts() -> u32 { 5 }
 fn default_lockout_duration() -> u32 { 15 }
 fn default_log_level() -> String { "info".to_string() }
 fn default_log_format() -> String { "json".to_string() }
+fn default_max_upload_size() -> u64 { 10240 }
+fn default_chunked_ttl() -> u32 { 24 }
+fn default_true() -> bool { true }
+fn default_org_pattern() -> String { "{year}/{month:02}".to_string() }
+fn default_thumbnail_sizes() -> Vec<u32> { vec![256, 1920] }
+fn default_thumbnail_quality() -> u32 { 80 }
+fn default_notes_root() -> String { "notes".to_string() }
+fn default_mcp_rate_limit() -> u32 { 60 }
+fn default_audit_retention() -> u32 { 90 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = Config::default();
+        assert_eq!(config.server.listen_addr, "0.0.0.0");
+        assert_eq!(config.server.listen_port, 443);
+        assert_eq!(config.auth.session_ttl_hours, 24);
+        assert_eq!(config.auth.max_login_attempts, 5);
+    }
+
+    #[test]
+    fn test_load_defaults() {
+        let config = Config::load(None).unwrap();
+        assert_eq!(config.server.listen_port, 443);
+        assert_eq!(config.tls.mode, "acme");
+    }
+}

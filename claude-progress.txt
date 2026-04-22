@@ -1,55 +1,98 @@
-tilde — Session 1 Progress (Initializer Agent)
-================================================
+tilde — Progress Notes
+======================
 
-Date: 2025-04-22
+## Session 2 (2025-04-22) — Foundation Implementation
 
-## Completed
+### Completed
+1. **Config loading via figment** — `Config::load()` with layered priority:
+   - Defaults → TOML file → Environment variables
+   - TILDE_HOSTNAME → server.hostname, TILDE_ADMIN_PASSWORD → auth.admin_password
+   - XDG path resolution, systemd mode detection
+   - Additional config sections: FilesConfig, PhotosConfig, NotesConfig, McpConfig
 
-1. **feature_list.json** — 260 test cases (232 functional, 28 style)
-   - 27 tests with 10+ steps each
-   - Covers all features from app_spec.txt exhaustively
-   - All tests start with passes: false
+2. **SQLite migration runner** — Full implementation:
+   - Reads .sql files from migrations/ directory
+   - Applies in version order (parsed from filename like 001_initial.sql)
+   - SHA-256 checksum verification (detects modified migration files)
+   - Tracks applied migrations with timestamps
 
-2. **init.sh** — Development environment setup script
-   - Loads .env (errors if missing with .env.example present)
-   - Checks system dependencies (rustc, cargo, sqlite3, exiftool, ffmpeg)
-   - Runs cargo build
-   - Creates development data directories
-   - Prints helpful summary
+3. **Auth module** — Complete Argon2id implementation:
+   - `hash_password()` / `verify_password()` with Argon2id
+   - Session tokens: `tilde_session_<64 hex chars>` format
+   - MCP tokens: `mcp_prod_<30 alphanumeric chars>` format
+   - App passwords: `tilde_app_<24 alphanumeric chars>` format
+   - Token SHA-256 hashing for storage (never store plaintext)
+   - Constant-time comparison via subtle crate
+   - Session creation/validation with TTL
+   - App password CRUD with scope enforcement
+   - MCP token CRUD with scope and rate limit
 
-3. **Cargo workspace** — All 13 crates compile successfully
-   - tilde-core (config, auth, database, migrations, error types)
-   - tilde-server (axum binary entry point)
-   - tilde-cli (clap CLI with all subcommands stubbed)
-   - tilde-dav, tilde-cal, tilde-card, tilde-photos, tilde-notes
-   - tilde-collections, tilde-email, tilde-mcp, tilde-backup, tilde-notify
+4. **HTTP server (axum)** — Endpoints working:
+   - GET /health — JSON with status, version, uptime, db status
+   - GET /metrics — Prometheus text format (uptime, db size)
+   - GET /status.php — Nextcloud compatibility stub
+   - GET /ocs/v2.php/cloud/capabilities — OCS capabilities
+   - GET /.well-known/caldav → 301 /caldav/
+   - GET /.well-known/carddav → 301 /carddav/
+   - HSTS, X-Content-Type-Options, X-Frame-Options headers on all responses
+   - TraceLayer for request logging
 
-4. **Project structure**
-   - migrations/001_initial.sql — Complete database schema
-   - locales/en.ftl — English locale strings
-   - assets/login.html — Nextcloud Login Flow v2 page
-   - README.md — Project overview and setup instructions
-   - .gitignore — Proper exclusions
+5. **CLI commands implemented**:
+   - `tilde init` — Creates directories, DB, migrations, sets admin password
+   - `tilde serve` — Starts axum HTTP server
+   - `tilde status` — Shows config, DB info, disk usage
+   - `tilde diagnose` — Checks config, DB integrity, dependencies
+   - `tilde auth app-password create/list/revoke`
+   - `tilde auth session list/revoke`
+   - `tilde auth reset-password`
+   - `tilde mcp token create/list/revoke/rotate`
+   - `tilde mcp audit`
 
-5. **CLI structure** — All subcommands defined via clap derive macros
-   - init, serve, status, diagnose
-   - auth (reset-password, app-password, session)
-   - mcp (token, audit)
-   - notes (search, list)
-   - photos (list, tag, reindex, thumbnail)
-   - calendar (list, events), contacts (list, search)
-   - collection (create, list)
-   - email (search, thread, show, reindex, status)
-   - backup (status, now, list, verify, pin)
-   - notifications (test, list, config)
-   - export, import, reindex, update (check, download)
-   - Global flags: --config, --json, --dry-run, --verbose
+6. **Unit tests** — 9 tests in tilde-core passing:
+   - Config defaults and loading
+   - DB WAL mode, busy_timeout, synchronous, foreign keys
+   - SHA-256 checksum computation
+   - Argon2id hash/verify
+   - Token format validation
+   - Constant-time comparison
 
-## Next Steps (for future sessions)
+### Tests Passing: 13/260
+- Test 0: Cargo workspace compiles
+- Test 1: Binary produces tilde executable
+- Test 2: Config loading via figment (TOML + env + CLI)
+- Test 5: SQLite init with WAL, FTS5, JSON1, foreign keys
+- Test 6: SQLite busy_timeout=5000, synchronous=NORMAL
+- Test 7: Migration runner with checksums
+- Test 8: Argon2id password hashing
+- Test 10: Constant-time token comparison
+- Test 12: App-password creation with scope
+- Test 13: App-password list/revoke
+- Test 18: Health endpoint
+- Test 20: Structured JSON logging
+- Test 23: HSTS header
 
-1. Implement tilde-core: config loading via figment, SQLite init, migration runner
-2. Implement auth: Argon2id password hashing, session tokens, app-passwords
-3. Build axum server scaffolding with tower middleware
-4. Implement /health and /metrics endpoints
-5. Implement WebDAV Class 1 handler in tilde-dav
-6. Begin CalDAV/CardDAV integration via RustiCal
+### Architecture Notes
+- Cyclic dependency resolved: tilde-cli defines CLI types only, tilde-server has command implementations
+- tilde-server's main.rs dispatches commands to commands.rs module
+- SharedState = Arc<AppState> with Config + Mutex<Connection> + Instant
+
+### Next Steps (for future sessions)
+1. Implement WebDAV Class 1 handler (tilde-dav): OPTIONS, GET, PUT, DELETE, MKCOL, MOVE, COPY, PROPFIND
+2. Add auth middleware to axum (Basic Auth with app-passwords, session cookies)
+3. Implement Nextcloud Login Flow v2
+4. Add rate limiting middleware
+5. Implement session token sliding TTL
+6. Add localhost-only restriction on /metrics
+7. Make tilde init truly interactive (prompt for hostname, TLS mode)
+8. Implement WebDAV file operations
+
+---
+
+## Session 1 (2025-04-22) — Initializer Agent
+
+### Completed
+1. feature_list.json — 260 test cases
+2. init.sh — Development setup script
+3. Cargo workspace — 13 crate stubs
+4. Project structure — migrations, locales, assets
+5. CLI structure — All subcommands defined

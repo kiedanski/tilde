@@ -1,33 +1,33 @@
 //! tilde-cli: clap CLI with all subcommands
 
 use clap::Parser;
-use tracing::info;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "tilde", about = "tilde — Personal Cloud Server", version)]
 pub struct Cli {
     #[command(subcommand)]
-    command: Option<Commands>,
+    pub command: Option<Commands>,
 
     /// Override config file path
     #[arg(long, global = true)]
-    config: Option<String>,
+    pub config: Option<String>,
 
     /// JSON output for scripting
     #[arg(long, global = true)]
-    json: bool,
+    pub json: bool,
 
     /// Show what would happen (on mutating commands)
     #[arg(long, global = true)]
-    dry_run: bool,
+    pub dry_run: bool,
 
     /// Increase log verbosity
     #[arg(short, long, global = true)]
-    verbose: bool,
+    pub verbose: bool,
 }
 
 #[derive(clap::Subcommand)]
-enum Commands {
+pub enum Commands {
     /// Interactive setup wizard
     Init,
     /// Start server (foreground, for systemd)
@@ -107,7 +107,7 @@ enum Commands {
 }
 
 #[derive(clap::Subcommand)]
-enum AuthCommands {
+pub enum AuthCommands {
     ResetPassword,
     AppPassword {
         #[command(subcommand)]
@@ -120,20 +120,20 @@ enum AuthCommands {
 }
 
 #[derive(clap::Subcommand)]
-enum AppPasswordCommands {
+pub enum AppPasswordCommands {
     Create { #[arg(long)] name: String, #[arg(long)] scope: String },
     List,
     Revoke { id: String },
 }
 
 #[derive(clap::Subcommand)]
-enum SessionCommands {
+pub enum SessionCommands {
     List,
     Revoke { id: String },
 }
 
 #[derive(clap::Subcommand)]
-enum McpCommands {
+pub enum McpCommands {
     Token {
         #[command(subcommand)]
         command: TokenCommands,
@@ -146,7 +146,7 @@ enum McpCommands {
 }
 
 #[derive(clap::Subcommand)]
-enum TokenCommands {
+pub enum TokenCommands {
     Create { #[arg(long)] name: String, #[arg(long)] scopes: String },
     List,
     Revoke { id: String },
@@ -154,13 +154,13 @@ enum TokenCommands {
 }
 
 #[derive(clap::Subcommand)]
-enum NotesCommands {
+pub enum NotesCommands {
     Search { query: String },
     List { #[arg(long)] path: Option<String> },
 }
 
 #[derive(clap::Subcommand)]
-enum PhotosCommands {
+pub enum PhotosCommands {
     List {
         #[arg(long)] tag: Option<String>,
         #[arg(long)] since: Option<String>,
@@ -175,13 +175,13 @@ enum PhotosCommands {
 }
 
 #[derive(clap::Subcommand)]
-enum TagCommands {
+pub enum TagCommands {
     Add { tag: String },
     Remove { tag: String },
 }
 
 #[derive(clap::Subcommand)]
-enum ThumbnailCommands {
+pub enum ThumbnailCommands {
     Regenerate {
         #[arg(long)] all: bool,
         #[arg(long)] missing: bool,
@@ -189,7 +189,7 @@ enum ThumbnailCommands {
 }
 
 #[derive(clap::Subcommand)]
-enum CalendarCommands {
+pub enum CalendarCommands {
     List,
     Events {
         #[arg(long)] from: Option<String>,
@@ -199,19 +199,19 @@ enum CalendarCommands {
 }
 
 #[derive(clap::Subcommand)]
-enum ContactsCommands {
+pub enum ContactsCommands {
     List,
     Search { query: String },
 }
 
 #[derive(clap::Subcommand)]
-enum CollectionCommands {
+pub enum CollectionCommands {
     Create { name: String, #[arg(long)] schema: String },
     List,
 }
 
 #[derive(clap::Subcommand)]
-enum EmailCommands {
+pub enum EmailCommands {
     Search { query: String },
     Thread { message_id: String },
     Show { message_id: String },
@@ -220,7 +220,7 @@ enum EmailCommands {
 }
 
 #[derive(clap::Subcommand)]
-enum BackupCommands {
+pub enum BackupCommands {
     Status,
     Now { #[arg(long)] offsite: Option<String> },
     List { #[arg(long)] offsite: Option<String> },
@@ -229,49 +229,29 @@ enum BackupCommands {
 }
 
 #[derive(clap::Subcommand)]
-enum NotificationCommands {
+pub enum NotificationCommands {
     Test { sink: String },
     List,
     Config,
 }
 
 #[derive(clap::Subcommand)]
-enum UpdateCommands {
+pub enum UpdateCommands {
     Check,
     Download,
 }
 
-impl Cli {
-    pub async fn run(self) -> anyhow::Result<()> {
-        match self.command {
-            Some(Commands::Serve) => {
-                info!("Starting tilde server...");
-                // TODO: Build and run axum server
-                println!("tilde server starting... (not yet implemented)");
-                Ok(())
-            }
-            Some(Commands::Init) => {
-                info!("Running init wizard...");
-                println!("tilde init wizard (not yet implemented)");
-                Ok(())
-            }
-            Some(Commands::Status) => {
-                println!("tilde status (not yet implemented)");
-                Ok(())
-            }
-            Some(Commands::Diagnose) => {
-                println!("tilde diagnose (not yet implemented)");
-                Ok(())
-            }
-            None => {
-                println!("tilde — Personal Cloud Server");
-                println!("Run `tilde --help` for usage information.");
-                Ok(())
-            }
-            _ => {
-                println!("Command not yet implemented");
-                Ok(())
-            }
+/// Find the migrations directory
+pub fn find_migrations_dir() -> PathBuf {
+    let cwd = PathBuf::from("migrations");
+    if cwd.exists() {
+        return cwd;
+    }
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let dev_path = PathBuf::from(manifest_dir).join("../../migrations");
+        if dev_path.exists() {
+            return dev_path;
         }
     }
+    cwd
 }
