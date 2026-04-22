@@ -1760,7 +1760,7 @@
       "Step 3: Verify events appended to notification log file",
       "Step 4: Verify file sink logs events of all priority levels"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1999,7 +1999,7 @@
       "Step 3: Verify data stored in target collection/calendar/note",
       "Step 4: Verify rate limiting enforced (30 req/min default)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2009,7 +2009,7 @@
       "Step 2: Run `tilde webhook token list` \u2192 verify token listed",
       "Step 3: Run `tilde webhook token revoke <id>` \u2192 verify revoked"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2251,7 +2251,7 @@
       "Step 2: Query notification_log table",
       "Step 3: Verify records with event_type, priority, message, sinks_notified, created_at"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

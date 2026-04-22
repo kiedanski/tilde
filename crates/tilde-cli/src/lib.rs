@@ -105,6 +105,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: NotificationCommands,
     },
+    /// Webhook token management
+    Webhook {
+        #[command(subcommand)]
+        command: WebhookCommands,
+    },
     /// Rebuild indexes
     Reindex {
         #[arg(long, default_value = "all")]
@@ -307,6 +312,30 @@ pub enum NotificationCommands {
     Test { sink: String },
     List,
     Config,
+}
+
+#[derive(clap::Subcommand)]
+pub enum WebhookCommands {
+    /// Webhook token management
+    Token {
+        #[command(subcommand)]
+        command: WebhookTokenCommands,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub enum WebhookTokenCommands {
+    /// Create a webhook token
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        scopes: String,
+    },
+    /// List webhook tokens
+    List,
+    /// Revoke a webhook token
+    Revoke { id: String },
 }
 
 #[derive(clap::Subcommand)]

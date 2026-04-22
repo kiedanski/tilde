@@ -1491,6 +1491,10 @@ name = "tilde-notify"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "jiff",
+ "rusqlite",
+ "serde",
+ "serde_json",
  "tilde-core",
  "tracing",
 ]

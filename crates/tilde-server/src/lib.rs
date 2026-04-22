@@ -99,6 +99,8 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
         // MCP endpoint
         .route("/mcp/", post(mcp_handler))
         .route("/mcp", post(mcp_handler))
+        // Webhook endpoint
+        .route("/api/webhook/{token_prefix}", post(webhook_handler))
         // Authenticated routes
         .merge(authenticated)
         // Principals (RFC 5397)
@@ -875,4 +877,89 @@ async fn mcp_handler(
     );
 
     (StatusCode::OK, Json(json!(response))).into_response()
+}
+
+// ─── Webhook endpoint ────────────────────────────────────────────────────
+
+/// POST /api/webhook/<token_prefix> — Inbound webhook handler
+async fn webhook_handler(
+    State(state): State<SharedState>,
+    AxumPath(token_prefix): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> axum::response::Response {
+    // Look up token by prefix
+    let db = state.db.lock().unwrap();
+
+    let result = db.query_row(
+        "SELECT name, scopes, rate_limit, revoked FROM webhook_tokens WHERE token_prefix = ?1",
+        [&token_prefix],
+        |row| Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i32>(2)?,
+            row.get::<_, bool>(3)?,
+        )),
+    );
+
+    let (name, scopes, _rate_limit, revoked) = match result {
+        Ok(r) => r,
+        Err(_) => {
+            return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown webhook token"}))).into_response();
+        }
+    };
+
+    if revoked {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "webhook token revoked"}))).into_response();
+    }
+
+    // Update last_used_at
+    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let _ = db.execute(
+        "UPDATE webhook_tokens SET last_used_at = ?1 WHERE token_prefix = ?2",
+        rusqlite::params![now, token_prefix],
+    );
+
+    // Process based on scopes
+    // Scopes like "tracker:weight:write" or "calendar:default:write"
+    let scope_parts: Vec<&str> = scopes.split(':').collect();
+
+    if scope_parts.first() == Some(&"tracker") && scope_parts.len() >= 2 {
+        let collection_name = scope_parts[1];
+
+        // Look up collection
+        let collection_result = db.query_row(
+            "SELECT id, schema_json FROM collections WHERE name = ?1",
+            [collection_name],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        );
+
+        match collection_result {
+            Ok((collection_id, _schema_json)) => {
+                let id = uuid::Uuid::new_v4().to_string();
+                let data_str = serde_json::to_string(&body).unwrap_or_default();
+
+                let result = db.execute(
+                    "INSERT INTO records (id, collection_id, data_json, created_at, updated_at, hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![id, collection_id, data_str, now, now, now],
+                );
+
+                match result {
+                    Ok(_) => {
+                        tracing::info!(webhook = %name, collection = collection_name, "Webhook data ingested");
+                        (StatusCode::OK, Json(json!({"id": id, "status": "ok"}))).into_response()
+                    }
+                    Err(e) => {
+                        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+                    }
+                }
+            }
+            Err(_) => {
+                (StatusCode::NOT_FOUND, Json(json!({"error": format!("collection '{}' not found", collection_name)}))).into_response()
+            }
+        }
+    } else {
+        // Generic webhook — just log it
+        tracing::info!(webhook = %name, scopes = %scopes, "Webhook received");
+        (StatusCode::OK, Json(json!({"status": "ok", "webhook": name}))).into_response()
+    }
 }
