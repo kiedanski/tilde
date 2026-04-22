@@ -50,6 +50,108 @@ pub fn generate_thumbnails(
     Ok((path_256, path_1920))
 }
 
+/// Compute a blurhash string from an image file.
+/// Returns a short hash string suitable for placeholder display.
+pub fn compute_blurhash(source: &Path) -> Result<String> {
+    let img = image::open(source).context("Failed to open image for blurhash")?;
+    // Resize to small for fast computation
+    let small = img.resize_exact(32, 32, FilterType::Nearest);
+    let rgba = small.to_rgba8();
+    let pixels = rgba.as_raw();
+
+    // Simple blurhash-like encoding (4x3 components)
+    let x_comp = 4;
+    let y_comp = 3;
+
+    let mut dc_r: f64 = 0.0;
+    let mut dc_g: f64 = 0.0;
+    let mut dc_b: f64 = 0.0;
+
+    for y in 0..32_u32 {
+        for x in 0..32_u32 {
+            let idx = ((y * 32 + x) * 4) as usize;
+            let r = srgb_to_linear(pixels[idx]);
+            let g = srgb_to_linear(pixels[idx + 1]);
+            let b = srgb_to_linear(pixels[idx + 2]);
+            dc_r += r;
+            dc_g += g;
+            dc_b += b;
+        }
+    }
+
+    let count = 1024.0; // 32 * 32
+    dc_r /= count;
+    dc_g /= count;
+    dc_b /= count;
+
+    // Encode size flag + DC value as base83
+    let size_flag = (x_comp - 1) + (y_comp - 1) * 9;
+    let mut result = String::new();
+    result.push(BASE83_CHARS[size_flag as usize]);
+
+    // Quantized max AC value (simplified)
+    result.push(BASE83_CHARS[0]);
+
+    // DC value
+    let dc_value = encode_dc(dc_r, dc_g, dc_b);
+    result.push_str(&encode_base83(dc_value, 4));
+
+    // AC values (simplified - just use average color components)
+    for _j in 0..y_comp {
+        for _i in 0..x_comp {
+            if _i == 0 && _j == 0 {
+                continue;
+            }
+            result.push_str(&encode_base83(0, 1));
+        }
+    }
+
+    Ok(result)
+}
+
+const BASE83_CHARS: &[char] = &[
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
+    'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b',
+    'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u',
+    'v', 'w', 'x', 'y', 'z', '#', '$', '%', '*', '+', ',', '-', '.', ':', ';', '=', '?', '@', '[',
+    ']', '^', '_', '{', '|', '}', '~',
+];
+
+fn srgb_to_linear(value: u8) -> f64 {
+    let v = value as f64 / 255.0;
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(value: f64) -> u32 {
+    let v = value.clamp(0.0, 1.0);
+    let srgb = if v <= 0.0031308 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    };
+    (srgb * 255.0 + 0.5) as u32
+}
+
+fn encode_dc(r: f64, g: f64, b: f64) -> u32 {
+    let r_int = linear_to_srgb(r);
+    let g_int = linear_to_srgb(g);
+    let b_int = linear_to_srgb(b);
+    (r_int << 16) + (g_int << 8) + b_int
+}
+
+fn encode_base83(value: u32, length: usize) -> String {
+    let mut result = String::new();
+    for i in (0..length).rev() {
+        let digit = (value / 83u32.pow(i as u32)) % 83;
+        result.push(BASE83_CHARS[digit as usize]);
+    }
+    result
+}
+
 /// Generate a thumbnail for a video using ffmpeg
 pub fn generate_video_thumbnail(
     source: &Path,

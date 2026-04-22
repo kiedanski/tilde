@@ -102,6 +102,42 @@ pub fn is_encrypted(content_type: &str) -> bool {
     content_type.contains("encrypted") || content_type.contains("pgp")
 }
 
+/// Compute the blob store path for a photo UUID with two-level directory sharding.
+/// Returns: blobs/by-id/<first2>/<next2>/<uuid>.<ext>
+pub fn blob_store_path(data_dir: &Path, uuid: &str, ext: &str) -> std::path::PathBuf {
+    let uuid_clean = uuid.replace('-', "");
+    let first2 = &uuid_clean[..2.min(uuid_clean.len())];
+    let next2 = if uuid_clean.len() > 2 {
+        &uuid_clean[2..4.min(uuid_clean.len())]
+    } else {
+        "00"
+    };
+    data_dir
+        .join("blobs")
+        .join("by-id")
+        .join(first2)
+        .join(next2)
+        .join(format!("{}.{}", uuid, ext))
+}
+
+/// Copy a photo to the content-addressed blob store.
+pub fn store_blob(
+    data_dir: &Path,
+    source: &Path,
+    uuid: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("bin");
+    let blob_path = blob_store_path(data_dir, uuid, ext);
+    if let Some(parent) = blob_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // Copy (not move) so the organized file stays in place
+    if !blob_path.exists() {
+        std::fs::copy(source, &blob_path)?;
+    }
+    Ok(blob_path)
+}
+
 /// Index a single photo file into the database, reading metadata via ExifTool
 pub fn index_photo(
     conn: &Connection,
@@ -137,6 +173,13 @@ pub fn index_photo(
     let now = jiff::Zoned::now()
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
+
+    // Store blob in content-addressed store with two-level sharding
+    if let Some(data_dir) = photos_base.parent()
+        && let Err(e) = store_blob(data_dir, file_path, &photo_id)
+    {
+        tracing::warn!(error = %e, "Failed to store blob (non-fatal)");
+    }
     let filename = file_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -223,6 +266,21 @@ pub fn index_photo(
                 "INSERT OR IGNORE INTO photo_tags (photo_id, tag, prefix) VALUES (?1, ?2, ?3)",
                 rusqlite::params![photo_id, tag_str, prefix],
             )?;
+        }
+    }
+
+    // Compute blurhash if the file is a readable image
+    if !encrypted {
+        match thumbnail::compute_blurhash(file_path) {
+            Ok(hash) => {
+                conn.execute(
+                    "UPDATE photos SET blurhash = ?1 WHERE id = ?2",
+                    rusqlite::params![hash, photo_id],
+                )?;
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "Failed to compute blurhash (non-fatal)");
+            }
         }
     }
 

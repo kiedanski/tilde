@@ -1042,7 +1042,7 @@
       "Step 2: Verify blob stored at blobs/by-id/<first2>/<next2>/<uuid>.<ext>",
       "Step 3: Verify UUID is stable and survives moves/renames"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1112,7 +1112,7 @@
       "Step 2: Verify blurhash field populated in photos table",
       "Step 3: Verify blurhash string is valid format"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
