@@ -1,44 +1,49 @@
 tilde — Progress Notes
 ======================
 
-## Session 4 (2025-04-22) — Login Flow v2, PROPPATCH, Chunked Uploads, Notes, Infra
+## Session 4 (2025-04-22) — Major Feature Push: 38 → 70 tests
 
-### Completed
-1. **Nextcloud Login Flow v2 (Test 48)**: Full implementation with CSRF, error handling, app-password creation
+### Completed Features
+1. **Nextcloud Login Flow v2 (Test 48)**: Full CSRF-protected login flow with app-password creation
 2. **WebDAV PROPPATCH (Test 39)**: Custom properties with XML parsing and DB storage
-3. **Chunked Upload v2 (Tests 42-44)**: Session creation, chunk upload, assembly, expiry, disk check
-4. **Well-known redirects (Tests 58-59)**: caldav/carddav already implemented, verified
-5. **Current-user-principal (Test 60)**: RFC 5397 PROPFIND handler at /principals/
-6. **TLS upstream mode (Test 17)**: Server speaks plain HTTP, verified
+3. **Chunked Upload v2 (Tests 42-44)**: Session management, chunk assembly, expiry, disk check
+4. **Well-known redirects (Tests 58-59)**: Verified caldav/carddav redirects
+5. **Current-user-principal (Test 60)**: RFC 5397 PROPFIND at /principals/
+6. **TLS upstream mode (Test 17)**: Plain HTTP serving verified
 7. **Shell completions (Test 28)**: bash, zsh, fish via clap_complete
-8. **Notes via WebDAV (Tests 93-94)**: /dav/notes/* mount with ETag conflict handling
-9. **Notes FTS search (Tests 95-97)**: Full-text search with snippets, notes list CLI
-10. **Data directories (Test 181)**: All directories created on serve startup
-11. **Photos WebDAV (Test 206)**: /dav/photos/* mount
-12. **Infrastructure tests verified**: WAL mode (170), atomic writes (171), timezone (174), CSRF (183), auth logging (188), CSP (209), clean exit (218)
+8. **Notes WebDAV (Tests 93-94)**: /dav/notes/* with ETag conflict handling
+9. **Notes FTS search (Tests 95-97)**: Full-text search + CLI list command
+10. **Photos WebDAV (Test 206)**: /dav/photos/* mount
+11. **Collections CRUD (Tests 99-102, 189)**: Schema validation, CRUD, export JSON/CSV
+12. **MCP token CRUD (Test 125)**: create, list, revoke, rotate verified
+13. **Data directories (Test 181)**: All dirs created on serve startup
+14. **Infrastructure (Tests 170-171, 174, 183, 187-188, 208-209, 218)**: WAL, atomic writes, timezone, CSRF, secrets, auth logging, rate limiting, CSP, clean exit
 
-### Architecture Changes
-- AppState includes login_flows HashMap
-- DavState includes uploads_root
-- Notes/photos served via separate DavState instances
-- clap_complete for shell completions
-- All data dirs created in serve startup
-
-### Tests Passing: 62/260
-Session 4 new: 17, 28, 39, 42-44, 48, 58-60, 93-97, 170-171, 174, 181, 183, 188, 206, 209, 218
-Previous: 0-15, 18-20, 23-24, 29-38, 40-41, 45-47, 49-50
+### Tests Passing: 70/260
+Total new tests this session: 32 (38 → 70)
 
 ### Next Steps (for future sessions)
-1. CalDAV/CardDAV via RustiCal integration (tests 51-67)
-2. MCP endpoint implementation (tests 119-140)
-3. Photo ingestion pipeline (tests 69-92)
+1. CalDAV/CardDAV via RustiCal integration (tests 51-67) — biggest remaining block
+2. MCP Streamable HTTP endpoint (tests 119-140) — needs rmcp integration
+3. Photo ingestion pipeline (tests 69-92) — ExifTool, thumbnails, file watcher
 4. Email archive IMAP client (tests 105-118)
-5. Collections/trackers CRUD (tests 99-104)
-6. Notifications sink implementations (tests 141-154)
+5. Bookmarks/Trackers shorthands (tests 103-104)
+6. Notifications (tests 141-154, 175-178)
+7. Backup (tests 145-155)
+8. Export/Import (tests 156-162)
+
+### Architecture
+- AppState: config, db, start_time, login_attempts, login_flows
+- DavState: db, files_root, uploads_root
+- Notes/photos: separate DavState instances with different files_root
+- Uploads: separate router at /dav/uploads/
+- Principals: PROPFIND handler at /principals/
+- Collections: Full CRUD with JSON Schema validation
+- FTS: notes_fts rebuilt from disk on search
 
 ---
 
 ## Earlier Sessions
-- Session 3: Auth middleware, rate limiting, WebDAV Class 1
-- Session 2: Foundation — config, database, auth, HTTP server, CLI
+- Session 3: Auth middleware, rate limiting, WebDAV Class 1 (tests 29-38)
+- Session 2: Foundation — config, database, auth, HTTP server, CLI (tests 0-15)
 - Session 1: Initializer — feature_list.json, Cargo workspace, project structure
