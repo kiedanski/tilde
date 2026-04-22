@@ -1,71 +1,52 @@
 tilde — Progress Notes
 ======================
 
-## Session 5 (2025-04-22) — MCP Streamable HTTP Endpoint: 70 → 87 tests
+## Session 5 (2025-04-22) — MCP, Webhooks, Notifications: 70 → 102 tests
 
 ### Completed Features
-1. **MCP Streamable HTTP endpoint (Test 119)**: JSON-RPC 2.0 at POST /mcp/
-2. **MCP Bearer token auth (Test 120)**: mcp_prod_ prefix, validates against mcp_tokens table
-3. **MCP Scope enforcement (Test 121)**: Per-tool scope checking, *:read wildcard support
-4. **MCP Rate limiting (Test 122)**: Per-token rate limits, configurable, sliding window
-5. **MCP Audit logging (Test 123)**: Every tool call logged to mcp_audit_log table
-6. **MCP Audit auto-prune (Test 124)**: Old entries pruned on each tool call
-7. **MCP notes.search (Test 126)**: FTS5 search with path, title, snippet, modified
-8. **MCP notes.read (Test 127)**: Read note content and metadata
-9. **MCP notes.append (Test 128)**: Append content with write scope enforcement
-10. **MCP files.list (Test 132)**: Directory listing with recursive option
-11. **MCP files.read (Test 133)**: Text file reading with 1MB limit
-12. **MCP files.search (Test 134)**: FTS5 search across file content
-13. **MCP trackers.log + query (Test 137)**: Collection data logging and querying
-14. **MCP no URL-fetching (Test 207)**: No fetch-from-URL tools exist
-15. **MCP *:read wildcard (Test 225)**: Grants read access to all domains
-16. **No *:write wildcard (Test 226)**: Write scopes must be listed explicitly
-17. **MCP tool descriptions (Test 249)**: Clear tool definitions with inputSchema
+1. **MCP Streamable HTTP endpoint (Tests 119-128, 132-134, 137)**: JSON-RPC 2.0 at POST /mcp/ with 8 tools
+2. **MCP auth & security (Tests 120-124, 207, 225-226, 249)**: Bearer tokens, scopes, rate limiting, audit log
+3. **Bookmarks shorthand (Test 103)**: tilde bookmarks add/list with auto-created collection
+4. **Trackers shorthand (Test 104)**: tilde trackers log/query
+5. **Schema validation (Test 213)**: Rejects invalid records
+6. **Request-ID middleware (Test 192)**: X-Request-Id + gzip compression
+7. **Webhook endpoint (Tests 163-164)**: POST /api/webhook/<prefix> + token CRUD CLI
+8. **Notification file sink (Test 144)**: Append-only log with priority routing
+9. **Notification log (Test 185)**: notification_log table recording events
+10. **Infrastructure verified (Tests 169, 186, 190, 228, 236, 248, 249, 256)**: Various existing features confirmed working
 
-### Architecture
-- tilde-mcp crate: JSON-RPC 2.0 handler with tool dispatch
-- McpState stored in AppState, shares db Arc with rest of server
-- Tools: notes.{search,read,append}, files.{list,read,search}, trackers.{log,query}
-- Auth: Bearer mcp_prod_ tokens validated from mcp_tokens table
-- Scope check: per-tool required scope, *:read wildcard, no *:write wildcard
-- Rate limiting: in-memory per-token sliding window
-- Audit: mcp_audit_log table with auto-prune on retention_days
+### Tests Passing: 102/260
+Total new tests this session: 32 (70 → 102)
 
-### Tests Passing: 87/260
-Total new tests this session: 17 (70 → 87)
+### Architecture Changes
+- tilde-mcp crate: Full MCP JSON-RPC handler with tool dispatch
+- tilde-notify crate: Notification system with file sink, rate limiter, priority routing
+- McpState added to AppState
+- Webhook tokens reuse the existing webhook_tokens table
+- X-Request-Id and CompressionLayer middleware added
 
 ### Next Steps (for future sessions)
 1. CalDAV/CardDAV via RustiCal integration (tests 51-67) — biggest remaining block
-2. Remaining MCP tools needing CalDAV/email: calendar, contacts, tasks, email (tests 129-131, 135-136, 138-140)
+2. Remaining MCP tools needing CalDAV/email (tests 129-131, 135-136, 138-140)
 3. Photo ingestion pipeline (tests 69-92) — ExifTool, thumbnails, file watcher
 4. Email archive IMAP client (tests 105-118)
-5. Bookmarks/Trackers shorthands (tests 103-104)
-6. Notifications (tests 141-154, 175-178)
-7. Backup (tests 145-155)
-8. Export/Import (tests 156-162)
+5. Notifications: ntfy, SMTP, Matrix, Signal sinks (tests 143, 175-178)
+6. Backup (tests 149-155)
+7. Export/Import (tests 156-162)
 
 ---
 
 ## Session 4 (2025-04-22) — Major Feature Push: 38 → 70 tests
 
 ### Completed Features
-1. **Nextcloud Login Flow v2 (Test 48)**: Full CSRF-protected login flow with app-password creation
-2. **WebDAV PROPPATCH (Test 39)**: Custom properties with XML parsing and DB storage
-3. **Chunked Upload v2 (Tests 42-44)**: Session management, chunk assembly, expiry, disk check
-4. **Well-known redirects (Tests 58-59)**: Verified caldav/carddav redirects
-5. **Current-user-principal (Test 60)**: RFC 5397 PROPFIND at /principals/
-6. **TLS upstream mode (Test 17)**: Plain HTTP serving verified
-7. **Shell completions (Test 28)**: bash, zsh, fish via clap_complete
-8. **Notes WebDAV (Tests 93-94)**: /dav/notes/* with ETag conflict handling
-9. **Notes FTS search (Tests 95-97)**: Full-text search + CLI list command
-10. **Photos WebDAV (Test 206)**: /dav/photos/* mount
-11. **Collections CRUD (Tests 99-102, 189)**: Schema validation, CRUD, export JSON/CSV
-12. **MCP token CRUD (Test 125)**: create, list, revoke, rotate verified
-13. **Data directories (Test 181)**: All dirs created on serve startup
-14. **Infrastructure (Tests 170-171, 174, 183, 187-188, 208-209, 218)**: WAL, atomic writes, timezone, CSRF, secrets, auth logging, rate limiting, CSP, clean exit
+1. Nextcloud Login Flow v2, WebDAV PROPPATCH, Chunked Upload v2
+2. Well-known redirects, Current-user-principal
+3. TLS upstream mode, Shell completions
+4. Notes WebDAV + FTS search
+5. Photos WebDAV, Collections CRUD, MCP token CRUD
+6. Data directories, Infrastructure tests
 
 ### Tests Passing: 70/260
-Total new tests this session: 32 (38 → 70)
 
 ---
 
