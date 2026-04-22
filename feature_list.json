@@ -910,7 +910,7 @@
       "Step 3: Verify file moved to photos/_errors/",
       "Step 4: Verify error description sidecar .txt file created alongside"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -3041,7 +3041,7 @@
       "Step 3: Verify error description is clear and actionable",
       "Step 4: Verify original filename referenced in sidecar"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
