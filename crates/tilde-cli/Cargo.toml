@@ -1,0 +1,12 @@
+[package]
+name = "tilde-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tilde-core = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }

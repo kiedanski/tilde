@@ -1,0 +1,31 @@
+[package]
+name = "tilde-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tilde"
+path = "src/main.rs"
+
+[dependencies]
+tilde-core = { workspace = true }
+tilde-cli = { workspace = true }
+tilde-dav = { workspace = true }
+tilde-cal = { workspace = true }
+tilde-card = { workspace = true }
+tilde-photos = { workspace = true }
+tilde-notes = { workspace = true }
+tilde-collections = { workspace = true }
+tilde-email = { workspace = true }
+tilde-mcp = { workspace = true }
+tilde-backup = { workspace = true }
+tilde-notify = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }

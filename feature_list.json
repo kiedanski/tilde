@@ -1,0 +1,3057 @@
+[
+  {
+    "category": "functional",
+    "description": "Cargo workspace initializes and compiles with all crate stubs (tilde-core, tilde-server, tilde-cli, tilde-dav, tilde-cal, tilde-card, tilde-photos, tilde-notes, tilde-collections, tilde-email, tilde-mcp, tilde-backup, tilde-notify)",
+    "steps": [
+      "Step 1: Run `cargo check` in workspace root",
+      "Step 2: Verify all 13 crates compile without errors",
+      "Step 3: Verify workspace Cargo.toml lists all crate members"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Binary produces a single executable named 'tilde' via cargo build",
+    "steps": [
+      "Step 1: Run `cargo build --release`",
+      "Step 2: Verify target/release/tilde binary exists",
+      "Step 3: Verify binary runs and prints help with `./tilde --help`"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Config loading via figment supports layered TOML + env + CLI flags",
+    "steps": [
+      "Step 1: Create a minimal config.toml with [server] hostname = 'test.example.com'",
+      "Step 2: Set TILDE_HOSTNAME=env.example.com environment variable",
+      "Step 3: Run tilde with --config pointing to the TOML file",
+      "Step 4: Verify env var overrides TOML value",
+      "Step 5: Run tilde with explicit CLI flag for hostname",
+      "Step 6: Verify CLI flag overrides env var"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "XDG Base Directory compliance in user mode: config, data, cache, runtime dirs resolve correctly",
+    "steps": [
+      "Step 1: Unset STATE_DIRECTORY to ensure user mode",
+      "Step 2: Set XDG_CONFIG_HOME to a temp directory",
+      "Step 3: Run tilde status or init",
+      "Step 4: Verify config is read from $XDG_CONFIG_HOME/tilde/config.toml",
+      "Step 5: Verify data dir defaults to $XDG_DATA_HOME/tilde/",
+      "Step 6: Verify cache dir defaults to $XDG_CACHE_HOME/tilde/"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Systemd mode detection: when STATE_DIRECTORY is set, paths resolve to /var/lib/tilde etc.",
+    "steps": [
+      "Step 1: Set STATE_DIRECTORY=/var/lib/tilde",
+      "Step 2: Run tilde in systemd mode",
+      "Step 3: Verify config path resolves to /etc/tilde/config.toml",
+      "Step 4: Verify data dir resolves to /var/lib/tilde/",
+      "Step 5: Verify cache dir resolves to /var/cache/tilde/"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "SQLite database initialization with WAL mode, FTS5, JSON1, and foreign keys",
+    "steps": [
+      "Step 1: Run tilde init to create database",
+      "Step 2: Connect to tilde.db with sqlite3",
+      "Step 3: Verify PRAGMA journal_mode returns 'wal'",
+      "Step 4: Verify PRAGMA foreign_keys returns 1",
+      "Step 5: Verify FTS5 is available by checking notes_fts table creation"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "SQLite busy_timeout set to 5000ms and synchronous=NORMAL",
+    "steps": [
+      "Step 1: Start tilde server",
+      "Step 2: Connect to database",
+      "Step 3: Verify PRAGMA busy_timeout returns 5000",
+      "Step 4: Verify PRAGMA synchronous returns 1 (NORMAL)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Migration runner applies SQL migrations in version order with checksum verification",
+    "steps": [
+      "Step 1: Start with fresh database",
+      "Step 2: Run tilde with migrations",
+      "Step 3: Verify migrations table exists with version, name, applied_at, checksum columns",
+      "Step 4: Verify all migrations applied in order",
+      "Step 5: Run tilde again and verify no migrations re-applied",
+      "Step 6: Modify a migration SQL file and verify checksum mismatch is detected"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Argon2id password hashing: admin password from TILDE_ADMIN_PASSWORD is hashed on first use",
+    "steps": [
+      "Step 1: Set TILDE_ADMIN_PASSWORD=testpass123",
+      "Step 2: Run tilde init",
+      "Step 3: Verify password is stored as Argon2id hash in database (not plaintext)",
+      "Step 4: Verify hash starts with $argon2id$ prefix",
+      "Step 5: Verify the env var value can authenticate via HTTP Basic Auth",
+      "Step 6: Verify wrong password is rejected with 401",
+      "Step 7: Verify empty password is rejected",
+      "Step 8: Verify timing of valid vs invalid password check is similar",
+      "Step 9: Verify password hash uses unique salt per hash",
+      "Step 10: Verify re-running init with same password produces different hash (unique salt)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Opaque session tokens with 24h sliding TTL, stored in auth_sessions table",
+    "steps": [
+      "Step 1: Authenticate with admin password",
+      "Step 2: Receive session token in format tilde_session_<32 random bytes>",
+      "Step 3: Verify token is exactly 46 chars (prefix + 32 random bytes)",
+      "Step 4: Verify session record in auth_sessions table",
+      "Step 5: Verify token_prefix contains first 8 chars of random portion",
+      "Step 6: Verify created_at timestamp is current",
+      "Step 7: Verify expires_at is 24h from created_at",
+      "Step 8: Make a request using the session token",
+      "Step 9: Verify last_used_at is updated to current time",
+      "Step 10: Verify expires_at slides forward by 24h from last use",
+      "Step 11: Wait until session expired, verify token rejected"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Constant-time token comparison using subtle crate for session validation",
+    "steps": [
+      "Step 1: Authenticate and get session token",
+      "Step 2: Verify valid token authenticates",
+      "Step 3: Verify token with 1 char difference is rejected",
+      "Step 4: Verify timing of valid vs invalid token comparison is similar (constant-time)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Rate limiting on auth endpoints: 5 attempts per 15 minutes per IP",
+    "steps": [
+      "Step 1: Send 1st failed login attempt \u2192 verify 401 response",
+      "Step 2: Send 2nd failed login attempt \u2192 verify 401 response",
+      "Step 3: Send 3rd failed login attempt \u2192 verify 401 response",
+      "Step 4: Send 4th failed login attempt \u2192 verify 401 response",
+      "Step 5: Send 5th failed login attempt \u2192 verify 401 response",
+      "Step 6: Send 6th failed login attempt \u2192 verify 429 Too Many Requests (lockout)",
+      "Step 7: Verify lockout response includes Retry-After header",
+      "Step 8: Attempt valid login during lockout \u2192 verify still locked out",
+      "Step 9: Wait for lockout_duration_minutes (15 min) to expire",
+      "Step 10: Verify valid login succeeds after lockout expires",
+      "Step 11: Verify different IP address is not affected by lockout"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "App-password creation with scope prefix restricting access to URL paths",
+    "steps": [
+      "Step 1: Run `tilde auth app-password create --name phone-dav --scope /dav/*`",
+      "Step 2: Verify app-password is displayed to user only once",
+      "Step 3: Verify app-password works for GET /dav/files/ via Basic Auth",
+      "Step 4: Verify app-password works for PUT /dav/files/test.txt",
+      "Step 5: Verify app-password works for PROPFIND /dav/files/",
+      "Step 6: Verify app-password is rejected for GET /caldav/",
+      "Step 7: Verify app-password is rejected for POST /mcp/",
+      "Step 8: Verify app-password hash stored as Argon2id in app_passwords table",
+      "Step 9: Verify scope_prefix stored correctly in database",
+      "Step 10: Verify app-password last_used_at updates on use"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "App-password list and revoke via CLI",
+    "steps": [
+      "Step 1: Create two app-passwords",
+      "Step 2: Run `tilde auth app-password list`",
+      "Step 3: Verify both passwords shown with name, scope, created_at, last_used_at",
+      "Step 4: Run `tilde auth app-password revoke <id>`",
+      "Step 5: Verify revoked password no longer authenticates",
+      "Step 6: Verify remaining password still works"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Password reset via SSH: `tilde auth reset-password` changes the admin password",
+    "steps": [
+      "Step 1: Set initial password and authenticate",
+      "Step 2: Run `tilde auth reset-password`",
+      "Step 3: Enter new password",
+      "Step 4: Verify old password no longer works",
+      "Step 5: Verify new password authenticates"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Session list and revoke via CLI",
+    "steps": [
+      "Step 1: Create multiple sessions by authenticating from different user agents",
+      "Step 2: Run `tilde auth session list`",
+      "Step 3: Verify sessions shown with token_prefix, user_agent, source_ip, last_used_at",
+      "Step 4: Run `tilde auth session revoke <id>`",
+      "Step 5: Verify revoked session no longer authenticates"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "axum HTTP server starts and serves HTTPS with rustls on port 443",
+    "steps": [
+      "Step 1: Configure tilde with TLS mode = acme (or manual with test certs)",
+      "Step 2: Start `tilde serve`",
+      "Step 3: Verify HTTPS listener on configured port",
+      "Step 4: Verify TLS handshake completes with valid certificate"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "TLS upstream mode: server speaks plain HTTP when reverse proxy handles TLS",
+    "steps": [
+      "Step 1: Set tls.mode = 'upstream' and server.listen_port = 8080",
+      "Step 2: Start tilde serve",
+      "Step 3: Verify HTTP listener on port 8080 (no TLS)",
+      "Step 4: Verify requests with X-Forwarded-Proto: https are accepted",
+      "Step 5: Verify trusted_proxies filtering works"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Health endpoint returns JSON with db status, disk usage, and uptime",
+    "steps": [
+      "Step 1: Start tilde serve",
+      "Step 2: GET /health",
+      "Step 3: Verify 200 OK response with JSON body",
+      "Step 4: Verify JSON contains db_status, disk_usage, uptime fields",
+      "Step 5: Verify db_status reflects actual database connectivity"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Metrics endpoint returns Prometheus format and is localhost-only",
+    "steps": [
+      "Step 1: Start tilde serve",
+      "Step 2: GET /metrics from localhost",
+      "Step 3: Verify 200 OK with Prometheus text format",
+      "Step 4: Attempt GET /metrics from non-localhost IP",
+      "Step 5: Verify non-localhost request is rejected"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Structured JSON logging via tracing + tracing-subscriber",
+    "steps": [
+      "Step 1: Start tilde serve with logging.format = 'json'",
+      "Step 2: Make several requests",
+      "Step 3: Verify log output is valid JSON per line",
+      "Step 4: Verify log entries contain timestamp, level, message, span context"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "sd-notify systemd integration with Type=notify and watchdog",
+    "steps": [
+      "Step 1: Start tilde serve under systemd with Type=notify",
+      "Step 2: Verify systemd receives READY=1 notification",
+      "Step 3: Verify watchdog pings at WatchdogSec/2 interval",
+      "Step 4: Kill tilde process and verify systemd detects failure"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "SIGHUP handler reloads logging.level, mcp.tool_allowlist, mcp.default_rate_limit, notifications, backup schedule",
+    "steps": [
+      "Step 1: Start tilde serve with logging.level = 'info'",
+      "Step 2: Modify config.toml to logging.level = 'debug'",
+      "Step 3: Send SIGHUP to tilde process",
+      "Step 4: Verify log level changes to debug without restart",
+      "Step 5: Verify non-hot-reloadable settings (server.*, tls.*) are NOT reloaded"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "HSTS header with preload on all responses",
+    "steps": [
+      "Step 1: Make any request to tilde server",
+      "Step 2: Verify Strict-Transport-Security header present",
+      "Step 3: Verify header includes max-age, includeSubDomains, preload"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Host header allowlist rejects requests for unknown hosts",
+    "steps": [
+      "Step 1: Configure hostname as cloud.example.com",
+      "Step 2: Send request with Host: cloud.example.com",
+      "Step 3: Verify request is accepted",
+      "Step 4: Send request with Host: evil.example.com",
+      "Step 5: Verify request is rejected"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "tilde init interactive wizard creates config, sets password, generates backup key, creates directories, runs migrations",
+    "steps": [
+      "Step 1: Run `tilde init` in a fresh environment",
+      "Step 2: Provide hostname when prompted",
+      "Step 3: Set admin password when prompted",
+      "Step 4: Choose TLS mode",
+      "Step 5: Verify config.toml is created with provided values",
+      "Step 6: Verify password is hashed and stored",
+      "Step 7: Verify backup encryption keypair is generated",
+      "Step 8: Verify recovery code is printed to terminal",
+      "Step 9: Verify data directories are created (files, photos, calendars, contacts, mail, etc.)",
+      "Step 10: Verify SQLite migrations are applied",
+      "Step 11: Verify init does NOT auto-enable or start systemd service"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "tilde status shows server state, disk usage, last backup, sync status, cert expiry",
+    "steps": [
+      "Step 1: Start tilde serve",
+      "Step 2: Run `tilde status`",
+      "Step 3: Verify output includes server state (running/stopped)",
+      "Step 4: Verify output includes disk usage for data directory",
+      "Step 5: Verify output includes last backup timestamp",
+      "Step 6: Verify output includes certificate expiry date",
+      "Step 7: Verify --json flag produces valid JSON output"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "tilde diagnose validates config, connectivity, cert, disk, and dependencies",
+    "steps": [
+      "Step 1: Run `tilde diagnose`",
+      "Step 2: Verify it checks config file validity",
+      "Step 3: Verify it checks network connectivity",
+      "Step 4: Verify it checks TLS certificate status",
+      "Step 5: Verify it checks disk space availability",
+      "Step 6: Verify it checks for exiftool, libheif, ffmpeg dependencies",
+      "Step 7: Verify it reports missing dependencies clearly"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Shell completion generation for bash, zsh, and fish",
+    "steps": [
+      "Step 1: Run `tilde completions bash`",
+      "Step 2: Verify valid bash completion script is output",
+      "Step 3: Run `tilde completions zsh` and verify zsh completions",
+      "Step 4: Run `tilde completions fish` and verify fish completions"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV OPTIONS returns DAV: 1 header and supported methods",
+    "steps": [
+      "Step 1: Send OPTIONS request to /dav/files/",
+      "Step 2: Verify response includes DAV: 1 header",
+      "Step 3: Verify Allow header lists: OPTIONS, GET, PUT, DELETE, MKCOL, MOVE, COPY, PROPFIND, PROPPATCH, HEAD"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV GET downloads a file with correct content-type and supports Range headers",
+    "steps": [
+      "Step 1: Upload a test file via PUT",
+      "Step 2: GET the file and verify content matches",
+      "Step 3: Verify Content-Type header matches file MIME type",
+      "Step 4: Send GET with Range: bytes=0-99 header",
+      "Step 5: Verify 206 Partial Content with correct byte range"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV PUT uploads a file atomically (tmp \u2192 fsync \u2192 rename \u2192 fsync parent dir)",
+    "steps": [
+      "Step 1: PUT a new file to /dav/files/test.txt with text content 'hello world'",
+      "Step 2: Verify 201 Created response with Location header",
+      "Step 3: Verify file exists on disk at correct path",
+      "Step 4: Verify file content matches uploaded content exactly",
+      "Step 5: Verify ETag header in response is non-empty",
+      "Step 6: Verify Content-Type header in response",
+      "Step 7: Verify files table record created with correct size_bytes",
+      "Step 8: Verify files table record has correct content_type",
+      "Step 9: Verify no orphaned tmp file remains after write",
+      "Step 10: PUT a second file and verify 201 Created"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV PUT with If-Match ETag returns 412 on conflict",
+    "steps": [
+      "Step 1: Upload file and note its ETag",
+      "Step 2: Upload again with correct If-Match \u2192 verify 204 No Content",
+      "Step 3: Upload with wrong If-Match \u2192 verify 412 Precondition Failed",
+      "Step 4: Verify original file is not modified after 412"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV DELETE removes files and collections",
+    "steps": [
+      "Step 1: Create a text file via PUT /dav/files/deleteme.txt",
+      "Step 2: Verify file exists via GET",
+      "Step 3: DELETE /dav/files/deleteme.txt",
+      "Step 4: Verify 204 No Content response",
+      "Step 5: Verify GET returns 404",
+      "Step 6: Verify file removed from disk",
+      "Step 7: Verify files table record removed",
+      "Step 8: MKCOL /dav/files/testcol/",
+      "Step 9: PUT 2 files into testcol/",
+      "Step 10: DELETE /dav/files/testcol/",
+      "Step 11: Verify collection and all children removed from disk and database"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV MKCOL creates collections (directories)",
+    "steps": [
+      "Step 1: MKCOL /dav/files/testdir/",
+      "Step 2: Verify 201 Created response",
+      "Step 3: Verify directory exists on disk",
+      "Step 4: MKCOL on existing collection \u2192 verify 405 Method Not Allowed",
+      "Step 5: MKCOL with missing parent \u2192 verify 409 Conflict"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV MOVE renames/moves files and collections, updates oc:id mapping",
+    "steps": [
+      "Step 1: Create a file and note its oc:id",
+      "Step 2: MOVE file to new path with Destination header",
+      "Step 3: Verify file at new path, old path returns 404",
+      "Step 4: Verify oc:id is preserved (same UUID)",
+      "Step 5: MOVE a collection with children and verify recursive move"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV COPY duplicates files and collections",
+    "steps": [
+      "Step 1: Create a file with content",
+      "Step 2: COPY file to new path with Destination header",
+      "Step 3: Verify both source and destination exist",
+      "Step 4: Verify destination has different oc:id (new UUID)",
+      "Step 5: Verify content is identical"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV PROPFIND Depth: 0 returns properties for single resource",
+    "steps": [
+      "Step 1: Upload a file",
+      "Step 2: PROPFIND with Depth: 0 on the file",
+      "Step 3: Verify XML response contains getcontentlength, getcontenttype, getetag, getlastmodified",
+      "Step 4: Verify oc:id, oc:fileid, oc:permissions, oc:size custom properties"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV PROPFIND Depth: 1 returns properties for collection and children",
+    "steps": [
+      "Step 1: Create a collection via MKCOL /dav/files/testdir/",
+      "Step 2: PUT file1.txt (100 bytes) into testdir/",
+      "Step 3: PUT file2.md (200 bytes) into testdir/",
+      "Step 4: PUT file3.jpg (1000 bytes) into testdir/",
+      "Step 5: PROPFIND with Depth: 1 on testdir/",
+      "Step 6: Verify XML multistatus response contains 4 entries (collection + 3 files)",
+      "Step 7: Verify collection entry has resourcetype = collection",
+      "Step 8: Verify each file has getcontentlength matching actual size",
+      "Step 9: Verify each file has correct getcontenttype",
+      "Step 10: Verify each file has getetag and getlastmodified",
+      "Step 11: Verify oc:id present for each entry"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV PROPPATCH sets and removes custom properties",
+    "steps": [
+      "Step 1: Upload a file",
+      "Step 2: PROPPATCH to set a custom property",
+      "Step 3: PROPFIND and verify custom property is returned",
+      "Step 4: PROPPATCH to remove the custom property",
+      "Step 5: PROPFIND and verify property is no longer returned"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV HEAD returns metadata without body",
+    "steps": [
+      "Step 1: Upload a file",
+      "Step 2: HEAD request to the file",
+      "Step 3: Verify response has Content-Length, Content-Type, ETag headers",
+      "Step 4: Verify response body is empty"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Stable oc:id per file survives moves and renames (server-assigned UUID)",
+    "steps": [
+      "Step 1: Upload file test.txt via PUT and note response ETag",
+      "Step 2: PROPFIND test.txt and extract oc:id (UUID)",
+      "Step 3: MKCOL /dav/files/subdir/",
+      "Step 4: MOVE test.txt to /dav/files/renamed.txt",
+      "Step 5: PROPFIND renamed.txt and verify oc:id is unchanged",
+      "Step 6: MOVE renamed.txt to /dav/files/subdir/renamed.txt",
+      "Step 7: PROPFIND subdir/renamed.txt and verify oc:id is still the same",
+      "Step 8: Verify ETag may have changed (different from step 1)",
+      "Step 9: Verify files table path column updated",
+      "Step 10: Verify old paths return 404"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Nextcloud chunked upload v2: MKCOL session \u2192 chunk PUTs \u2192 MOVE finalize",
+    "steps": [
+      "Step 1: MKCOL /dav/uploads/user/session-123/ to create upload session",
+      "Step 2: PUT chunk 1 to /dav/uploads/user/session-123/1",
+      "Step 3: PUT chunk 2 to /dav/uploads/user/session-123/2",
+      "Step 4: PUT chunk 3 to /dav/uploads/user/session-123/3",
+      "Step 5: MOVE session dir to /dav/files/largefile.bin with OC-Total-Length header",
+      "Step 6: Verify assembled file at destination matches original content",
+      "Step 7: Verify ETag returned in response",
+      "Step 8: Verify upload session directory is cleaned up",
+      "Step 9: Verify bytes were streamed (never buffered full file in memory)",
+      "Step 10: Verify per-session size tracking is correct"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Chunked upload session expires after 24 hours and staging dir is cleaned up",
+    "steps": [
+      "Step 1: Create upload session",
+      "Step 2: Upload 1 chunk but don't finalize",
+      "Step 3: Wait for session to expire (or simulate expiry)",
+      "Step 4: Verify session is marked expired in chunked_uploads table",
+      "Step 5: Verify staging directory is cleaned up on next startup"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Chunked upload disk-space pre-check prevents uploads when disk is full",
+    "steps": [
+      "Step 1: Create upload session with OC-Total-Length header",
+      "Step 2: Verify server checks available disk space",
+      "Step 3: If insufficient space, verify 507 Insufficient Storage response"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Nextcloud OCS capabilities stub at /ocs/v2.php/cloud/capabilities returns minimal JSON",
+    "steps": [
+      "Step 1: GET /ocs/v2.php/cloud/capabilities",
+      "Step 2: Verify 200 OK with JSON response",
+      "Step 3: Verify JSON declares WebDAV chunked upload support",
+      "Step 4: Verify format is compatible with Nextcloud clients"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "/status.php returns Nextcloud-compatible status JSON",
+    "steps": [
+      "Step 1: GET /status.php",
+      "Step 2: Verify JSON response with installed: true, version: '28.0.0'",
+      "Step 3: Verify format satisfies Nextcloud client checks"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "/remote.php/dav/* aliases redirect to /dav/*",
+    "steps": [
+      "Step 1: Send request to /remote.php/dav/files/test.txt",
+      "Step 2: Verify redirect to /dav/files/test.txt",
+      "Step 3: Send request to /remote.php/webdav/test.txt",
+      "Step 4: Verify redirect to /dav/files/test.txt"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Nextcloud Login Flow v2: initiate, display login page, authenticate, poll for credentials",
+    "steps": [
+      "Step 1: POST /login/v2 with no auth \u2192 receive 200 OK JSON",
+      "Step 2: Verify JSON has poll.token (string), poll.endpoint (URL), login (URL)",
+      "Step 3: Poll the endpoint immediately \u2192 receive 404 (not yet authenticated)",
+      "Step 4: GET the login URL \u2192 verify HTML login page served",
+      "Step 5: Verify login page has CSRF token in hidden field",
+      "Step 6: POST login form with wrong password \u2192 verify error displayed",
+      "Step 7: POST login form with correct password and CSRF token",
+      "Step 8: Poll the endpoint with token \u2192 receive 200 OK JSON",
+      "Step 9: Verify response contains server (URL), loginName (string), appPassword (string)",
+      "Step 10: Use appPassword for WebDAV Basic Auth GET /dav/files/ \u2192 verify 200 OK",
+      "Step 11: Verify appPassword is stored as app-password with /dav/* scope",
+      "Step 12: Poll again with same token \u2192 verify 404 (one-time use)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "macOS Finder LOCK request handling: respond 200 OK (FakeLs pattern)",
+    "steps": [
+      "Step 1: Send LOCK request to a WebDAV resource (as Finder would)",
+      "Step 2: Verify 200 OK response (not 405 or 501)",
+      "Step 3: Verify file operations work after LOCK response"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Files table tracks UUID-based oc:id, path, metadata with proper indexes",
+    "steps": [
+      "Step 1: Upload a file via WebDAV",
+      "Step 2: Query files table in SQLite",
+      "Step 3: Verify record with UUID id, correct path, parent_path, name, size_bytes, content_type, etag, sha256, hlc",
+      "Step 4: Verify is_directory field for directories vs files"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CalDAV via RustiCal: calendar creation, modification, and deletion",
+    "steps": [
+      "Step 1: MKCALENDAR request to create a new calendar",
+      "Step 2: Verify calendar exists via PROPFIND",
+      "Step 3: PROPPATCH to modify calendar display name",
+      "Step 4: DELETE calendar",
+      "Step 5: Verify calendar no longer exists"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CalDAV event CRUD: create, read, update, delete VEVENT",
+    "steps": [
+      "Step 1: Create calendar",
+      "Step 2: PUT a VEVENT ICS file to the calendar",
+      "Step 3: GET the event and verify ICS content",
+      "Step 4: PUT updated event with If-Match ETag",
+      "Step 5: Verify event is updated",
+      "Step 6: DELETE the event",
+      "Step 7: Verify event no longer exists"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CalDAV VTODO tasks: create and manage tasks for Apple Reminders and jtx Board",
+    "steps": [
+      "Step 1: Create a calendar for tasks",
+      "Step 2: PUT a VTODO ICS with summary, due date, priority, status",
+      "Step 3: GET and verify VTODO content",
+      "Step 4: Update VTODO status to COMPLETED",
+      "Step 5: Verify updated status persists"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CalDAV REPORT: calendar-query returns events matching time range",
+    "steps": [
+      "Step 1: Create calendar with 5 events spanning different dates",
+      "Step 2: Send calendar-query REPORT with time-range filter",
+      "Step 3: Verify only events within range are returned",
+      "Step 4: Verify returned data includes full VCALENDAR"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CalDAV REPORT: calendar-multiget retrieves specific events by URL",
+    "steps": [
+      "Step 1: Create 3 events in a calendar",
+      "Step 2: Send calendar-multiget REPORT requesting 2 specific event URLs",
+      "Step 3: Verify exactly 2 events returned",
+      "Step 4: Verify correct events returned with full VCALENDAR data"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CalDAV sync-collection REPORT with sync-token for incremental sync (RFC 6578)",
+    "steps": [
+      "Step 1: Create calendar with 2 initial events",
+      "Step 2: Send initial sync-collection REPORT with empty sync-token",
+      "Step 3: Verify all events returned in response",
+      "Step 4: Extract sync-token from response",
+      "Step 5: Add a new event to the calendar",
+      "Step 6: Send sync-collection with previous sync-token",
+      "Step 7: Verify only new event returned (not all events)",
+      "Step 8: Delete one of the original events",
+      "Step 9: Send sync-collection with latest sync-token",
+      "Step 10: Verify deleted event indicated in response (404 status for that href)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CalDAV getctag Apple extension reports calendar modification state",
+    "steps": [
+      "Step 1: PROPFIND calendar to get getctag",
+      "Step 2: Add an event",
+      "Step 3: PROPFIND again and verify getctag changed"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "/.well-known/caldav redirects to /caldav/ (RFC 6764)",
+    "steps": [
+      "Step 1: GET /.well-known/caldav",
+      "Step 2: Verify 301 redirect to /caldav/"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "/.well-known/carddav redirects to /carddav/ (RFC 6764)",
+    "steps": [
+      "Step 1: GET /.well-known/carddav",
+      "Step 2: Verify 301 redirect to /carddav/"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "current-user-principal (RFC 5397) returns correct principal URL",
+    "steps": [
+      "Step 1: PROPFIND /principals/user/ requesting current-user-principal",
+      "Step 2: Verify response contains principal URL"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CardDAV addressbook CRUD: create, modify, delete addressbooks",
+    "steps": [
+      "Step 1: Create addressbook via MKCOL with resourcetype addressbook",
+      "Step 2: PROPFIND to verify addressbook exists",
+      "Step 3: PROPPATCH to update display name",
+      "Step 4: DELETE addressbook",
+      "Step 5: Verify addressbook removed"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CardDAV contact CRUD: create, read, update, delete VCARD",
+    "steps": [
+      "Step 1: Create addressbook",
+      "Step 2: PUT a VCARD file with name, email, phone, org",
+      "Step 3: GET contact and verify VCARD content",
+      "Step 4: PUT updated VCARD with If-Match",
+      "Step 5: DELETE contact",
+      "Step 6: Verify contact removed"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CardDAV addressbook-multiget REPORT retrieves specific contacts",
+    "steps": [
+      "Step 1: Create 3 contacts in addressbook",
+      "Step 2: Send addressbook-multiget REPORT requesting 2 contacts",
+      "Step 3: Verify exactly 2 contacts returned with full VCARD data"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CardDAV sync-collection REPORT with sync-token for incremental contact sync",
+    "steps": [
+      "Step 1: Initial sync-collection \u2192 get sync-token",
+      "Step 2: Add new contact",
+      "Step 3: Sync with previous token \u2192 verify new contact returned",
+      "Step 4: Delete a contact",
+      "Step 5: Sync \u2192 verify deletion indicated"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CalDAV/CardDAV auth integration: app-passwords and sessions work with RustiCal handlers",
+    "steps": [
+      "Step 1: Create app-password scoped to /caldav/*",
+      "Step 2: Access CalDAV with app-password via Basic Auth \u2192 verify success",
+      "Step 3: Create app-password scoped to /carddav/*",
+      "Step 4: Access CardDAV with that password \u2192 verify success",
+      "Step 5: Verify cross-scope access is denied"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde calendar list shows all calendars",
+    "steps": [
+      "Step 1: Create 2 calendars via CalDAV",
+      "Step 2: Run `tilde calendar list`",
+      "Step 3: Verify both calendars listed with names"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde calendar events lists events with optional date range filter",
+    "steps": [
+      "Step 1: Create events spanning multiple dates",
+      "Step 2: Run `tilde calendar events`",
+      "Step 3: Verify all events listed",
+      "Step 4: Run `tilde calendar events --from 2025-01-01 --to 2025-01-31`",
+      "Step 5: Verify only events in range returned"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde contacts list and tilde contacts search",
+    "steps": [
+      "Step 1: Create several contacts via CardDAV",
+      "Step 2: Run `tilde contacts list` \u2192 verify all contacts listed",
+      "Step 3: Run `tilde contacts search 'John'` \u2192 verify matching contacts returned"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo ingestion: file dropped in _inbox/ is auto-organized by date pattern",
+    "steps": [
+      "Step 1: Configure organization_pattern = '{year}/{month:02}'",
+      "Step 2: Drop a JPEG with EXIF date 2025-06-15 into photos/_inbox/",
+      "Step 3: Wait for debounce (5s default) to pass",
+      "Step 4: Verify file size stability check completes",
+      "Step 5: Verify file type validated by magic bytes",
+      "Step 6: Verify ExifTool subprocess reads metadata",
+      "Step 7: Verify file moved to photos/2025/06/filename.jpg",
+      "Step 8: Verify original file removed from _inbox/",
+      "Step 9: Verify photos table record created with UUID",
+      "Step 10: Verify original_sha256 and current_sha256 computed and match",
+      "Step 11: Verify photo_tags entries created from EXIF keywords if present",
+      "Step 12: Verify thumbnail generation job enqueued in jobs table"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo ingestion: _library-drop/ preserves user's directory structure",
+    "steps": [
+      "Step 1: Create photos/_library-drop/vacation/beach/img.jpg",
+      "Step 2: Wait for processing",
+      "Step 3: Verify file remains at vacation/beach/img.jpg path (not reorganized)",
+      "Step 4: Verify database record created with correct path"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo ingestion: _untriaged/ receives photos with insufficient metadata",
+    "steps": [
+      "Step 1: Drop a JPEG without EXIF DateTimeOriginal into _inbox/",
+      "Step 2: Wait for processing",
+      "Step 3: Verify file moved to photos/_untriaged/",
+      "Step 4: Verify database record marks it as untriaged"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo ingestion: _errors/ receives decode failures with error sidecar .txt",
+    "steps": [
+      "Step 1: Drop a corrupt image file into _inbox/",
+      "Step 2: Wait for processing",
+      "Step 3: Verify file moved to photos/_errors/",
+      "Step 4: Verify error description sidecar .txt file created alongside"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo ingestion validates file type by magic bytes, not just extension",
+    "steps": [
+      "Step 1: Rename a text file to .jpg",
+      "Step 2: Drop into _inbox/",
+      "Step 3: Verify file is rejected (moved to _errors/) based on magic byte check",
+      "Step 4: Drop a valid JPEG with .txt extension into _inbox/",
+      "Step 5: Verify it's processed correctly as a JPEG"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo ingestion debounce: waits 5 seconds and verifies file size is stable before processing",
+    "steps": [
+      "Step 1: Start writing a large file to _inbox/",
+      "Step 2: Verify processing doesn't start while file size is changing",
+      "Step 3: Complete the write",
+      "Step 4: Verify processing starts after 5s debounce",
+      "Step 5: Verify complete file is processed (not partial)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo metadata read via ExifTool subprocess with configurable timeout",
+    "steps": [
+      "Step 1: Drop a JPEG with rich EXIF data (camera, GPS, date, lens) into _inbox/",
+      "Step 2: Wait for ingestion to complete",
+      "Step 3: Query photos table for the imported photo",
+      "Step 4: Verify taken_at extracted from EXIF DateTimeOriginal",
+      "Step 5: Verify camera_make extracted",
+      "Step 6: Verify camera_model extracted",
+      "Step 7: Verify lens info extracted",
+      "Step 8: Verify focal_length_mm extracted",
+      "Step 9: Verify aperture (f-number) extracted",
+      "Step 10: Verify iso extracted",
+      "Step 11: Verify exposure_time extracted (e.g., '1/250')",
+      "Step 12: Verify gps_latitude and gps_longitude extracted",
+      "Step 13: Verify orientation extracted"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo tag writing via ExifTool: XMP dc:Subject + IPTC Keywords",
+    "steps": [
+      "Step 1: Import a JPEG photo and wait for indexing",
+      "Step 2: Note the photo UUID from database",
+      "Step 3: Run `tilde photos tag <uuid> add trip:jamaica`",
+      "Step 4: Verify ExifTool subprocess invoked to write metadata",
+      "Step 5: Read file with `exiftool` CLI directly",
+      "Step 6: Verify XMP dc:Subject contains 'trip:jamaica'",
+      "Step 7: Verify IPTC Keywords contains 'trip:jamaica'",
+      "Step 8: Verify current_sha256 updated in photos table (file bytes changed)",
+      "Step 9: Verify original_sha256 unchanged in photos table",
+      "Step 10: Verify photo_tags table has entry with photo_id, tag='trip:jamaica', prefix='trip'"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo tag remove via ExifTool",
+    "steps": [
+      "Step 1: Add tags to a photo",
+      "Step 2: Run `tilde photos tag <uuid> remove trip:jamaica`",
+      "Step 3: Verify tag removed from file's XMP/IPTC metadata",
+      "Step 4: Verify tags_json updated in database"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo tag prefix classifier: trip:, event:, person:, favorite, plain tags",
+    "steps": [
+      "Step 1: Add tag 'trip:iceland'",
+      "Step 2: Verify photo_tags record has prefix='trip', tag='trip:iceland'",
+      "Step 3: Add tag 'person:kids'",
+      "Step 4: Verify prefix='person'",
+      "Step 5: Add tag 'favorite'",
+      "Step 6: Verify prefix=NULL for 'favorite'",
+      "Step 7: Add plain tag 'sunset'",
+      "Step 8: Verify prefix=NULL"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo organization pattern: {year}/{month:02}/{-trip} with trip tag",
+    "steps": [
+      "Step 1: Configure pattern '{year}/{month:02}{-trip}'",
+      "Step 2: Import photo with date 2025-01 and tag trip:jamaica",
+      "Step 3: Verify organized to photos/2025/01-jamaica/",
+      "Step 4: Import photo with date 2025-01 but no trip tag",
+      "Step 5: Verify organized to photos/2025/01/"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo manually_placed flag: user-initiated MOVE disables auto-organization",
+    "steps": [
+      "Step 1: Import and auto-organize a photo",
+      "Step 2: MOVE photo via WebDAV to a custom directory",
+      "Step 3: Verify manually_placed flag set in database",
+      "Step 4: Add metadata that would trigger re-organization",
+      "Step 5: Verify server does NOT auto-move the file"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo metadata change triggers WebDAV MOVE to new organization path preserving oc:id",
+    "steps": [
+      "Step 1: Import photo organized to 2025/01/",
+      "Step 2: Add trip:iceland tag",
+      "Step 3: Verify file MOVE'd to 2025/01-iceland/ (if pattern includes {-trip})",
+      "Step 4: Verify oc:id (UUID) preserved after MOVE"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo content-addressed blob store with UUID and two-level directory sharding",
+    "steps": [
+      "Step 1: Import a photo",
+      "Step 2: Verify blob stored at blobs/by-id/<first2>/<next2>/<uuid>.<ext>",
+      "Step 3: Verify UUID is stable and survives moves/renames"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo SHA-256: original_sha256 is immutable, current_sha256 updates on metadata edits",
+    "steps": [
+      "Step 1: Import photo and note original_sha256 and current_sha256",
+      "Step 2: Verify both are equal initially",
+      "Step 3: Add a tag (modifies file bytes via ExifTool)",
+      "Step 4: Verify current_sha256 changed",
+      "Step 5: Verify original_sha256 unchanged"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Encrypted file detection: GPG/age files marked content_readable=false, skip thumbnail/indexing",
+    "steps": [
+      "Step 1: Drop a GPG-encrypted file into _inbox/",
+      "Step 2: Verify magic bytes detected as encrypted",
+      "Step 3: Verify content_readable = false in database",
+      "Step 4: Verify no thumbnail generation attempted",
+      "Step 5: Verify file served as opaque blob via WebDAV"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Thumbnail generation: JPEG \u2192 256px square crop and 1920px longest-edge WebP",
+    "steps": [
+      "Step 1: Import a JPEG photo",
+      "Step 2: Wait for async thumbnail generation",
+      "Step 3: Verify 256.webp exists at $CACHE_DIR/thumbnails/<uuid>/256.webp",
+      "Step 4: Verify 1920.webp exists at $CACHE_DIR/thumbnails/<uuid>/1920.webp",
+      "Step 5: Verify 256px is square cropped",
+      "Step 6: Verify 1920px has longest edge \u2264 1920px",
+      "Step 7: Verify thumbnail_256_generated and thumbnail_1920_generated flags set"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Thumbnail generation: HEIC via libheif-rs decoding",
+    "steps": [
+      "Step 1: Import a HEIC photo",
+      "Step 2: Wait for thumbnail generation",
+      "Step 3: Verify both 256.webp and 1920.webp generated",
+      "Step 4: Verify single-slot semaphore prevents OOM on large HEIC"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Thumbnail generation: video via ffmpeg subprocess",
+    "steps": [
+      "Step 1: Import a video file (MP4)",
+      "Step 2: Wait for ffmpeg thumbnail extraction",
+      "Step 3: Verify thumbnail generated from first frame (or configured timestamp)",
+      "Step 4: Verify ffmpeg timeout enforced (ffmpeg_timeout_seconds)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Blurhash computed during thumbnail generation and stored in SQLite",
+    "steps": [
+      "Step 1: Import a photo and generate thumbnails",
+      "Step 2: Verify blurhash field populated in photos table",
+      "Step 3: Verify blurhash string is valid format"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde photos list with tag, since, and until filters",
+    "steps": [
+      "Step 1: Import multiple photos with various tags and dates",
+      "Step 2: Run `tilde photos list` \u2192 verify all listed",
+      "Step 3: Run `tilde photos list --tag trip:jamaica` \u2192 verify filtered by tag",
+      "Step 4: Run `tilde photos list --since 2025-01-01 --until 2025-06-30` \u2192 verify date filter"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde photos reindex rebuilds SQLite from files on disk",
+    "steps": [
+      "Step 1: Import photos normally",
+      "Step 2: Manually delete photos table data",
+      "Step 3: Run `tilde photos reindex`",
+      "Step 4: Verify all photos re-discovered from disk and database repopulated"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde photos thumbnail regenerate --missing and --all",
+    "steps": [
+      "Step 1: Import photos with generated thumbnails",
+      "Step 2: Delete one thumbnail file",
+      "Step 3: Run `tilde photos thumbnail regenerate --missing`",
+      "Step 4: Verify only missing thumbnail regenerated",
+      "Step 5: Run `tilde photos thumbnail regenerate --all`",
+      "Step 6: Verify all thumbnails regenerated"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo process isolation: ExifTool crash does not crash server",
+    "steps": [
+      "Step 1: Start tilde serve",
+      "Step 2: Drop a file that causes ExifTool to crash/hang",
+      "Step 3: Verify ExifTool subprocess is killed after timeout",
+      "Step 4: Verify file moved to _errors/ with error sidecar",
+      "Step 5: Verify server continues serving other requests"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notes: .md files served via WebDAV at /dav/notes/*",
+    "steps": [
+      "Step 1: PUT a .md file to /dav/notes/test-note.md",
+      "Step 2: GET the file and verify markdown content",
+      "Step 3: PROPFIND /dav/notes/ and verify file listed"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notes: ETag + If-Match on PUT with 412 conflict \u2192 sibling conflict file",
+    "steps": [
+      "Step 1: Upload note and get ETag",
+      "Step 2: Modify note with correct If-Match \u2192 verify success",
+      "Step 3: Try PUT with stale ETag \u2192 verify 412 Precondition Failed",
+      "Step 4: Verify conflict file naming: filename.sync-conflict-<YYYYMMDD-HHMMSS>-<device>.md"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notes FTS5 full-text search index over note content",
+    "steps": [
+      "Step 1: Upload several notes with different content",
+      "Step 2: Run `tilde notes search 'specific keyword'`",
+      "Step 3: Verify matching notes returned with path, title, snippet",
+      "Step 4: Verify non-matching notes excluded"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notes FTS5 index rebuilt from files on disk via tilde reindex",
+    "steps": [
+      "Step 1: Upload notes",
+      "Step 2: Drop notes_fts table manually",
+      "Step 3: Run `tilde reindex --type notes`",
+      "Step 4: Verify FTS5 index rebuilt and search works again"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde notes list shows notes with optional path filter",
+    "steps": [
+      "Step 1: Create notes in various subdirectories",
+      "Step 2: Run `tilde notes list` \u2192 verify all listed",
+      "Step 3: Run `tilde notes list --path work` \u2192 verify filtered to work/ subdirectory"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Cross-reference URI parsing: tilde:// URIs and [[shorthand]] in notes stored in links table",
+    "steps": [
+      "Step 1: Create note with [[photo:abc-123]] and [[@person-name]] references",
+      "Step 2: Verify links table populated with source_type, source_id, target_uri",
+      "Step 3: Create note with tilde://event/<uid> reference",
+      "Step 4: Verify link parsed and stored"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Collections: create a collection with JSON Schema validation",
+    "steps": [
+      "Step 1: Create a JSON Schema file defining fields for 'weight' tracker",
+      "Step 2: Run `tilde collection create weight --schema weight-schema.json`",
+      "Step 3: Verify collection created in collections table with schema_json"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Collections: CRUD operations on records with schema validation",
+    "steps": [
+      "Step 1: Create JSON Schema: {type: 'object', properties: {value: {type: 'number'}}, required: ['value']}",
+      "Step 2: Run `tilde collection create weight --schema weight.json`",
+      "Step 3: Verify collection in collections table with schema_json",
+      "Step 4: Run `tilde collection weight add --data '{\"value\": 72.5}'` \u2192 verify id returned",
+      "Step 5: Try add with invalid data '{\"value\": \"not-a-number\"}' \u2192 verify schema validation error",
+      "Step 6: Try add with missing required field '{}' \u2192 verify schema validation error",
+      "Step 7: Run `tilde collection weight list` \u2192 verify record listed with id, data, timestamp",
+      "Step 8: Run `tilde collection weight get <id>` \u2192 verify full record details",
+      "Step 9: Run `tilde collection weight update <id> --data '{\"value\": 73.0}'` \u2192 verify updated",
+      "Step 10: Run `tilde collection weight get <id>` \u2192 verify value is 73.0",
+      "Step 11: Run `tilde collection weight delete <id>` \u2192 verify removed",
+      "Step 12: Run `tilde collection weight list` \u2192 verify empty"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Collections: list, filter, sort, and limit query options",
+    "steps": [
+      "Step 1: Create collection and add 10 records with varying data",
+      "Step 2: Run `tilde collection <name> list --sort value --limit 5`",
+      "Step 3: Verify 5 records returned sorted by value",
+      "Step 4: Run `tilde collection <name> list --filter 'value>70'`",
+      "Step 5: Verify only matching records returned"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Collections: export to JSON and CSV formats",
+    "steps": [
+      "Step 1: Create collection with several records",
+      "Step 2: Run `tilde collection <name> export --format json`",
+      "Step 3: Verify valid JSON output",
+      "Step 4: Run `tilde collection <name> export --format csv`",
+      "Step 5: Verify valid CSV output"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Bookmarks shorthand: tilde bookmarks add with url, title, tags",
+    "steps": [
+      "Step 1: Run `tilde bookmarks add --url 'https://example.com' --title 'Example' --tags 'tech,reading'`",
+      "Step 2: Verify bookmark stored in bookmarks collection",
+      "Step 3: Verify schema validation (url is required string)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Trackers shorthand: tilde trackers log and query",
+    "steps": [
+      "Step 1: Create weight collection",
+      "Step 2: Run `tilde trackers log weight '{\"value\": 72.5}'`",
+      "Step 3: Run `tilde trackers query weight --since 2025-01-01 --format json`",
+      "Step 4: Verify records returned with timestamps"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email archive: IMAP connection via async-imap with SSL",
+    "steps": [
+      "Step 1: Configure email account with valid IMAP host, port, username, password via env vars",
+      "Step 2: Set email.enabled = true in config.toml",
+      "Step 3: Set use_ssl = true",
+      "Step 4: Start tilde serve",
+      "Step 5: Verify IMAP SSL connection established in logs",
+      "Step 6: Verify folder listing retrieved from server",
+      "Step 7: Verify folders_exclude filter applied (Trash, Spam excluded)",
+      "Step 8: Verify initial UID tracking set up in kv_meta",
+      "Step 9: Verify email sync status shows connected",
+      "Step 10: Run `tilde email status` \u2192 verify connected status displayed"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email archive: IMAP IDLE for near-real-time push notification of new mail",
+    "steps": [
+      "Step 1: Connect to IMAP server with IDLE support",
+      "Step 2: Enter IDLE mode on INBOX",
+      "Step 3: Receive new email on server",
+      "Step 4: Verify IDLE notifies of new message",
+      "Step 5: Verify message fetched and stored within seconds"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email archive: Maildir storage format with atomic writes (tmp \u2192 cur)",
+    "steps": [
+      "Step 1: Fetch a new email via IMAP",
+      "Step 2: Verify tmp/ file created first during write",
+      "Step 3: Verify file atomically moved to cur/",
+      "Step 4: Verify complete RFC822 source stored (headers + body)",
+      "Step 5: Verify attachments preserved in raw message",
+      "Step 6: Verify Maildir path: $STATE_DIR/mail/<account>/<folder>/cur/<unique-name>",
+      "Step 7: Verify file is readable by mutt/neomutt",
+      "Step 8: Verify email_messages table record created with correct fields",
+      "Step 9: Verify FTS5 index updated with subject, from, body_text",
+      "Step 10: Verify Message-ID deduplication prevents duplicate storage"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email archive: UID-based tracking with deduplication by Message-ID",
+    "steps": [
+      "Step 1: Fetch emails from IMAP",
+      "Step 2: Verify kv_meta tracks last seen UID per folder",
+      "Step 3: Restart and verify only new UIDs fetched",
+      "Step 4: Attempt to fetch duplicate Message-ID \u2192 verify deduplicated"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email archive: SQLite index with FTS5 for full-text search of email",
+    "steps": [
+      "Step 1: Fetch and index several emails",
+      "Step 2: Run `tilde email search 'specific subject keyword'`",
+      "Step 3: Verify matching emails returned with message_id, from, subject, date, snippet",
+      "Step 4: Verify FTS5 covers subject, from, to, body_text"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email archive: threading via In-Reply-To and References headers",
+    "steps": [
+      "Step 1: Fetch an email thread (original + 2 replies)",
+      "Step 2: Run `tilde email thread <message-id>`",
+      "Step 3: Verify all messages in thread returned in order",
+      "Step 4: Verify threading uses In-Reply-To and References headers"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email archive: multi-account support with independent credentials",
+    "steps": [
+      "Step 1: Configure two email accounts in config.toml",
+      "Step 2: Verify each connects to its own IMAP server",
+      "Step 3: Verify each has independent Maildir tree",
+      "Step 4: Verify search can filter by account"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email archive: folder include/exclude filtering",
+    "steps": [
+      "Step 1: Configure folders_exclude = ['Trash', 'Spam']",
+      "Step 2: Verify Trash and Spam folders are not synced",
+      "Step 3: Configure folders_include = ['INBOX', 'Sent']",
+      "Step 4: Verify only INBOX and Sent are synced"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde email search with various filters",
+    "steps": [
+      "Step 1: Index several emails with different attributes",
+      "Step 2: Run `tilde email search --from 'john@example.com'`",
+      "Step 3: Run `tilde email search --since 2025-01-01 --has-attachment`",
+      "Step 4: Run `tilde email search --subject 'invoice'`",
+      "Step 5: Verify correct filtering in each case"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde email show displays single message content",
+    "steps": [
+      "Step 1: Index an email",
+      "Step 2: Run `tilde email show <message-id>`",
+      "Step 3: Verify headers and body displayed"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde email attachments extract saves attachments to path",
+    "steps": [
+      "Step 1: Index email with attachments",
+      "Step 2: Run `tilde email attachments extract <message-id> --to /tmp/attachments`",
+      "Step 3: Verify attachment files extracted to specified path"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde email tag adds local tags (not synced to IMAP)",
+    "steps": [
+      "Step 1: Index an email",
+      "Step 2: Run `tilde email tag <message-id> add important`",
+      "Step 3: Verify tags_json updated in database",
+      "Step 4: Verify tag is NOT synced back to IMAP"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde email reindex rebuilds SQLite from Maildir",
+    "steps": [
+      "Step 1: Index emails normally",
+      "Step 2: Clear email_messages table",
+      "Step 3: Run `tilde email reindex`",
+      "Step 4: Verify all messages re-parsed from Maildir and database repopulated"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde email status shows sync status per account",
+    "steps": [
+      "Step 1: Configure email accounts",
+      "Step 2: Run `tilde email status`",
+      "Step 3: Verify output shows last sync time, message count, connection status per account"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP: Streamable HTTP endpoint at POST /mcp/ via rmcp",
+    "steps": [
+      "Step 1: Start tilde serve with MCP enabled",
+      "Step 2: Send MCP initialize request to POST /mcp/",
+      "Step 3: Verify MCP protocol handshake completes",
+      "Step 4: Verify tools listing returns ~15 tools"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP: Bearer token auth with mcp_prod_ prefix format",
+    "steps": [
+      "Step 1: Run `tilde mcp token create --name claude-desktop --scopes 'notes:read,calendar:read'`",
+      "Step 2: Verify token printed in format mcp_prod_<30 alphanumeric chars>",
+      "Step 3: Verify token length is 39 chars (mcp_prod_ prefix + 30 random)",
+      "Step 4: Verify mcp_tokens table has record with name='claude-desktop'",
+      "Step 5: Verify token_hash is SHA-256 (not plaintext token)",
+      "Step 6: Verify token_prefix stores 'mcp_prod_' + first 8 random chars",
+      "Step 7: Verify scopes stored as 'notes:read,calendar:read'",
+      "Step 8: Use token as Authorization: Bearer <token> for MCP request \u2192 verify 200",
+      "Step 9: Use invalid token \u2192 verify 401 Unauthorized",
+      "Step 10: Use expired/revoked token \u2192 verify 401 Unauthorized"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP: Scope enforcement per tool call",
+    "steps": [
+      "Step 1: Create token with scopes 'notes:read' only",
+      "Step 2: Call notes.search tool \u2192 verify 200 allowed",
+      "Step 3: Call notes.read tool \u2192 verify allowed (read scope)",
+      "Step 4: Call notes.append tool \u2192 verify 403 denied (needs notes:write)",
+      "Step 5: Call calendar.list_events \u2192 verify 403 denied (no calendar scope)",
+      "Step 6: Call contacts.search \u2192 verify 403 denied (no contacts scope)",
+      "Step 7: Create second token with scopes 'notes:read,notes:write'",
+      "Step 8: Call notes.append \u2192 verify allowed",
+      "Step 9: Call calendar.create_event \u2192 verify still denied",
+      "Step 10: Create token with '*:read' \u2192 verify all read tools allowed"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP: Per-token rate limiting (default 60 req/min)",
+    "steps": [
+      "Step 1: Create token with rate_limit = 5",
+      "Step 2: Send 5 requests rapidly \u2192 verify all succeed",
+      "Step 3: Send 6th request \u2192 verify rate limit response",
+      "Step 4: Wait for rate limit window to reset",
+      "Step 5: Verify next request succeeds"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP: Audit log records every tool call to SQLite",
+    "steps": [
+      "Step 1: Create MCP token and authenticate",
+      "Step 2: Call notes.search tool with query 'test'",
+      "Step 3: Query mcp_audit_log table directly",
+      "Step 4: Verify record has token_name = token's name",
+      "Step 5: Verify record has tool_name = 'notes.search'",
+      "Step 6: Verify params_truncated contains query parameter (max 500 chars)",
+      "Step 7: Verify result_size_bytes is populated",
+      "Step 8: Verify duration_ms is reasonable (> 0)",
+      "Step 9: Verify source_ip is recorded",
+      "Step 10: Verify created_at is current ISO 8601 timestamp",
+      "Step 11: Run `tilde mcp audit --since today` \u2192 verify CLI shows the entry"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP: Audit log auto-prunes entries older than 90 days",
+    "steps": [
+      "Step 1: Insert audit entries with old timestamps",
+      "Step 2: Trigger prune cycle",
+      "Step 3: Verify entries older than 90 days are removed",
+      "Step 4: Verify recent entries are retained"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP token management: create, list, revoke, rotate via CLI",
+    "steps": [
+      "Step 1: Create token",
+      "Step 2: Run `tilde mcp token list` \u2192 verify token shown with name, prefix, scopes, created_at",
+      "Step 3: Run `tilde mcp token rotate <id>` \u2192 verify old revoked, new created with same scopes",
+      "Step 4: Run `tilde mcp token revoke <id>` \u2192 verify token no longer works"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: notes.search returns matching notes with path, title, snippet, modified",
+    "steps": [
+      "Step 1: Create several notes via WebDAV",
+      "Step 2: Call notes.search(query: 'keyword')",
+      "Step 3: Verify results contain path, title, snippet, modified",
+      "Step 4: Verify only matching notes returned"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: notes.read returns note content and metadata",
+    "steps": [
+      "Step 1: Create a note with markdown content and YAML frontmatter",
+      "Step 2: Call notes.read(path: 'note-path.md')",
+      "Step 3: Verify content and metadata returned"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: notes.append adds content to existing note (requires write scope)",
+    "steps": [
+      "Step 1: Create a note",
+      "Step 2: Call notes.append(path: 'note.md', content: 'new paragraph')",
+      "Step 3: Verify content appended to file",
+      "Step 4: Verify returns success: true"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: calendar.list_events returns events with summary, start, end, location",
+    "steps": [
+      "Step 1: Create calendar events via CalDAV",
+      "Step 2: Call calendar.list_events(from: '2025-01-01', to: '2025-12-31')",
+      "Step 3: Verify events returned with summary, start, end, location"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: calendar.create_event creates a new event (requires write scope)",
+    "steps": [
+      "Step 1: Call calendar.create_event(calendar: 'default', summary: 'Meeting', start: ..., end: ...)",
+      "Step 2: Verify event created and uid returned",
+      "Step 3: Verify event visible via CalDAV"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: contacts.search finds contacts by query",
+    "steps": [
+      "Step 1: Create contacts via CardDAV",
+      "Step 2: Call contacts.search(query: 'John')",
+      "Step 3: Verify matching contacts returned with name, email, phone, org"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: files.list returns directory listing",
+    "steps": [
+      "Step 1: Upload files to various paths via WebDAV",
+      "Step 2: Call files.list(path: '/', recursive: false)",
+      "Step 3: Verify files listed with name, path, size, modified, type",
+      "Step 4: Call files.list(recursive: true) \u2192 verify recursive listing"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: files.read returns text file content (max 1MB)",
+    "steps": [
+      "Step 1: Upload a text file",
+      "Step 2: Call files.read(path: 'test.txt')",
+      "Step 3: Verify content returned",
+      "Step 4: Try reading binary file \u2192 verify appropriate response",
+      "Step 5: Try reading file > 1MB \u2192 verify size limit enforced"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: files.search uses FTS5 to search file content",
+    "steps": [
+      "Step 1: Upload text files with searchable content",
+      "Step 2: Call files.search(query: 'keyword')",
+      "Step 3: Verify matching files returned with path and snippet"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: tasks.list returns VTODO items",
+    "steps": [
+      "Step 1: Create VTODO tasks via CalDAV",
+      "Step 2: Call tasks.list()",
+      "Step 3: Verify tasks returned with summary, due, priority, status"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: tasks.add creates a new VTODO task (requires write scope)",
+    "steps": [
+      "Step 1: Call tasks.add(summary: 'Buy groceries', due: '2025-12-01', priority: 1)",
+      "Step 2: Verify task created and uid returned",
+      "Step 3: Verify task visible via CalDAV client"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: trackers.log and trackers.query for collection data",
+    "steps": [
+      "Step 1: Create a 'weight' collection",
+      "Step 2: Call trackers.log(collection: 'weight', data: {value: 72.5})",
+      "Step 3: Verify id returned",
+      "Step 4: Call trackers.query(collection: 'weight')",
+      "Step 5: Verify record returned with id, data, timestamp"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: email.search returns matching emails",
+    "steps": [
+      "Step 1: Index emails",
+      "Step 2: Call email.search(query: 'invoice')",
+      "Step 3: Verify results with message_id, from, subject, date, snippet"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: email.thread returns full thread for a message",
+    "steps": [
+      "Step 1: Index an email thread",
+      "Step 2: Call email.thread(message_id: '<msgid>')",
+      "Step 3: Verify thread messages returned in order"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool: email.recent returns latest emails",
+    "steps": [
+      "Step 1: Index emails",
+      "Step 2: Call email.recent(count: 5)",
+      "Step 3: Verify 5 most recent emails returned"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP tool allowlist in config, hot-reloadable via SIGHUP",
+    "steps": [
+      "Step 1: Set mcp.tool_allowlist = ['notes.search', 'calendar.list_events']",
+      "Step 2: Verify only allowed tools are available",
+      "Step 3: Update config to add more tools",
+      "Step 4: Send SIGHUP",
+      "Step 5: Verify new tools now available without restart"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP OAuth Protected Resource Metadata stub directs to bearer tokens",
+    "steps": [
+      "Step 1: Request OAuth metadata endpoint",
+      "Step 2: Verify response directs clients to use bearer tokens",
+      "Step 3: Verify no full OAuth flow implemented"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notification: ntfy.sh sink sends push notifications",
+    "steps": [
+      "Step 1: Configure ntfy sink with topic and token",
+      "Step 2: Trigger a notification event (e.g., backup_failed)",
+      "Step 3: Verify notification sent to ntfy.sh",
+      "Step 4: Run `tilde notifications test ntfy` \u2192 verify test notification received"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notification: file sink logs all events to append-only file",
+    "steps": [
+      "Step 1: Configure file sink",
+      "Step 2: Trigger notification events",
+      "Step 3: Verify events appended to notification log file",
+      "Step 4: Verify file sink logs events of all priority levels"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notification: priority routing sends high-priority events to appropriate sinks",
+    "steps": [
+      "Step 1: Configure sinks with different min_priority levels",
+      "Step 2: Trigger low-priority event (e.g., update_available)",
+      "Step 3: Verify only file sink receives it (not ntfy)",
+      "Step 4: Trigger high-priority event (e.g., backup_failed)",
+      "Step 5: Verify both file and ntfy sinks receive it"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notification: rate limiting prevents storms (max 10 per event type per hour)",
+    "steps": [
+      "Step 1: Trigger 10 events of the same type rapidly",
+      "Step 2: Verify all 10 notifications sent",
+      "Step 3: Trigger 11th event",
+      "Step 4: Verify it's rate-limited (not sent to sinks)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notification events: backup_failed, disk_usage_high, auth_failed_repeated, cert_expiring_soon, sync_conflict_detected, update_available, email_sync_error",
+    "steps": [
+      "Step 1: Trigger backup failure \u2192 verify backup_failed notification with critical priority",
+      "Step 2: Verify notification_log record with event_type='backup_failed'",
+      "Step 3: Simulate disk usage at 80% \u2192 verify disk_usage_high with high priority",
+      "Step 4: Simulate disk usage at 90% \u2192 verify second disk_usage_high notification",
+      "Step 5: Trigger 3+ auth failures from same IP \u2192 verify auth_failed_repeated with high priority",
+      "Step 6: Verify auth_failed notification includes source IP",
+      "Step 7: Simulate cert expiring in 14 days \u2192 verify cert_expiring_soon with high priority",
+      "Step 8: Create a sync conflict \u2192 verify sync_conflict_detected with medium priority",
+      "Step 9: Mock update availability \u2192 verify update_available with low priority",
+      "Step 10: Trigger email sync error \u2192 verify email_sync_error with medium priority",
+      "Step 11: Verify each event routed to correct sinks based on priority"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde notifications test, list, and config commands",
+    "steps": [
+      "Step 1: Run `tilde notifications config` \u2192 verify sink configuration displayed",
+      "Step 2: Run `tilde notifications test ntfy` \u2192 verify test notification sent",
+      "Step 3: Run `tilde notifications list` \u2192 verify recent notifications displayed"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Backup: rustic-rs creates local snapshots with retention policies",
+    "steps": [
+      "Step 1: Enable backup in config with local retention = {hourly=24, daily=7, weekly=4, monthly=12}",
+      "Step 2: Create some data files (notes, photos)",
+      "Step 3: Run `tilde backup now`",
+      "Step 4: Verify exit code 0 (success)",
+      "Step 5: Run `tilde backup list` \u2192 verify snapshot listed with timestamp",
+      "Step 6: Run `tilde backup status` \u2192 verify last backup time shown",
+      "Step 7: Modify a file and run `tilde backup now` again",
+      "Step 8: Verify second snapshot created (incremental)",
+      "Step 9: Run `tilde backup list` \u2192 verify both snapshots listed",
+      "Step 10: Verify retention policy stored correctly in config"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Backup: verify backup integrity",
+    "steps": [
+      "Step 1: Create backup",
+      "Step 2: Run `tilde backup verify`",
+      "Step 3: Verify integrity check passes",
+      "Step 4: Corrupt a backup file",
+      "Step 5: Run verify again \u2192 verify corruption detected"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Backup: pin a snapshot to prevent pruning",
+    "steps": [
+      "Step 1: Create backup snapshot",
+      "Step 2: Run `tilde backup pin <snapshot-id> --reason 'pre-migration'`",
+      "Step 3: Run backup prune",
+      "Step 4: Verify pinned snapshot is NOT pruned"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Backup: restore from snapshot to path",
+    "steps": [
+      "Step 1: Create data and backup",
+      "Step 2: Delete some data",
+      "Step 3: Run `tilde restore --from local --at <snapshot> --to /tmp/restore`",
+      "Step 4: Verify restored data matches original"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Backup: offsite to S3-compatible (B2) destination",
+    "steps": [
+      "Step 1: Configure B2 offsite backup with credentials",
+      "Step 2: Run `tilde backup now --offsite b2`",
+      "Step 3: Verify snapshot uploaded to B2",
+      "Step 4: Run `tilde backup list --offsite b2` \u2192 verify remote snapshots"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Backup: failures never block user requests",
+    "steps": [
+      "Step 1: Start tilde serve",
+      "Step 2: Configure backup with unreachable offsite",
+      "Step 3: Trigger backup (should fail)",
+      "Step 4: Verify WebDAV/CalDAV/MCP requests still served normally",
+      "Step 5: Verify backup_failed notification sent"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI: tilde backup status shows last backup, next scheduled, repo stats",
+    "steps": [
+      "Step 1: Run some backups",
+      "Step 2: Run `tilde backup status`",
+      "Step 3: Verify output includes last backup time, next scheduled, repository size"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Export: full export produces standards-based directory tree",
+    "steps": [
+      "Step 1: Create calendar with 3 events",
+      "Step 2: Create addressbook with 5 contacts",
+      "Step 3: Create 4 markdown notes",
+      "Step 4: Import 2 photos with tags",
+      "Step 5: Create a collection with records",
+      "Step 6: Run `tilde export /tmp/export`",
+      "Step 7: Verify calendars/*.ics files contain valid iCalendar data",
+      "Step 8: Verify contacts/*.vcf files contain valid vCard data",
+      "Step 9: Verify notes/**/*.md files have original content with frontmatter",
+      "Step 10: Verify photos/**/*.ext files are original photo files with XMP tags",
+      "Step 11: Verify collections/*.json files have schema + records",
+      "Step 12: Verify manifest.json maps all UUIDs correctly",
+      "Step 13: Verify links.json contains cross-reference index"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Export: selective export with --only flag",
+    "steps": [
+      "Step 1: Populate all data types",
+      "Step 2: Run `tilde export /tmp/export --only photos,notes`",
+      "Step 3: Verify only photos/ and notes/ directories created",
+      "Step 4: Verify calendars/ and contacts/ NOT present"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Export: compressed archive with --format tar.zst",
+    "steps": [
+      "Step 1: Run `tilde export /tmp/export --format tar.zst`",
+      "Step 2: Verify .tar.zst archive created",
+      "Step 3: Decompress and verify contents match full export"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Export: encrypted with --encrypt --recipient <age-public-key>",
+    "steps": [
+      "Step 1: Generate age keypair",
+      "Step 2: Run `tilde export /tmp/export --encrypt --recipient <pubkey>`",
+      "Step 3: Verify export is encrypted",
+      "Step 4: Decrypt with private key and verify contents"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Export: verify command checks export completeness",
+    "steps": [
+      "Step 1: Create full export",
+      "Step 2: Run `tilde export verify /tmp/export`",
+      "Step 3: Verify completeness check passes",
+      "Step 4: Remove a file from export",
+      "Step 5: Run verify again \u2192 verify missing file detected"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Import: import from export with --verify-first and --dry-run",
+    "steps": [
+      "Step 1: Create export from source instance",
+      "Step 2: Run `tilde import /tmp/export --dry-run` \u2192 verify preview of changes",
+      "Step 3: Run `tilde import /tmp/export --verify-first`",
+      "Step 4: Verify data imported correctly",
+      "Step 5: Verify UUID stability via manifest.json"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Export \u2192 Import roundtrip: data survives without loss",
+    "steps": [
+      "Step 1: Populate instance with all data types",
+      "Step 2: Run full export",
+      "Step 3: Import to fresh instance",
+      "Step 4: Verify calendar events match",
+      "Step 5: Verify contacts match",
+      "Step 6: Verify notes match (content and frontmatter)",
+      "Step 7: Verify photo metadata and tags match",
+      "Step 8: Verify collection records match",
+      "Step 9: Verify cross-references preserved",
+      "Step 10: Verify UUIDs are stable between export and import"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Inbound webhooks: POST /api/webhook/<token-prefix> accepts data",
+    "steps": [
+      "Step 1: Create webhook token with scopes",
+      "Step 2: POST JSON data to /api/webhook/<token-prefix>",
+      "Step 3: Verify data stored in target collection/calendar/note",
+      "Step 4: Verify rate limiting enforced (30 req/min default)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Webhook token CRUD via CLI",
+    "steps": [
+      "Step 1: Run `tilde webhook token create --name ios-shortcut --scopes 'tracker:weight:write'`",
+      "Step 2: Run `tilde webhook token list` \u2192 verify token listed",
+      "Step 3: Run `tilde webhook token revoke <id>` \u2192 verify revoked"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Webhook HMAC replay protection via X-Tilde-Signature header",
+    "steps": [
+      "Step 1: Create webhook token with HMAC secret",
+      "Step 2: Send request with valid X-Tilde-Signature \u2192 verify accepted",
+      "Step 3: Send request with invalid signature \u2192 verify rejected"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Update check: daily check against signed manifest with minisign verification",
+    "steps": [
+      "Step 1: Enable update checking",
+      "Step 2: Run `tilde update check`",
+      "Step 3: Verify manifest fetched and signature verified with minisign",
+      "Step 4: Verify version comparison determines if update available"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Update: tilde update download fetches new binary but does not auto-install",
+    "steps": [
+      "Step 1: Mock available update",
+      "Step 2: Run `tilde update download`",
+      "Step 3: Verify binary downloaded",
+      "Step 4: Verify no automatic restart or installation"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "tilde reindex --type all rebuilds notes, photos, email, and links indexes",
+    "steps": [
+      "Step 1: Populate data for all types",
+      "Step 2: Clear all FTS and cache tables",
+      "Step 3: Run `tilde reindex --type all`",
+      "Step 4: Verify notes_fts, email_fts, photos, links tables rebuilt",
+      "Step 5: Verify search works for all types after reindex"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Crash safety: orphaned tmp files cleaned up on startup",
+    "steps": [
+      "Step 1: Create orphaned _tmp files in staging directories",
+      "Step 2: Start tilde serve",
+      "Step 3: Verify orphaned tmp files cleaned up",
+      "Step 4: Verify no data loss for completed files"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Crash safety: SQLite WAL mode ensures database consistency after crash",
+    "steps": [
+      "Step 1: Start tilde and make database changes",
+      "Step 2: Simulate crash (kill -9)",
+      "Step 3: Restart tilde",
+      "Step 4: Verify database is consistent and no data corruption"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Crash safety: file writes are atomic (tmp \u2192 fsync \u2192 rename \u2192 fsync parent)",
+    "steps": [
+      "Step 1: Upload a file via WebDAV",
+      "Step 2: Monitor filesystem operations",
+      "Step 3: Verify write goes to tmp file first",
+      "Step 4: Verify fsync on tmp, then rename, then fsync parent dir"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Crash safety: durable jobs queue resumes after crash",
+    "steps": [
+      "Step 1: Import 5 photos to trigger 5 thumbnail generation jobs",
+      "Step 2: Verify 5 jobs created in jobs table with status='pending'",
+      "Step 3: Let 2 jobs complete \u2192 verify status='completed'",
+      "Step 4: Kill server process (SIGKILL to simulate crash)",
+      "Step 5: Verify 3 jobs still in pending/running status in database",
+      "Step 6: Restart server",
+      "Step 7: Verify running jobs reset to pending on startup",
+      "Step 8: Verify remaining 3 jobs resume processing",
+      "Step 9: Wait for all jobs to complete",
+      "Step 10: Verify all 5 thumbnails generated successfully"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Hybrid Logical Clock (HLC) for metadata timestamps across files, photos, records",
+    "steps": [
+      "Step 1: Create/update records from different sources",
+      "Step 2: Verify HLC values in files, photos, records tables",
+      "Step 3: Verify HLC monotonically increasing within a session",
+      "Step 4: Verify LWW conflict resolution uses HLC for photo metadata"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Timezone discipline: all timestamps stored with UTC offset in ISO 8601",
+    "steps": [
+      "Step 1: Create data in different timezone ($TZ=America/New_York)",
+      "Step 2: Verify stored timestamps include UTC offset",
+      "Step 3: Query data with $TZ=Asia/Tokyo",
+      "Step 4: Verify API responses include UTC offset",
+      "Step 5: Verify CLI respects $TZ environment variable for display"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notification: SMTP sink sends email notifications",
+    "steps": [
+      "Step 1: Configure SMTP sink with credentials",
+      "Step 2: Trigger high-priority event",
+      "Step 3: Verify email sent via SMTP",
+      "Step 4: Run `tilde notifications test smtp`"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notification: Matrix sink sends messages to configured room",
+    "steps": [
+      "Step 1: Configure Matrix sink with homeserver, token, room",
+      "Step 2: Trigger notification event",
+      "Step 3: Verify message sent to Matrix room"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notification: Signal sink sends via signal-cli REST API",
+    "steps": [
+      "Step 1: Configure Signal sink with API URL and recipient",
+      "Step 2: Trigger notification event",
+      "Step 3: Verify Signal message sent via REST API"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notification: Webhook sink POSTs JSON to configured URL",
+    "steps": [
+      "Step 1: Configure webhook sink with target URL",
+      "Step 2: Trigger notification event",
+      "Step 3: Verify JSON POST received at target URL"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebAuthn: optional second factor for admin operations",
+    "steps": [
+      "Step 1: Enable webauthn in config",
+      "Step 2: Register a WebAuthn credential",
+      "Step 3: Attempt admin operation (token creation) \u2192 verify WebAuthn challenge",
+      "Step 4: Complete WebAuthn challenge \u2192 verify operation succeeds",
+      "Step 5: Verify WebAuthn not required for normal DAV operations"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "systemd unit file generation via `tilde install`",
+    "steps": [
+      "Step 1: Run `sudo tilde install`",
+      "Step 2: Verify systemd unit written to /etc/systemd/system/tilde.service",
+      "Step 3: Verify unit includes Type=notify, WatchdogSec, hardening stanza",
+      "Step 4: Verify idempotent: running again doesn't create duplicates"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Data directories created with correct layout: files/, photos/, calendars/, contacts/, mail/, collections/, uploads/, backup/",
+    "steps": [
+      "Step 1: Run tilde init",
+      "Step 2: Verify $STATE_DIR/files/ exists",
+      "Step 3: Verify $STATE_DIR/photos/ with _inbox/, _library-drop/, _untriaged/, _errors/ subdirs",
+      "Step 4: Verify $STATE_DIR/calendars/ exists",
+      "Step 5: Verify $STATE_DIR/contacts/ exists",
+      "Step 6: Verify $STATE_DIR/mail/ exists",
+      "Step 7: Verify $STATE_DIR/collections/ exists",
+      "Step 8: Verify $STATE_DIR/uploads/ exists",
+      "Step 9: Verify $STATE_DIR/backup/ exists",
+      "Step 10: Verify $CACHE_DIR/thumbnails/ exists",
+      "Step 11: Verify $STATE_DIR/blobs/by-id/ exists"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Global CLI flags: --config, --json, --dry-run, --verbose work across commands",
+    "steps": [
+      "Step 1: Run command with --config /custom/path \u2192 verify custom config loaded",
+      "Step 2: Run command with --json \u2192 verify JSON output format",
+      "Step 3: Run mutating command with --dry-run \u2192 verify no actual changes",
+      "Step 4: Run command with --verbose \u2192 verify increased log output"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CSRF token on Login Flow v2 form prevents cross-site request forgery",
+    "steps": [
+      "Step 1: GET login form \u2192 extract CSRF token from HTML",
+      "Step 2: POST login with valid CSRF token \u2192 verify accepted",
+      "Step 3: POST login without CSRF token \u2192 verify rejected",
+      "Step 4: POST login with invalid CSRF token \u2192 verify rejected"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email archive: connection retry with exponential backoff on IMAP errors",
+    "steps": [
+      "Step 1: Start with unreachable IMAP server",
+      "Step 2: Verify connection retry with exponential backoff",
+      "Step 3: Verify notification on persistent sync errors",
+      "Step 4: Make IMAP server reachable \u2192 verify connection recovers"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notification log table records all notification events",
+    "steps": [
+      "Step 1: Trigger various notification events",
+      "Step 2: Query notification_log table",
+      "Step 3: Verify records with event_type, priority, message, sinks_notified, created_at"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "kv_meta table stores sync tokens, IMAP UIDs, and other key-value metadata",
+    "steps": [
+      "Step 1: Sync calendars \u2192 verify sync_token stored in kv_meta",
+      "Step 2: Sync email \u2192 verify last IMAP UID stored",
+      "Step 3: Verify updated_at timestamps on metadata entries"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Secrets never stored in config.toml: all sensitive values via env vars or file references",
+    "steps": [
+      "Step 1: Inspect generated config.toml after `tilde init`",
+      "Step 2: Verify no password values in config.toml",
+      "Step 3: Verify env var references used for all credentials",
+      "Step 4: Verify passwords not logged in tracing output"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Failed auth attempts logged with source IP for monitoring",
+    "steps": [
+      "Step 1: Send failed login attempts from various IPs",
+      "Step 2: Verify each failure logged with source IP",
+      "Step 3: Verify log entries suitable for fail2ban integration"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Collection list CLI command shows all defined collections",
+    "steps": [
+      "Step 1: Create multiple collections",
+      "Step 2: Run `tilde collection list`",
+      "Step 3: Verify all collections listed with names and record counts"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Fluent i18n: English locale loaded by default",
+    "steps": [
+      "Step 1: Start tilde with default locale",
+      "Step 2: Verify CLI messages and error strings use English fluent translations",
+      "Step 3: Verify .ftl files exist in locales/ directory"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Streaming writes for large uploads: never buffer full file in memory",
+    "steps": [
+      "Step 1: Upload a large file (100MB+) via WebDAV PUT",
+      "Step 2: Monitor server memory usage during upload",
+      "Step 3: Verify memory usage stays well below file size",
+      "Step 4: Verify file written correctly to disk"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "tower middleware: request-id, compression, logging applied to all requests",
+    "steps": [
+      "Step 1: Send request to any endpoint",
+      "Step 2: Verify X-Request-Id header in response",
+      "Step 3: Verify gzip compression negotiation works",
+      "Step 4: Verify request logged with request-id in structured log"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CalDAV free-busy-query REPORT returns availability info",
+    "steps": [
+      "Step 1: Create calendar with events",
+      "Step 2: Send free-busy-query REPORT for a time range",
+      "Step 3: Verify VFREEBUSY response with busy periods"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Static musl binary build for x86_64 and aarch64",
+    "steps": [
+      "Step 1: Build with `cargo build --release --target x86_64-unknown-linux-musl`",
+      "Step 2: Verify static binary produced (ldd shows 'not a dynamic executable')",
+      "Step 3: Cross-compile for aarch64-unknown-linux-musl",
+      "Step 4: Verify binary size is 15-30MB range"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo thumbnail WebP quality configurable (default 80)",
+    "steps": [
+      "Step 1: Generate thumbnail with default quality=80",
+      "Step 2: Change thumbnail_quality to 60 in config",
+      "Step 3: Regenerate thumbnails",
+      "Step 4: Verify new thumbnails are smaller in file size"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Database is rebuildable cache: can reconstruct from files on disk",
+    "steps": [
+      "Step 1: Populate tilde with notes, photos, emails",
+      "Step 2: Delete tilde.db",
+      "Step 3: Run `tilde reindex --type all`",
+      "Step 4: Verify database rebuilt from files",
+      "Step 5: Verify search and queries work normally"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebAuthn credential management: register, list, remove",
+    "steps": [
+      "Step 1: Enable WebAuthn in config",
+      "Step 2: Register a credential via webauthn-rs flow",
+      "Step 3: Verify credential stored in webauthn_credentials table",
+      "Step 4: List credentials \u2192 verify name, created_at, last_used_at",
+      "Step 5: Remove credential \u2192 verify deleted"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email archive: background initial sync fetches all history with --since scoping",
+    "steps": [
+      "Step 1: Configure new email account",
+      "Step 2: Start tilde serve \u2192 verify background sync begins",
+      "Step 3: Verify messages fetched progressively",
+      "Step 4: Configure with --since 2024-01-01 \u2192 verify only recent messages fetched"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Backup: paranoid mode with public-key-only encryption and append-only destinations",
+    "steps": [
+      "Step 1: Configure backup with public key only",
+      "Step 2: Verify server cannot decrypt backups (only public key held)",
+      "Step 3: Verify append-only enforcement on destination"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Backup: printed-paper recovery code generated during tilde init",
+    "steps": [
+      "Step 1: Run tilde init with backup enabled",
+      "Step 2: Verify recovery code printed to terminal",
+      "Step 3: Verify recovery code can decrypt backup"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Cross-reference URI scheme: tilde:// URIs stable across export/import",
+    "steps": [
+      "Step 1: Create data with cross-references",
+      "Step 2: Export",
+      "Step 3: Import to new instance",
+      "Step 4: Verify tilde:// URIs resolve correctly via UUIDs in manifest.json"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CLI reindex for links type rebuilds cross-reference links table",
+    "steps": [
+      "Step 1: Create notes with cross-references",
+      "Step 2: Clear links table",
+      "Step 3: Run `tilde reindex --type links`",
+      "Step 4: Verify links table repopulated from content parsing"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "config.toml hot-reload fields vs restart-required fields enforced correctly",
+    "steps": [
+      "Step 1: Modify hot-reloadable field (logging.level) and send SIGHUP \u2192 verify applied",
+      "Step 2: Modify restart-required field (server.listen_port) and send SIGHUP",
+      "Step 3: Verify restart-required change NOT applied until restart",
+      "Step 4: Restart server \u2192 verify change applied"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email IMAP poll fallback when IDLE not supported",
+    "steps": [
+      "Step 1: Configure email with idle_enabled = false",
+      "Step 2: Set poll_interval_seconds = 10",
+      "Step 3: Verify polling occurs at configured interval",
+      "Step 4: Verify new messages fetched during poll"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Jobs table: background job queue for thumbnails, email fetch, backup, reindex, organize",
+    "steps": [
+      "Step 1: Trigger various background jobs",
+      "Step 2: Verify jobs created in jobs table with correct job_type",
+      "Step 3: Verify status transitions: pending \u2192 running \u2192 completed (or failed)",
+      "Step 4: Verify max_attempts and retry logic for failed jobs"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV serves photo library at /dav/photos/*",
+    "steps": [
+      "Step 1: Import photos into library",
+      "Step 2: PROPFIND /dav/photos/ \u2192 verify photo files listed",
+      "Step 3: GET a photo file \u2192 verify original served",
+      "Step 4: Verify directory structure matches organization pattern"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP security: no URL-fetching capability in any tool",
+    "steps": [
+      "Step 1: List all MCP tools",
+      "Step 2: Verify no tool accepts a URL parameter for fetching",
+      "Step 3: Attempt to pass URL in query/data fields \u2192 verify not fetched"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Per-IP rate limiting on all auth endpoints using token bucket algorithm",
+    "steps": [
+      "Step 1: Send rapid auth requests from single IP",
+      "Step 2: Verify token bucket rate limiting kicks in",
+      "Step 3: Verify different IPs have independent buckets"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CSP header on Login Flow v2 page: default-src 'self'",
+    "steps": [
+      "Step 1: GET login page",
+      "Step 2: Verify Content-Security-Policy: default-src 'self' header",
+      "Step 3: Verify no inline scripts or external resources loaded"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Memory stays under 256MB for normal workloads (no photo processing)",
+    "steps": [
+      "Step 1: Start tilde serve",
+      "Step 2: Perform normal operations: WebDAV, CalDAV, MCP requests",
+      "Step 3: Monitor RSS memory usage",
+      "Step 4: Verify stays under 256MB"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Memory stays under 512MB during photo thumbnail generation",
+    "steps": [
+      "Step 1: Import multiple large photos (HEIC, JPEG)",
+      "Step 2: Monitor memory during thumbnail generation",
+      "Step 3: Verify stays under 512MB",
+      "Step 4: Verify single-slot semaphore prevents concurrent HEIC processing"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "EXIF privacy: strip EXIF by default on any hypothetical public URL",
+    "steps": [
+      "Step 1: Upload photo with GPS and personal EXIF data",
+      "Step 2: Access photo via WebDAV (authenticated) \u2192 verify EXIF intact",
+      "Step 3: Verify no full file hashes exposed in URLs (opaque UUIDs only)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Collection JSON Schema validation rejects invalid records",
+    "steps": [
+      "Step 1: Create collection with schema requiring 'url' (string, required) field",
+      "Step 2: Try to add record without 'url' field \u2192 verify validation error",
+      "Step 3: Try to add record with wrong type for 'url' \u2192 verify error",
+      "Step 4: Add valid record \u2192 verify success"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notification: disk_usage_high fires at 80% and 90% thresholds",
+    "steps": [
+      "Step 1: Mock disk usage at 79% \u2192 verify no notification",
+      "Step 2: Mock disk usage at 80% \u2192 verify notification with high priority",
+      "Step 3: Mock disk usage at 90% \u2192 verify second notification"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Email retention: retention_days = 0 keeps forever, nonzero prunes old messages",
+    "steps": [
+      "Step 1: Configure retention_days = 0 \u2192 verify no messages pruned",
+      "Step 2: Configure retention_days = 30",
+      "Step 3: Insert messages older than 30 days",
+      "Step 4: Trigger prune \u2192 verify old messages removed",
+      "Step 5: Verify recent messages retained"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Multiple notification sinks can be configured simultaneously",
+    "steps": [
+      "Step 1: Configure ntfy + file + webhook sinks",
+      "Step 2: Trigger notification event meeting all priority thresholds",
+      "Step 3: Verify event delivered to all configured sinks"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photo ingestion: WebDAV upload to photos folder triggers indexing pipeline",
+    "steps": [
+      "Step 1: Upload photo via WebDAV PUT to /dav/photos/_inbox/photo.jpg",
+      "Step 2: Wait for file watcher to detect",
+      "Step 3: Verify same pipeline as local file drop (metadata extraction, organization, thumbnail)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "tilde serve starts correctly and exits cleanly on SIGTERM",
+    "steps": [
+      "Step 1: Start tilde serve",
+      "Step 2: Verify server is listening and serving requests",
+      "Step 3: Send SIGTERM",
+      "Step 4: Verify graceful shutdown (finish in-flight requests)",
+      "Step 5: Verify clean exit code"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "RustiCal Apple .mobileconfig profile generation for easy iOS setup",
+    "steps": [
+      "Step 1: Request .mobileconfig profile",
+      "Step 2: Verify valid XML plist with CalDAV and CardDAV account configs",
+      "Step 3: Verify profile includes server hostname and path prefixes"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "CalDAV soft-deletion with configurable retention",
+    "steps": [
+      "Step 1: Delete a calendar event",
+      "Step 2: Verify event soft-deleted (still in storage, marked deleted)",
+      "Step 3: Verify event not returned in normal queries",
+      "Step 4: After retention period, verify event permanently removed"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV-Push notifications via RustiCal for CalDAV changes",
+    "steps": [
+      "Step 1: Subscribe to calendar push notifications",
+      "Step 2: Create/modify an event",
+      "Step 3: Verify push notification sent to subscriber"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Self-hosted update manifest mirror support for air-gapped environments",
+    "steps": [
+      "Step 1: Configure updates.manifest_mirror with local URL",
+      "Step 2: Run `tilde update check`",
+      "Step 3: Verify manifest fetched from mirror URL, not default"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Backup scheduling: internal scheduler runs backups on cron-style schedule",
+    "steps": [
+      "Step 1: Configure backup schedule = 'hourly'",
+      "Step 2: Verify backup runs automatically at scheduled time",
+      "Step 3: Verify backup status shows next scheduled time"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Photos: PNG and WebP image formats for thumbnails alongside JPEG and HEIC",
+    "steps": [
+      "Step 1: Import PNG image \u2192 verify thumbnail generated",
+      "Step 2: Import WebP image \u2192 verify thumbnail generated",
+      "Step 3: Verify both produce WebP thumbnails at 256px and 1920px"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "MCP *:read wildcard scope grants read access to all domains",
+    "steps": [
+      "Step 1: Create token with scope '*:read'",
+      "Step 2: Call notes.search \u2192 verify allowed",
+      "Step 3: Call calendar.list_events \u2192 verify allowed",
+      "Step 4: Call contacts.search \u2192 verify allowed",
+      "Step 5: Call notes.append \u2192 verify denied (write scope needed)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "No *:write wildcard scope: write scopes must be listed explicitly",
+    "steps": [
+      "Step 1: Try to create token with scope '*:write'",
+      "Step 2: Verify error: wildcard write scope not allowed",
+      "Step 3: Create token with explicit write scopes 'notes:write,calendar:write'",
+      "Step 4: Verify only specified write tools allowed"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Notes YAML frontmatter preserved during sync and search",
+    "steps": [
+      "Step 1: Upload note with YAML frontmatter (title, tags, date)",
+      "Step 2: GET note and verify frontmatter preserved exactly",
+      "Step 3: Search for content mentioned in frontmatter \u2192 verify found"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Collection records HLC for last-writer-wins conflict resolution",
+    "steps": [
+      "Step 1: Create record with HLC",
+      "Step 2: Update record \u2192 verify HLC increases",
+      "Step 3: Simulate conflicting updates with different HLC values",
+      "Step 4: Verify LWW using HLC determines winner"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "WebDAV file sync with Nextcloud desktop client (functional test)",
+    "steps": [
+      "Step 1: Configure Nextcloud desktop client to connect to tilde",
+      "Step 2: Authenticate via Login Flow v2",
+      "Step 3: Sync a test file from client to server",
+      "Step 4: Verify file appears on server",
+      "Step 5: Create file on server",
+      "Step 6: Verify file syncs to client"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "rustls-acme TLS-ALPN-01 auto-provisioning for certificates",
+    "steps": [
+      "Step 1: Configure tls.mode = 'acme' with valid hostname and email",
+      "Step 2: Start tilde serve",
+      "Step 3: Verify TLS-ALPN-01 challenge completes",
+      "Step 4: Verify certificate provisioned and stored in acme_cache_dir",
+      "Step 5: Verify HTTPS serving with valid certificate"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Manual TLS mode with user-provided cert and key paths",
+    "steps": [
+      "Step 1: Generate self-signed cert and key",
+      "Step 2: Configure tls.mode = 'manual' with cert_path and key_path",
+      "Step 3: Start tilde serve",
+      "Step 4: Verify HTTPS serving with provided certificate"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Login Flow v2 page: minimal branded login form with clean design",
+    "steps": [
+      "Step 1: Navigate to /login/v2/auth",
+      "Step 2: Verify minimal HTML login page rendered",
+      "Step 3: Verify form has password input and submit button",
+      "Step 4: Verify page is under 100 lines of HTML",
+      "Step 5: Verify no external resources loaded (CSP: default-src 'self')"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Login page is functional on mobile browsers (responsive design)",
+    "steps": [
+      "Step 1: Open login page on mobile viewport (375px wide)",
+      "Step 2: Verify form is usable and not cut off",
+      "Step 3: Verify inputs are tappable and properly sized"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "CLI output: tilde status produces rich, readable text output",
+    "steps": [
+      "Step 1: Run `tilde status`",
+      "Step 2: Verify output is well-formatted with clear sections",
+      "Step 3: Verify important information is highlighted or structured",
+      "Step 4: Verify output fits standard 80-column terminal"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "CLI output: tilde diagnose produces clear pass/fail indicators",
+    "steps": [
+      "Step 1: Run `tilde diagnose`",
+      "Step 2: Verify each check has clear pass/fail/warning indicator",
+      "Step 3: Verify failed checks include actionable guidance"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "CLI help text: all commands have clear descriptions and examples",
+    "steps": [
+      "Step 1: Run `tilde --help`",
+      "Step 2: Verify all subcommands listed with descriptions",
+      "Step 3: Run `tilde serve --help`",
+      "Step 4: Verify arguments and flags documented",
+      "Step 5: Run `tilde photos --help` \u2192 verify subcommands listed"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "CLI error messages: user-friendly with actionable suggestions",
+    "steps": [
+      "Step 1: Run tilde with missing config file",
+      "Step 2: Verify error message explains what's wrong and suggests fix",
+      "Step 3: Run tilde with invalid config value",
+      "Step 4: Verify error points to specific config field and valid values"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "JSON output mode: --json flag produces machine-parseable output across all commands",
+    "steps": [
+      "Step 1: Run `tilde status --json`",
+      "Step 2: Verify valid JSON output",
+      "Step 3: Run `tilde photos list --json`",
+      "Step 4: Verify valid JSON array output",
+      "Step 5: Pipe output to jq \u2192 verify parseable"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "CLI tables: list commands produce aligned, readable table output",
+    "steps": [
+      "Step 1: Run `tilde auth app-password list` with several passwords",
+      "Step 2: Verify output in aligned table format",
+      "Step 3: Verify columns have headers",
+      "Step 4: Verify long values are truncated gracefully"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Login page: proper HTML5 semantics and accessibility",
+    "steps": [
+      "Step 1: View login page source",
+      "Step 2: Verify proper HTML5 doctype and lang attribute",
+      "Step 3: Verify form labels associated with inputs",
+      "Step 4: Verify sufficient color contrast for text",
+      "Step 5: Verify page works with keyboard-only navigation"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Structured log format: JSON logs are well-organized with consistent field naming",
+    "steps": [
+      "Step 1: Generate log output in JSON format",
+      "Step 2: Verify consistent field names: timestamp, level, message, target, span",
+      "Step 3: Verify timestamps are ISO 8601 with timezone",
+      "Step 4: Verify request logs include method, path, status, duration_ms"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Pretty log format: human-readable log output with colors for development",
+    "steps": [
+      "Step 1: Start tilde with logging.format = 'pretty'",
+      "Step 2: Verify colored output with log levels",
+      "Step 3: Verify timestamps readable",
+      "Step 4: Verify reasonable verbosity at info level"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Notification messages: clear, concise, and actionable",
+    "steps": [
+      "Step 1: Trigger backup_failed notification",
+      "Step 2: Verify message clearly states what failed and suggests action",
+      "Step 3: Trigger disk_usage_high",
+      "Step 4: Verify message includes current usage percentage and path"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Config file template: well-commented with clear defaults",
+    "steps": [
+      "Step 1: Generate default config.toml via tilde init",
+      "Step 2: Verify all sections have descriptive comments",
+      "Step 3: Verify default values are shown and explained",
+      "Step 4: Verify sensitive fields reference env vars, not values"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "systemd unit: clean journalctl output with structured data",
+    "steps": [
+      "Step 1: Run tilde under systemd",
+      "Step 2: View logs via `journalctl -u tilde`",
+      "Step 3: Verify structured JSON logs parse correctly in journald",
+      "Step 4: Verify log entries filterable by level"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Health endpoint JSON: well-structured with meaningful fields",
+    "steps": [
+      "Step 1: GET /health",
+      "Step 2: Verify JSON structure is clean and well-organized",
+      "Step 3: Verify field names are consistent and self-explanatory",
+      "Step 4: Verify uptime format is human-readable"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Error responses: consistent format across all endpoints",
+    "steps": [
+      "Step 1: Trigger various errors (404, 401, 403, 412, 500)",
+      "Step 2: Verify consistent error response format",
+      "Step 3: Verify error messages are helpful but don't leak internals",
+      "Step 4: Verify proper HTTP status codes used"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "WebDAV XML responses: properly namespaced and formatted",
+    "steps": [
+      "Step 1: PROPFIND a resource",
+      "Step 2: Verify XML response has proper DAV namespace declarations",
+      "Step 3: Verify Nextcloud custom namespaces (oc:) properly declared",
+      "Step 4: Verify XML is well-formed and parseable by standard XML parsers"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "MCP tool descriptions: clear, concise tool definitions for LLM clients",
+    "steps": [
+      "Step 1: List MCP tools via protocol",
+      "Step 2: Verify each tool has clear name, description, and parameter schema",
+      "Step 3: Verify parameter types and descriptions help LLMs use tools correctly"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "CLI progress indicators: long operations show progress feedback",
+    "steps": [
+      "Step 1: Run `tilde photos reindex` with many photos",
+      "Step 2: Verify progress indicator (count or percentage) shown",
+      "Step 3: Run `tilde export /tmp/export`",
+      "Step 4: Verify progress feedback during export"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "CLI confirmation prompts: destructive operations require confirmation",
+    "steps": [
+      "Step 1: Run a destructive command (e.g., delete collection)",
+      "Step 2: Verify confirmation prompt before proceeding",
+      "Step 3: Verify --yes flag skips confirmation for scripting"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Rust code quality: clippy clean with no warnings",
+    "steps": [
+      "Step 1: Run `cargo clippy -D warnings` on entire workspace",
+      "Step 2: Verify zero warnings",
+      "Step 3: Verify proper use of idiomatic Rust patterns"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Rust code formatting: consistent formatting via rustfmt",
+    "steps": [
+      "Step 1: Run `cargo fmt --check`",
+      "Step 2: Verify no formatting differences",
+      "Step 3: Verify consistent style across all crates"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Export directory structure: clean, intuitive organization",
+    "steps": [
+      "Step 1: Run full export",
+      "Step 2: Verify directory names are intuitive (calendars/, contacts/, notes/, photos/)",
+      "Step 3: Verify file formats are standard (ICS, VCF, MD, JSON)",
+      "Step 4: Verify manifest.json is human-readable"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Prometheus metrics: well-named with proper label conventions",
+    "steps": [
+      "Step 1: GET /metrics from localhost",
+      "Step 2: Verify metric names follow Prometheus naming conventions",
+      "Step 3: Verify labels are consistent and useful",
+      "Step 4: Verify HELP and TYPE annotations present"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Database schema: clean SQL with proper indexes and foreign keys",
+    "steps": [
+      "Step 1: Inspect migration SQL files",
+      "Step 2: Verify proper CREATE TABLE statements with types",
+      "Step 3: Verify foreign key relationships defined",
+      "Step 4: Verify indexes on frequently queried columns",
+      "Step 5: Verify consistent naming conventions across tables"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Config.toml: sensible defaults that work out of the box for common deployments",
+    "steps": [
+      "Step 1: Review all default values in config",
+      "Step 2: Verify defaults work for VPS deployment with minimal configuration",
+      "Step 3: Verify only hostname and password truly required",
+      "Step 4: Verify optional features are disabled by default (email, backup)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "Photo error sidecar files: clear error descriptions for user diagnosis",
+    "steps": [
+      "Step 1: Trigger photo processing errors",
+      "Step 2: Check error sidecar .txt files in _errors/",
+      "Step 3: Verify error description is clear and actionable",
+      "Step 4: Verify original filename referenced in sidecar"
+    ],
+    "passes": false
+  },
+  {
+    "category": "style",
+    "description": "tilde init wizard: clear prompts with defaults shown in brackets",
+    "steps": [
+      "Step 1: Run tilde init",
+      "Step 2: Verify each prompt clearly states what's needed",
+      "Step 3: Verify default values shown in brackets [default]",
+      "Step 4: Verify pressing Enter accepts default"
+    ],
+    "passes": false
+  }
+]

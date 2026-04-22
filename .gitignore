@@ -1,1 +1,11 @@
 .env
+target/
+.dev-data/
+.dev-cache/
+*.db
+*.db-wal
+*.db-shm
+.agent_done
+.current_prompt.md
+.example_spec.txt
+logs/

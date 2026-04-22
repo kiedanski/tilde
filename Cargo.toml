@@ -1,0 +1,104 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tilde-core",
+    "crates/tilde-server",
+    "crates/tilde-cli",
+    "crates/tilde-dav",
+    "crates/tilde-cal",
+    "crates/tilde-card",
+    "crates/tilde-photos",
+    "crates/tilde-notes",
+    "crates/tilde-collections",
+    "crates/tilde-email",
+    "crates/tilde-mcp",
+    "crates/tilde-backup",
+    "crates/tilde-notify",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# HTTP & async
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "compression-gzip", "cors", "set-header"] }
+
+# TLS
+rustls = "0.23"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled", "modern_sqlite"] }
+
+# CLI & config
+clap = { version = "4", features = ["derive"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# XML
+quick-xml = "0.37"
+
+# Dates
+jiff = "0.2"
+
+# Auth
+argon2 = "0.5"
+jsonwebtoken = "9"
+
+# Crypto
+sha2 = "0.10"
+rand = "0.8"
+subtle = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# Markdown
+comrak = "0.36"
+
+# Paths
+directories = "6"
+
+# Image
+image = "0.25"
+
+# Embed
+rust-embed = "8"
+
+# File watching
+notify = "7"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# UUID
+uuid = { version = "1", features = ["v4"] }
+
+# HTTP client (for notifications)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Internal crates
+tilde-core = { path = "crates/tilde-core" }
+tilde-server = { path = "crates/tilde-server" }
+tilde-cli = { path = "crates/tilde-cli" }
+tilde-dav = { path = "crates/tilde-dav" }
+tilde-cal = { path = "crates/tilde-cal" }
+tilde-card = { path = "crates/tilde-card" }
+tilde-photos = { path = "crates/tilde-photos" }
+tilde-notes = { path = "crates/tilde-notes" }
+tilde-collections = { path = "crates/tilde-collections" }
+tilde-email = { path = "crates/tilde-email" }
+tilde-mcp = { path = "crates/tilde-mcp" }
+tilde-backup = { path = "crates/tilde-backup" }
+tilde-notify = { path = "crates/tilde-notify" }

@@ -1,0 +1,10 @@
+[package]
+name = "tilde-collections"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tilde-core = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
