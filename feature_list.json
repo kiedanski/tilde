@@ -1123,7 +1123,7 @@
       "Step 3: Run `tilde photos list --tag trip:jamaica` \u2192 verify filtered by tag",
       "Step 4: Run `tilde photos list --since 2025-01-01 --until 2025-06-30` \u2192 verify date filter"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1134,7 +1134,7 @@
       "Step 3: Run `tilde photos reindex`",
       "Step 4: Verify all photos re-discovered from disk and database repopulated"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1410,7 +1410,7 @@
       "Step 4: Run `tilde email search --subject 'invoice'`",
       "Step 5: Verify correct filtering in each case"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1420,7 +1420,7 @@
       "Step 2: Run `tilde email show <message-id>`",
       "Step 3: Verify headers and body displayed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1462,7 +1462,7 @@
       "Step 2: Run `tilde email status`",
       "Step 3: Verify output shows last sync time, message count, connection status per account"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

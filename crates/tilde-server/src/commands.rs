@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::info;
-use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands, NotesCommands, CollectionCommands, BookmarksCommands, TrackersCommands, WebhookCommands, WebhookTokenCommands, NotificationCommands};
+use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands, NotesCommands, CollectionCommands, BookmarksCommands, TrackersCommands, WebhookCommands, WebhookTokenCommands, NotificationCommands, PhotosCommands, EmailCommands};
 use tilde_core::{config::Config, db, auth};
 use tilde_server::{AppState, build_router, SharedState};
 use tilde_dav;
@@ -1140,6 +1140,244 @@ pub async fn run_notifications(config_path: Option<&str>, command: NotificationC
         }
     }
     Ok(())
+}
+
+pub async fn run_email(config_path: Option<&str>, command: EmailCommands) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let conn = db::init_db(config.db_path().to_str().unwrap())?;
+    let migrations_dir = tilde_cli::find_migrations_dir();
+    db::run_migrations(&conn, &migrations_dir)?;
+
+    match command {
+        EmailCommands::Search { query } => {
+            // First try FTS search
+            let mut stmt = conn.prepare(
+                "SELECT e.message_id, e.from_address, e.subject, e.date, e.snippet
+                 FROM email_fts f
+                 JOIN email_messages e ON e.id = f.rowid
+                 WHERE email_fts MATCH ?1
+                 ORDER BY e.date DESC LIMIT 20"
+            );
+
+            let results: Vec<(String, String, String, String, Option<String>)> = match stmt {
+                Ok(ref mut s) => {
+                    s.query_map([&query], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                    })?.filter_map(|r| r.ok()).collect()
+                }
+                Err(_) => {
+                    // FTS might be empty, try LIKE search
+                    let mut s2 = conn.prepare(
+                        "SELECT message_id, from_address, subject, date, snippet FROM email_messages WHERE subject LIKE ?1 OR from_address LIKE ?1 ORDER BY date DESC LIMIT 20"
+                    )?;
+                    let pattern = format!("%{}%", query);
+                    s2.query_map([&pattern], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                    })?.filter_map(|r| r.ok()).collect()
+                }
+            };
+
+            if results.is_empty() {
+                println!("No emails found matching '{}'", query);
+            } else {
+                println!("{:<30} {:<30} {:<20} {}", "From", "Subject", "Date", "Snippet");
+                println!("{}", "-".repeat(100));
+                for (_, from, subject, date, snippet) in &results {
+                    let subj = if subject.len() > 28 { format!("{}...", &subject[..25]) } else { subject.clone() };
+                    let snip = snippet.as_deref().unwrap_or("").chars().take(30).collect::<String>();
+                    println!("{:<30} {:<30} {:<20} {}", from, subj, date, snip);
+                }
+                println!("{} result(s)", results.len());
+            }
+        }
+        EmailCommands::Show { message_id } => {
+            let result = conn.query_row(
+                "SELECT from_address, to_addresses, subject, date, snippet, maildir_path FROM email_messages WHERE message_id = ?1",
+                [&message_id],
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                )),
+            );
+            match result {
+                Ok((from, to, subject, date, snippet, path)) => {
+                    println!("From:    {}", from);
+                    println!("To:      {}", to);
+                    println!("Subject: {}", subject);
+                    println!("Date:    {}", date);
+                    println!("Path:    {}", path);
+                    if let Some(s) = snippet {
+                        println!();
+                        println!("{}", s);
+                    }
+                }
+                Err(_) => println!("Message not found: {}", message_id),
+            }
+        }
+        EmailCommands::Thread { message_id: _ } => {
+            println!("Email threading not yet implemented");
+        }
+        EmailCommands::Reindex => {
+            println!("Email reindex rebuilds SQLite from Maildir files");
+            println!("(IMAP sync must run first to populate Maildir)");
+        }
+        EmailCommands::Status => {
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM email_messages", [], |row| row.get(0)).unwrap_or(0);
+            println!("Email Archive Status");
+            println!("====================");
+            println!("Total messages: {}", count);
+            println!("Accounts configured: check config.toml [email] section");
+        }
+    }
+    Ok(())
+}
+
+pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let conn = db::init_db(config.db_path().to_str().unwrap())?;
+    let migrations_dir = tilde_cli::find_migrations_dir();
+    db::run_migrations(&conn, &migrations_dir)?;
+
+    let photos_dir = config.data_dir().join("photos");
+
+    match command {
+        PhotosCommands::List { tag, since, until } => {
+            let mut sql = String::from(
+                "SELECT p.id, f.path, p.taken_at, p.camera_model, p.tags_json FROM photos p JOIN files f ON p.file_id = f.id WHERE 1=1"
+            );
+            if let Some(ref t) = tag {
+                sql.push_str(&format!(" AND p.tags_json LIKE '%{}%'", t));
+            }
+            if let Some(ref s) = since {
+                sql.push_str(&format!(" AND p.taken_at >= '{}'", s));
+            }
+            if let Some(ref u) = until {
+                sql.push_str(&format!(" AND p.taken_at <= '{}'", u));
+            }
+            sql.push_str(" ORDER BY p.taken_at DESC LIMIT 100");
+
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?;
+
+            println!("{:<36} {:<40} {:<20} {:<20} {}", "UUID", "Path", "Taken", "Camera", "Tags");
+            println!("{}", "-".repeat(130));
+            let mut count = 0;
+            for row in rows {
+                let (uuid, path, taken, camera, tags) = row?;
+                println!("{:<36} {:<40} {:<20} {:<20} {}",
+                    uuid,
+                    path,
+                    taken.unwrap_or_else(|| "-".to_string()),
+                    camera.unwrap_or_else(|| "-".to_string()),
+                    tags.unwrap_or_else(|| "[]".to_string()),
+                );
+                count += 1;
+            }
+            if count == 0 {
+                println!("No photos found. Drop files in {} to index.", photos_dir.join("_inbox").display());
+            }
+        }
+        PhotosCommands::Tag { uuid: _, command: _ } => {
+            println!("Photo tagging requires ExifTool (not yet integrated)");
+        }
+        PhotosCommands::Reindex => {
+            print!("Rebuilding photo index from files... ");
+            // Scan photos directory and index any unindexed files
+            let mut indexed = 0;
+            if photos_dir.exists() {
+                indexed = index_photos_from_dir(&conn, &photos_dir, &photos_dir)?;
+            }
+            println!("done ({} photos indexed)", indexed);
+        }
+        PhotosCommands::Thumbnail { command: _ } => {
+            println!("Thumbnail generation not yet implemented");
+        }
+    }
+    Ok(())
+}
+
+fn index_photos_from_dir(conn: &rusqlite::Connection, dir: &std::path::Path, base: &std::path::Path) -> anyhow::Result<usize> {
+    let mut count = 0;
+    let photo_exts = ["jpg", "jpeg", "png", "webp", "heic", "heif", "tiff", "raw", "cr2", "nef", "arw"];
+
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            count += index_photos_from_dir(conn, &path, base)?;
+            continue;
+        }
+
+        let ext = path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        if !photo_exts.contains(&ext.as_str()) {
+            continue;
+        }
+
+        let rel_path = path.strip_prefix(base)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Check if already indexed
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM files WHERE path = ?1",
+            [&format!("photos/{}", rel_path)],
+            |row| row.get::<_, i64>(0),
+        ).map(|c| c > 0)?;
+
+        if exists {
+            continue;
+        }
+
+        let meta = path.metadata()?;
+        let file_id = uuid::Uuid::new_v4().to_string();
+        let photo_id = file_id.clone();
+        let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        let size = meta.len() as i64;
+
+        // Create file entry
+        conn.execute(
+            "INSERT OR IGNORE INTO files (id, path, parent_path, name, size_bytes, content_type, etag, is_directory, created_at, modified_at, hlc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10)",
+            rusqlite::params![
+                file_id,
+                format!("photos/{}", rel_path),
+                format!("photos/{}", path.parent().and_then(|p| p.strip_prefix(base).ok()).map(|p| p.to_string_lossy().to_string()).unwrap_or_default()),
+                path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                size,
+                format!("image/{}", ext),
+                format!("\"{}\"", &file_id[..8]),
+                now, now, now,
+            ],
+        )?;
+
+        // Create photo entry
+        conn.execute(
+            "INSERT OR IGNORE INTO photos (id, file_id, original_sha256, current_sha256, created_at, updated_at, hlc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![photo_id, file_id, "pending", "pending", now, now, now],
+        )?;
+
+        count += 1;
+    }
+
+    Ok(count)
 }
 
 pub async fn run_reindex(config_path: Option<&str>, index_type: &str) -> anyhow::Result<()> {
