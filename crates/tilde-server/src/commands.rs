@@ -170,10 +170,42 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn run_status(config_path: Option<&str>) -> anyhow::Result<()> {
+pub async fn run_status(config_path: Option<&str>, json_output: bool) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let db_path = config.db_path();
     let data_dir = config.data_dir();
+
+    if json_output {
+        let mut status = serde_json::json!({
+            "hostname": if config.server.hostname.is_empty() { serde_json::json!(null) } else { serde_json::json!(&config.server.hostname) },
+            "listen": format!("{}:{}", config.server.listen_addr, config.server.listen_port),
+            "tls_mode": &config.tls.mode,
+            "data_dir": data_dir.to_string_lossy(),
+            "cache_dir": config.cache_dir().to_string_lossy().to_string(),
+            "database_path": db_path.to_string_lossy().to_string(),
+            "mode": if Config::is_systemd_mode() { "systemd" } else { "user" },
+        });
+
+        if db_path.exists() {
+            let conn = db::init_db(db_path.to_str().unwrap())?;
+            let migrations = db::get_applied_migrations(&conn)?;
+            let has_password = auth::get_admin_password_hash(&conn)?.is_some();
+            let db_size = db_path.metadata().map(|m| m.len()).unwrap_or(0);
+
+            status["migrations_applied"] = serde_json::json!(migrations.len());
+            status["admin_auth_configured"] = serde_json::json!(has_password);
+            status["database_size_bytes"] = serde_json::json!(db_size);
+        }
+
+        if data_dir.exists() {
+            if let Ok(total_size) = walkdir(&data_dir) {
+                status["data_size_bytes"] = serde_json::json!(total_size);
+            }
+        }
+
+        println!("{}", serde_json::to_string_pretty(&status)?);
+        return Ok(());
+    }
 
     println!("tilde — Status");
     println!("==============");
@@ -1105,6 +1137,113 @@ pub async fn run_notifications(config_path: Option<&str>, command: NotificationC
             println!("  signal: {}", "not configured");
             println!();
             println!("Rate limiting: max 10 per event type per hour");
+        }
+    }
+    Ok(())
+}
+
+pub async fn run_reindex(config_path: Option<&str>, index_type: &str) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let conn = db::init_db(config.db_path().to_str().unwrap())?;
+    let migrations_dir = tilde_cli::find_migrations_dir();
+    db::run_migrations(&conn, &migrations_dir)?;
+
+    let notes_dir = config.data_dir().join("files/notes");
+
+    match index_type {
+        "notes" | "all" => {
+            print!("Rebuilding notes FTS index... ");
+            index_notes_fts(&conn, &notes_dir)?;
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0))?;
+            println!("done ({} notes indexed)", count);
+        }
+        _ => {}
+    }
+
+    match index_type {
+        "links" | "all" => {
+            print!("Rebuilding cross-reference links... ");
+            // Clear and rebuild links table from notes
+            conn.execute("DELETE FROM links", [])?;
+
+            // Parse notes for tilde:// URIs and [[shorthand]]
+            if notes_dir.exists() {
+                parse_links_from_notes(&conn, &notes_dir, &notes_dir)?;
+            }
+
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM links", [], |row| row.get(0))?;
+            println!("done ({} links found)", count);
+        }
+        _ => {}
+    }
+
+    if index_type == "all" {
+        println!("Reindex complete.");
+    }
+
+    Ok(())
+}
+
+fn parse_links_from_notes(conn: &rusqlite::Connection, dir: &std::path::Path, base: &std::path::Path) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            parse_links_from_notes(conn, &path, base)?;
+        } else if path.extension().is_some_and(|e| e == "md") {
+            let rel_path = path.strip_prefix(base)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+
+            // Parse tilde:// URIs
+            for cap in content.match_indices("tilde://") {
+                let start = cap.0;
+                let rest = &content[start..];
+                let end = rest.find(|c: char| c.is_whitespace() || c == ')' || c == ']' || c == '>' || c == '"')
+                    .unwrap_or(rest.len());
+                let uri = &rest[..end];
+
+                // Get surrounding context (up to 50 chars before and after)
+                let ctx_start = start.saturating_sub(50);
+                let ctx_end = std::cmp::min(start + end + 50, content.len());
+                let context = &content[ctx_start..ctx_end];
+
+                conn.execute(
+                    "INSERT INTO links (source_type, source_id, target_uri, context) VALUES ('note', ?1, ?2, ?3)",
+                    rusqlite::params![rel_path, uri, context],
+                )?;
+            }
+
+            // Parse [[shorthand]] links
+            let mut search_start = 0;
+            while let Some(open) = content[search_start..].find("[[") {
+                let abs_open = search_start + open;
+                if let Some(close) = content[abs_open + 2..].find("]]") {
+                    let link_content = &content[abs_open + 2..abs_open + 2 + close];
+                    if !link_content.is_empty() && link_content.len() < 200 {
+                        let target_uri = if link_content.starts_with("photo:") {
+                            format!("tilde://photo/{}", &link_content[6..])
+                        } else if link_content.starts_with('@') {
+                            format!("tilde://contact/{}", &link_content[1..])
+                        } else if link_content.starts_with('#') {
+                            format!("tilde://date/{}", &link_content[1..])
+                        } else if link_content.starts_with("email:") {
+                            format!("tilde://email/{}", &link_content[6..])
+                        } else {
+                            format!("tilde://note/{}", link_content)
+                        };
+
+                        conn.execute(
+                            "INSERT INTO links (source_type, source_id, target_uri, context) VALUES ('note', ?1, ?2, ?3)",
+                            rusqlite::params![rel_path, target_uri, link_content],
+                        )?;
+                    }
+                    search_start = abs_open + 2 + close + 2;
+                } else {
+                    break;
+                }
+            }
         }
     }
     Ok(())

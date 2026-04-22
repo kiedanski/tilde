@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Init) => commands::run_init(config_path.as_deref()).await,
         Some(Commands::Serve) => commands::run_serve(config_path.as_deref()).await,
-        Some(Commands::Status) => commands::run_status(config_path.as_deref()).await,
+        Some(Commands::Status) => commands::run_status(config_path.as_deref(), cli.json).await,
         Some(Commands::Diagnose) => commands::run_diagnose(config_path.as_deref()).await,
         Some(Commands::Auth { command }) => commands::run_auth(config_path.as_deref(), command).await,
         Some(Commands::Mcp { command }) => commands::run_mcp(config_path.as_deref(), command).await,
@@ -32,6 +32,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Trackers { command }) => commands::run_trackers(config_path.as_deref(), command).await,
         Some(Commands::Webhook { command }) => commands::run_webhook(config_path.as_deref(), command).await,
         Some(Commands::Notifications { command }) => commands::run_notifications(config_path.as_deref(), command).await,
+        Some(Commands::Reindex { r#type }) => commands::run_reindex(config_path.as_deref(), &r#type).await,
         None => {
             println!("tilde — Personal Cloud Server");
             println!("Run `tilde --help` for usage information.");

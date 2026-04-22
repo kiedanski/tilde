@@ -1223,7 +1223,7 @@
       "Step 3: Create note with tilde://event/<uid> reference",
       "Step 4: Verify link parsed and stored"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2053,7 +2053,7 @@
       "Step 4: Verify notes_fts, email_fts, photos, links tables rebuilt",
       "Step 5: Verify search works for all types after reindex"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2219,7 +2219,7 @@
       "Step 3: Run mutating command with --dry-run \u2192 verify no actual changes",
       "Step 4: Run command with --verbose \u2192 verify increased log output"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2433,7 +2433,7 @@
       "Step 3: Run `tilde reindex --type links`",
       "Step 4: Verify links table repopulated from content parsing"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2823,7 +2823,7 @@
       "Step 4: Verify valid JSON array output",
       "Step 5: Pipe output to jq \u2192 verify parseable"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
