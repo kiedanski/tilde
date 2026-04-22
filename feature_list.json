@@ -2064,7 +2064,7 @@
       "Step 3: Verify orphaned tmp files cleaned up",
       "Step 4: Verify no data loss for completed files"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2261,7 +2261,7 @@
       "Step 2: Sync email \u2192 verify last IMAP UID stored",
       "Step 3: Verify updated_at timestamps on metadata entries"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2302,7 +2302,7 @@
       "Step 2: Verify CLI messages and error strings use English fluent translations",
       "Step 3: Verify .ftl files exist in locales/ directory"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2324,7 +2324,7 @@
       "Step 3: Verify gzip compression negotiation works",
       "Step 4: Verify request logged with request-id in structured log"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2709,7 +2709,7 @@
       "Step 3: Simulate conflicting updates with different HLC values",
       "Step 4: Verify LWW using HLC determines winner"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2800,7 +2800,7 @@
       "Step 4: Verify arguments and flags documented",
       "Step 5: Run `tilde photos --help` \u2192 verify subcommands listed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2934,7 +2934,7 @@
       "Step 3: Verify Nextcloud custom namespaces (oc:) properly declared",
       "Step 4: Verify XML is well-formed and parseable by standard XML parsers"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -3019,7 +3019,7 @@
       "Step 4: Verify indexes on frequently queried columns",
       "Step 5: Verify consistent naming conventions across tables"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",

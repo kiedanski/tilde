@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tower_http::trace::TraceLayer;
+use tower_http::{trace::TraceLayer, compression::CompressionLayer};
 use tilde_core::{config::Config, auth};
 use tilde_dav;
 use tilde_mcp;
@@ -109,10 +109,26 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
         .nest_service("/dav/photos", photos_router)
         .nest_service("/dav/uploads", uploads_router)
         // Middleware
+        .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn(add_request_id))
         .layer(axum::middleware::from_fn_with_state(state.clone(), host_filter_middleware))
         .layer(axum::middleware::map_response(add_security_headers))
         .with_state(state)
+}
+
+/// Add X-Request-Id header to all requests/responses
+async fn add_request_id(
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> axum::response::Response {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-request-id"),
+        HeaderValue::from_str(&request_id).unwrap(),
+    );
+    response
 }
 
 /// Add security headers to all responses
