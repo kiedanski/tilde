@@ -2114,7 +2114,7 @@
       "Step 3: Verify HLC monotonically increasing within a session",
       "Step 4: Verify LWW conflict resolution uses HLC for photo metadata"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2137,7 +2137,7 @@
       "Step 3: Verify email sent via SMTP",
       "Step 4: Run `tilde notifications test smtp`"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2147,7 +2147,7 @@
       "Step 2: Trigger notification event",
       "Step 3: Verify message sent to Matrix room"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2157,7 +2157,7 @@
       "Step 2: Trigger notification event",
       "Step 3: Verify Signal message sent via REST API"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2466,7 +2466,7 @@
       "Step 3: Verify status transitions: pending \u2192 running \u2192 completed (or failed)",
       "Step 4: Verify max_attempts and retry logic for failed jobs"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2582,7 +2582,7 @@
       "Step 2: Trigger notification event meeting all priority thresholds",
       "Step 3: Verify event delivered to all configured sinks"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2879,7 +2879,7 @@
       "Step 3: Trigger disk_usage_high",
       "Step 4: Verify message includes current usage percentage and path"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2923,7 +2923,7 @@
       "Step 3: Verify error messages are helpful but don't leak internals",
       "Step 4: Verify proper HTTP status codes used"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",

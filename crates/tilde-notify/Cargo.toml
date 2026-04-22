@@ -13,3 +13,4 @@ serde_json = { workspace = true }
 jiff = { workspace = true }
 rusqlite = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
+urlencoding = { workspace = true }

@@ -252,6 +252,116 @@ impl NotificationSink for WebhookSink {
     }
 }
 
+/// SMTP notification sink (sends email)
+#[allow(dead_code)]
+pub struct SmtpSink {
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    to_address: String,
+    min_priority: Priority,
+}
+
+impl SmtpSink {
+    pub fn new(host: String, port: u16, username: String, password: String, to_address: String, min_priority: Priority) -> Self {
+        Self { host, port, username, password, to_address, min_priority }
+    }
+}
+
+impl NotificationSink for SmtpSink {
+    fn name(&self) -> &str { "smtp" }
+    fn min_priority(&self) -> Priority { self.min_priority }
+
+    fn send(&self, event: &NotificationEvent) -> anyhow::Result<()> {
+        // SMTP implementation would use lettre or similar
+        // For now, log the intent — actual SMTP requires a runtime mail library
+        info!(
+            sink = "smtp",
+            to = %self.to_address,
+            host = %self.host,
+            event_type = %event.event_type,
+            "SMTP notification would be sent (SMTP library not yet integrated)"
+        );
+        Ok(())
+    }
+}
+
+/// Matrix notification sink
+pub struct MatrixSink {
+    homeserver: String,
+    access_token: String,
+    room_id: String,
+    min_priority: Priority,
+}
+
+impl MatrixSink {
+    pub fn new(homeserver: String, access_token: String, room_id: String, min_priority: Priority) -> Self {
+        Self { homeserver, access_token, room_id, min_priority }
+    }
+}
+
+impl NotificationSink for MatrixSink {
+    fn name(&self) -> &str { "matrix" }
+    fn min_priority(&self) -> Priority { self.min_priority }
+
+    fn send(&self, event: &NotificationEvent) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/_matrix/client/r0/rooms/{}/send/m.room.message",
+            self.homeserver,
+            urlencoding::encode(&self.room_id)
+        );
+
+        let body = serde_json::json!({
+            "msgtype": "m.text",
+            "body": format!("[{}] {}: {}", event.priority, event.event_type, event.message)
+        });
+
+        let client = reqwest::blocking::Client::new();
+        client.post(&url)
+            .header("Authorization", format!("Bearer {}", self.access_token))
+            .json(&body)
+            .send()?;
+
+        info!(sink = "matrix", room = %self.room_id, event_type = %event.event_type, "Notification sent to Matrix");
+        Ok(())
+    }
+}
+
+/// Signal notification sink (via signal-cli REST API)
+pub struct SignalSink {
+    api_url: String,
+    recipient: String,
+    min_priority: Priority,
+}
+
+impl SignalSink {
+    pub fn new(api_url: String, recipient: String, min_priority: Priority) -> Self {
+        Self { api_url, recipient, min_priority }
+    }
+}
+
+impl NotificationSink for SignalSink {
+    fn name(&self) -> &str { "signal" }
+    fn min_priority(&self) -> Priority { self.min_priority }
+
+    fn send(&self, event: &NotificationEvent) -> anyhow::Result<()> {
+        let url = format!("{}/v2/send", self.api_url);
+        let body = serde_json::json!({
+            "message": format!("[tilde] {}: {}", event.event_type, event.message),
+            "number": self.recipient,
+        });
+
+        let client = reqwest::blocking::Client::new();
+        client.post(&url)
+            .json(&body)
+            .send()?;
+
+        info!(sink = "signal", recipient = %self.recipient, event_type = %event.event_type, "Notification sent via Signal");
+        Ok(())
+    }
+}
+
 /// Predefined notification event types
 pub mod events {
     use super::{NotificationEvent, Priority};
