@@ -311,6 +311,8 @@ impl Default for NotesConfig {
 pub struct McpConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default = "default_tool_allowlist")]
+    pub tool_allowlist: Vec<String>,
     #[serde(default = "default_mcp_rate_limit")]
     pub default_rate_limit: u32,
     #[serde(default = "default_audit_retention")]
@@ -321,10 +323,15 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            tool_allowlist: default_tool_allowlist(),
             default_rate_limit: default_mcp_rate_limit(),
             audit_log_retention_days: default_audit_retention(),
         }
     }
+}
+
+fn default_tool_allowlist() -> Vec<String> {
+    vec!["*".to_string()]
 }
 
 fn default_listen_addr() -> String {

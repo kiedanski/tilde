@@ -97,6 +97,7 @@ mailparse = "0.15"
 
 # Filesystem
 fs2 = "0.4"
+libc = "0.2"
 
 # HTTP client (for notifications)
 reqwest = { version = "0.12", features = ["json"] }

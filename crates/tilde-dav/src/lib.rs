@@ -22,9 +22,22 @@ pub struct DavState {
     pub db: Arc<Mutex<Connection>>,
     pub files_root: PathBuf,
     pub uploads_root: PathBuf,
+    /// Prefix to add to rel_path for DB lookups (e.g., "photos/" for the photos router)
+    pub db_path_prefix: String,
 }
 
 pub type SharedDavState = Arc<DavState>;
+
+impl DavState {
+    /// Get the database path for a relative URL path by prepending db_path_prefix
+    fn db_path(&self, rel_path: &str) -> String {
+        if self.db_path_prefix.is_empty() {
+            rel_path.to_string()
+        } else {
+            format!("{}{}", self.db_path_prefix, rel_path)
+        }
+    }
+}
 
 /// Build the WebDAV router — mount at /dav/files/
 pub fn build_dav_router(state: SharedDavState) -> Router {
@@ -191,17 +204,18 @@ async fn handle_put(
     // Upsert into files table
     {
         let db = state.db.lock().unwrap();
+        let db_path = state.db_path(rel_path);
         let file_name = std::path::Path::new(rel_path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let parent_path = std::path::Path::new(rel_path)
+        let db_parent = std::path::Path::new(&db_path)
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
         let existing_id: Option<String> = db
-            .query_row("SELECT id FROM files WHERE path = ?1", [rel_path], |row| {
+            .query_row("SELECT id FROM files WHERE path = ?1", [&db_path], |row| {
                 row.get(0)
             })
             .ok();
@@ -218,7 +232,7 @@ async fn handle_put(
                 sha256 = excluded.sha256,
                 modified_at = excluded.modified_at,
                 hlc = excluded.hlc",
-            rusqlite::params![id, rel_path, parent_path, file_name, content.len(), content_type, etag, sha256, now, now, now],
+            rusqlite::params![id, db_path, db_parent, file_name, content.len(), content_type, etag, sha256, now, now, now],
         ).ok();
     }
 
@@ -253,6 +267,7 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     }
 
+    let db_path = state.db_path(rel_path);
     if disk_path.is_dir() {
         if let Err(e) = tokio::fs::remove_dir_all(&disk_path).await {
             warn!(error = %e, "Failed to remove directory");
@@ -260,10 +275,10 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
         }
         // Remove from DB recursively
         let db = state.db.lock().unwrap();
-        let pattern = format!("{}%", rel_path);
+        let pattern = format!("{}%", db_path);
         db.execute(
             "DELETE FROM files WHERE path = ?1 OR path LIKE ?2",
-            rusqlite::params![rel_path, pattern],
+            rusqlite::params![db_path, pattern],
         )
         .ok();
     } else {
@@ -272,7 +287,7 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
         let db = state.db.lock().unwrap();
-        db.execute("DELETE FROM files WHERE path = ?1", [rel_path])
+        db.execute("DELETE FROM files WHERE path = ?1", [&db_path])
             .ok();
     }
 
@@ -305,11 +320,12 @@ async fn handle_mkcol(state: &SharedDavState, rel_path: &str) -> Response {
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
     let id = Uuid::new_v4().to_string();
+    let db_path = state.db_path(rel_path);
     let name = std::path::Path::new(rel_path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let parent_path = std::path::Path::new(rel_path)
+    let db_parent = std::path::Path::new(&db_path)
         .parent()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
@@ -319,7 +335,7 @@ async fn handle_mkcol(state: &SharedDavState, rel_path: &str) -> Response {
         db.execute(
             "INSERT INTO files (id, path, parent_path, name, size_bytes, content_type, etag, is_directory, created_at, modified_at, hlc)
              VALUES (?1, ?2, ?3, ?4, 0, 'httpd/unix-directory', ?5, 1, ?6, ?7, ?8)",
-            rusqlite::params![id, rel_path, parent_path, name, id, now, now, now],
+            rusqlite::params![id, db_path, db_parent, name, id, now, now, now],
         ).ok();
     }
 
@@ -358,11 +374,13 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
     // Update DB — preserve the UUID (oc:id)
     {
         let db = state.db.lock().unwrap();
+        let src_db_path = state.db_path(rel_path);
+        let dst_db_path = state.db_path(&dest);
         let dest_name = std::path::Path::new(&dest)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let dest_parent = std::path::Path::new(&dest)
+        let dst_db_parent = std::path::Path::new(&dst_db_path)
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
@@ -370,15 +388,32 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
             .strftime("%Y-%m-%dT%H:%M:%S%:z")
             .to_string();
 
+        // Get the file ID before updating path
+        let file_id: Option<String> = db
+            .query_row("SELECT id FROM files WHERE path = ?1", [&src_db_path], |row| {
+                row.get(0)
+            })
+            .ok();
+
         db.execute(
             "UPDATE files SET path = ?1, parent_path = ?2, name = ?3, modified_at = ?4 WHERE path = ?5",
-            rusqlite::params![dest, dest_parent, dest_name, now, rel_path],
+            rusqlite::params![dst_db_path, dst_db_parent, dest_name, now, src_db_path],
         ).ok();
+
+        // If this file has a photos record, set manually_placed = 1
+        // (user-initiated MOVE disables auto-organization)
+        if let Some(ref fid) = file_id {
+            db.execute(
+                "UPDATE photos SET manually_placed = 1, updated_at = ?1 WHERE file_id = ?2",
+                rusqlite::params![now, fid],
+            )
+            .ok();
+        }
 
         // If directory, update children paths too
         if dst_disk.is_dir() {
-            let old_prefix = format!("{}/", rel_path);
-            let new_prefix = format!("{}/", dest);
+            let old_prefix = format!("{}/", src_db_path);
+            let new_prefix = format!("{}/", dst_db_path);
             let mut stmt = db
                 .prepare("SELECT id, path FROM files WHERE path LIKE ?1")
                 .unwrap();
@@ -444,6 +479,7 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
     // Create new DB record with new UUID
     {
         let db = state.db.lock().unwrap();
+        let dst_db_path = state.db_path(&dest);
         if let Ok(content) = std::fs::read(&dst_disk) {
             let mut hasher = Sha256::new();
             hasher.update(&content);
@@ -458,7 +494,7 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let parent_path = std::path::Path::new(&dest)
+            let db_parent = std::path::Path::new(&dst_db_path)
                 .parent()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
@@ -466,7 +502,7 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
             db.execute(
                 "INSERT OR REPLACE INTO files (id, path, parent_path, name, size_bytes, content_type, etag, sha256, is_directory, created_at, modified_at, hlc)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11)",
-                rusqlite::params![id, dest, parent_path, name, content.len(), content_type, etag, sha256, now, now, now],
+                rusqlite::params![id, dst_db_path, db_parent, name, content.len(), content_type, etag, sha256, now, now, now],
             ).ok();
         }
     }
@@ -561,6 +597,7 @@ async fn handle_proppatch(state: &SharedDavState, rel_path: &str, body: Body) ->
 
     let mut prop_results = Vec::new();
 
+    let db_path = state.db_path(rel_path);
     {
         let db = state.db.lock().unwrap();
         for op in &ops {
@@ -573,14 +610,14 @@ async fn handle_proppatch(state: &SharedDavState, rel_path: &str, body: Body) ->
                     db.execute(
                         "INSERT INTO file_properties (file_path, namespace, name, value) VALUES (?1, ?2, ?3, ?4)
                          ON CONFLICT(file_path, namespace, name) DO UPDATE SET value = excluded.value",
-                        rusqlite::params![rel_path, namespace, name, value],
+                        rusqlite::params![db_path, namespace, name, value],
                     ).ok();
                     prop_results.push((namespace.clone(), name.clone(), true));
                 }
                 PropPatchOp::Remove { namespace, name } => {
                     db.execute(
                         "DELETE FROM file_properties WHERE file_path = ?1 AND namespace = ?2 AND name = ?3",
-                        rusqlite::params![rel_path, namespace, name],
+                        rusqlite::params![db_path, namespace, name],
                     ).ok();
                     prop_results.push((namespace.clone(), name.clone(), true));
                 }
@@ -1085,9 +1122,10 @@ async fn uploads_handler(
 
 fn get_etag_for_file(state: &SharedDavState, rel_path: &str) -> Option<String> {
     let db = state.db.lock().unwrap();
+    let db_path = state.db_path(rel_path);
     db.query_row(
         "SELECT etag FROM files WHERE path = ?1",
-        [rel_path],
+        [&db_path],
         |row| row.get(0),
     )
     .ok()
@@ -1099,15 +1137,17 @@ fn get_destination(headers: &HeaderMap) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .map(|dest| {
             // Extract relative path from full URL or path
-            if let Some(idx) = dest.find("/dav/files/") {
-                dest[idx + "/dav/files/".len()..]
-                    .trim_end_matches('/')
-                    .to_string()
-            } else {
-                dest.trim_start_matches('/')
-                    .trim_end_matches('/')
-                    .to_string()
+            // Support all DAV mount points: /dav/files/, /dav/photos/, /dav/notes/
+            for prefix in &["/dav/files/", "/dav/photos/", "/dav/notes/"] {
+                if let Some(idx) = dest.find(prefix) {
+                    return dest[idx + prefix.len()..]
+                        .trim_end_matches('/')
+                        .to_string();
+                }
             }
+            dest.trim_start_matches('/')
+                .trim_end_matches('/')
+                .to_string()
         })
 }
 
@@ -1170,11 +1210,12 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
         .unwrap_or_else(|| "Thu, 01 Jan 1970 00:00:00 GMT".to_string());
 
     // Try to get oc:id and etag from DB
+    let db_path = state.db_path(rel_path);
     let (oc_id, etag) = {
         let db = state.db.lock().unwrap();
         db.query_row(
             "SELECT id, etag FROM files WHERE path = ?1",
-            [rel_path],
+            [&db_path],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .unwrap_or_else(|_| (Uuid::new_v4().to_string(), format!("{:x}", size)))
@@ -1188,7 +1229,7 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
             .ok();
         match stmt.as_mut() {
             Some(stmt) => stmt
-                .query_map([rel_path], |row| {
+                .query_map([&db_path], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,

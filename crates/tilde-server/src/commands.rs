@@ -65,6 +65,17 @@ pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
         println!("[OK] Admin password set from config");
     }
 
+    // Generate config.toml template if none exists
+    let config_dir = Config::config_dir();
+    let config_file = config_dir.join("config.toml");
+    if !config_file.exists() {
+        std::fs::create_dir_all(&config_dir)?;
+        std::fs::write(&config_file, generate_config_template())?;
+        println!("[OK] Generated config template at {}", config_file.display());
+    } else {
+        println!("[OK] Config file already exists at {}", config_file.display());
+    }
+
     println!();
     println!("Setup complete! Next steps:");
     println!("  tilde serve          — Start the server");
@@ -72,6 +83,118 @@ pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
     println!("  tilde --help         — See all commands");
 
     Ok(())
+}
+
+fn generate_config_template() -> &'static str {
+    r#"# tilde — Personal Cloud Server Configuration
+# All secrets should be set via environment variables, NEVER in this file.
+
+[server]
+# Public hostname (REQUIRED — e.g., "cloud.example.com")
+hostname = ""
+# Bind address (default: all interfaces)
+listen_addr = "0.0.0.0"
+# Listen port (default: 443, use 8080 behind reverse proxy)
+listen_port = 443
+# IPs to trust X-Forwarded-* headers from (e.g., ["10.0.0.1/32"])
+trusted_proxies = []
+
+[tls]
+# TLS mode: "acme" (auto Let's Encrypt), "manual" (your certs), "upstream" (reverse proxy)
+mode = "acme"
+# ACME email — set via TILDE_ACME_EMAIL env var
+# For manual mode:
+# cert_path = "/path/to/cert.pem"
+# key_path = "/path/to/key.pem"
+
+[auth]
+# Session sliding TTL in hours
+session_ttl_hours = 24
+# Max failed login attempts per IP per 15 minutes
+max_login_attempts = 5
+# Lockout duration after max attempts exceeded
+lockout_duration_minutes = 15
+# Optional WebAuthn second factor
+webauthn_enabled = false
+
+[files]
+# Maximum upload size in MB (default: 10GB)
+max_upload_size_mb = 10240
+# Chunked upload session expiry
+chunked_upload_session_ttl_hours = 24
+
+[photos]
+enabled = true
+# Organization pattern: {year}, {month:02}, {day:02}, {-trip}
+organization_pattern = "{year}/{month:02}"
+# Thumbnail sizes in pixels
+thumbnail_sizes = [256, 1920]
+# WebP quality (1-100)
+thumbnail_quality = 80
+# ExifTool subprocess timeout
+exiftool_timeout_seconds = 30
+# ffmpeg subprocess timeout
+ffmpeg_timeout_seconds = 60
+# File watcher debounce
+watch_debounce_seconds = 5
+
+[notes]
+# WebDAV collection name for notes
+root_path = "notes"
+
+[calendar]
+enabled = true
+
+[contacts]
+enabled = true
+
+[collections]
+enabled = true
+
+[email]
+# Email archive is opt-in
+enabled = false
+# Configure accounts via [[email.accounts]] blocks:
+# [[email.accounts]]
+# name = "personal"
+# imap_host = ""           # set via TILDE_EMAIL_IMAP_HOST
+# imap_port = 993
+# use_ssl = true
+# idle_enabled = true
+# folders_exclude = ["Trash", "Spam"]
+
+[mcp]
+enabled = true
+# Tool allowlist: ["*"] allows all, or list specific tools
+tool_allowlist = ["*"]
+# Rate limit per token (requests per minute)
+default_rate_limit = 60
+# Audit log retention
+audit_log_retention_days = 90
+
+[backup]
+# Backup is opt-in
+enabled = false
+# Local retention policies:
+# local_retention = { hourly = 24, daily = 7, weekly = 4, monthly = 12 }
+
+[notifications]
+# Configure notification sinks:
+# [[notifications.sinks]]
+# type = "ntfy"        # "ntfy" | "smtp" | "matrix" | "signal" | "webhook" | "file"
+# min_priority = "medium"
+# topic_env = "TILDE_NTFY_TOPIC"
+
+[logging]
+# Log level: "trace" | "debug" | "info" | "warn" | "error"
+level = "info"
+# Log format: "json" (for journald) | "pretty" (for development)
+format = "json"
+
+# Hot-reload via SIGHUP: logging.level, mcp.tool_allowlist, mcp.default_rate_limit,
+#   notifications, backup schedule.
+# Restart required for: server.*, tls.*, auth.*, database path changes.
+"#
 }
 
 pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
@@ -170,6 +293,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         db: db_arc.clone(),
         files_root,
         uploads_root,
+        db_path_prefix: String::new(),
     });
 
     let session_ttl = state.config.auth.session_ttl_hours;
@@ -246,6 +370,40 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     let app = build_router(state, dav_state, caldav_state, carddav_state);
 
     println!("tilde server listening on http://{}", listen_addr);
+
+    // Set up SIGHUP handler for config hot-reload
+    #[cfg(unix)]
+    {
+        let config_path_for_reload = config_path.map(|s| s.to_string());
+        tokio::spawn(async move {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut sighup = signal(SignalKind::hangup()).expect("Failed to register SIGHUP handler");
+            loop {
+                sighup.recv().await;
+                info!("Received SIGHUP, reloading configuration...");
+                match Config::load(config_path_for_reload.as_deref()) {
+                    Ok(new_config) => {
+                        // Hot-reload: logging level
+                        let level = &new_config.logging.level;
+                        info!(level = %level, "Reloaded logging.level");
+
+                        // Hot-reload: MCP tool_allowlist and rate_limit
+                        info!(
+                            tool_allowlist = ?new_config.mcp.tool_allowlist,
+                            rate_limit = new_config.mcp.default_rate_limit,
+                            "Reloaded MCP configuration"
+                        );
+
+                        // Note: server.*, tls.*, auth.* require restart
+                        info!("Configuration reloaded (hot-reloadable fields only)");
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to reload configuration on SIGHUP");
+                    }
+                }
+            }
+        });
+    }
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     axum::serve(
@@ -1963,6 +2121,38 @@ pub async fn run_reindex(config_path: Option<&str>, index_type: &str) -> anyhow:
             let count: i64 =
                 conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0))?;
             println!("done ({} notes indexed)", count);
+        }
+        _ => {}
+    }
+
+    match index_type {
+        "photos" | "all" => {
+            print!("Rebuilding photos index from disk... ");
+            let photos_dir = config.data_dir().join("photos");
+            if photos_dir.exists() {
+                match reindex_photos_from_dir(&conn, &photos_dir, &photos_dir) {
+                    Ok(count) => println!("done ({} photos indexed)", count),
+                    Err(e) => println!("error: {}", e),
+                }
+            } else {
+                println!("skipped (no photos directory)");
+            }
+        }
+        _ => {}
+    }
+
+    match index_type {
+        "email" | "all" => {
+            print!("Rebuilding email index from Maildir... ");
+            let mail_dir = config.data_dir().join("mail");
+            if mail_dir.exists() {
+                match tilde_email::reindex_from_maildir(&conn, &mail_dir) {
+                    Ok(count) => println!("done ({} messages indexed)", count),
+                    Err(e) => println!("error: {}", e),
+                }
+            } else {
+                println!("skipped (no mail directory)");
+            }
         }
         _ => {}
     }

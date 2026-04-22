@@ -71,6 +71,7 @@ pub fn build_router(
         db: dav_state.db.clone(),
         files_root: dav_state.files_root.join("notes"),
         uploads_root: dav_state.uploads_root.clone(),
+        db_path_prefix: "notes/".to_string(),
     });
     let notes_router = tilde_dav::build_dav_router(notes_state);
 
@@ -84,6 +85,7 @@ pub fn build_router(
         db: dav_state.db.clone(),
         files_root: photos_root,
         uploads_root: dav_state.uploads_root.clone(),
+        db_path_prefix: "photos/".to_string(),
     });
     let photos_router = tilde_dav::build_dav_router(photos_state);
 

@@ -103,13 +103,26 @@ pub fn start_watcher(
                             .extension()
                             .and_then(|e| e.to_str())
                             .unwrap_or("");
-                        if crate::is_photo_ext(ext) {
-                            match crate::thumbnail::generate_thumbnails(
+                        let thumb_result = if crate::is_photo_ext(ext) {
+                            Some(crate::thumbnail::generate_thumbnails(
                                 &destination,
                                 &photo_id,
                                 &debounce_cache,
                                 thumbnail_quality,
-                            ) {
+                            ))
+                        } else if crate::is_video_ext(ext) {
+                            Some(crate::thumbnail::generate_video_thumbnail(
+                                &destination,
+                                &photo_id,
+                                &debounce_cache,
+                                thumbnail_quality,
+                                60, // 60s timeout for ffmpeg
+                            ))
+                        } else {
+                            None
+                        };
+                        if let Some(result) = thumb_result {
+                            match result {
                                 Ok(_) => {
                                     if let Ok(c) = debounce_conn.lock() {
                                         let _ = crate::thumbnail::mark_thumbnails_generated(
@@ -126,6 +139,42 @@ pub fn start_watcher(
                         destination,
                     }) => {
                         info!(photo_id = %photo_id, dest = %destination.display(), "File watcher: photo untriaged");
+                        // Also generate thumbnails for untriaged files
+                        drop(conn);
+                        let ext = destination
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("");
+                        let thumb_result = if crate::is_photo_ext(ext) {
+                            Some(crate::thumbnail::generate_thumbnails(
+                                &destination,
+                                &photo_id,
+                                &debounce_cache,
+                                thumbnail_quality,
+                            ))
+                        } else if crate::is_video_ext(ext) {
+                            Some(crate::thumbnail::generate_video_thumbnail(
+                                &destination,
+                                &photo_id,
+                                &debounce_cache,
+                                thumbnail_quality,
+                                60,
+                            ))
+                        } else {
+                            None
+                        };
+                        if let Some(result) = thumb_result {
+                            match result {
+                                Ok(_) => {
+                                    if let Ok(c) = debounce_conn.lock() {
+                                        let _ = crate::thumbnail::mark_thumbnails_generated(
+                                            &c, &photo_id, true, true,
+                                        );
+                                    }
+                                }
+                                Err(e) => warn!(error = %e, "Thumbnail generation failed (untriaged)"),
+                            }
+                        }
                     }
                     Ok(ingest::IngestResult::Error { destination, error }) => {
                         warn!(dest = %destination.display(), error = %error, "File watcher: ingestion error");

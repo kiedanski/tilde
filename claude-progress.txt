@@ -1,6 +1,68 @@
 tilde — Progress Notes
 ======================
 
+## Session 9 (2026-04-22) — Photo Features, SIGHUP, Reindex, Notifications: 208 → 221 tests
+
+### Completed Features (13 new tests)
+1. **Photo manually_placed flag** (Test 80): WebDAV MOVE now sets manually_placed=1 on photos,
+   disabling auto-organization for user-placed files
+
+2. **Photo ingestion via WebDAV** (Test 212): Uploads to /dav/photos/_inbox/ trigger the file
+   watcher pipeline (metadata extraction, organization, thumbnail generation)
+
+3. **Video thumbnail via ffmpeg** (Test 87): Watcher now generates thumbnails for video files
+   (mp4, mov, avi, mkv, webm) using ffmpeg first-frame extraction
+
+4. **Database rebuildable cache** (Test 196): Enhanced `tilde reindex --type all` to cover
+   photos and email in addition to notes and links. Full DB delete+rebuild verified.
+
+5. **Disk usage notification** (Test 219): Added `check_disk_usage()` function using statvfs,
+   fires disk_usage_high event at 80%+ threshold. Unit tests added.
+
+6. **SIGHUP config hot-reload** (Tests 22, 141, 203): Signal handler reloads config on SIGHUP,
+   logs hot-reloadable fields (logging.level, mcp.tool_allowlist, mcp.default_rate_limit)
+
+7. **MCP tool_allowlist** config field added (defaults to ["*"])
+
+8. **Config file template** (Tests 250, 259): `tilde init` generates well-commented config.toml
+   with all sections, defaults, and explanatory comments
+
+9. **EXIF privacy** (Test 221): Verified opaque UUID-based URLs, no file hashes in URLs
+
+10. **Memory usage** (Tests 206, 207): Server RSS at 21MB, well under 256MB/512MB limits
+
+### Architecture Changes
+- Added `db_path_prefix` field to DavState for correct DB path prefixing across
+  /dav/files/, /dav/photos/, /dav/notes/ routers
+- Fixed `get_destination()` to strip all DAV mount prefixes (/dav/files/, /dav/photos/, /dav/notes/)
+- Added `libc` workspace dependency for statvfs disk usage checking
+- Added `tool_allowlist` field to McpConfig
+- SIGHUP handler as async task with tokio signal support
+- Video thumbnail generation in watcher (was only photo-only before)
+- Thumbnail generation added for untriaged files (not just organized ones)
+
+### Tests Passing: 221/260
+Total new tests this session: 13 (208 → 221)
+
+### Remaining Failing Tests (39)
+- Infrastructure (16, 21, 25, 191, 194): HTTPS/TLS, systemd, musl
+- IMAP (105-106, 184, 198, 204): Require live IMAP server
+- Photos (81, 86): metadata-triggered MOVE, HEIC thumbnails
+- Backup (149-154, 199-200, 223, 224, 244): rustic-rs integration
+- Export extras (158-159): tar.zst, age encryption
+- WebAuthn (179, 197): Optional second factor
+- Update check (160-161): minisign verification
+- Misc (166-167, 172, 202, 214, 229-231, 245, 251)
+
+### Next Steps (for future sessions)
+1. Photo metadata-triggered MOVE (test 81)
+2. HEIC thumbnail support (test 86) - requires libheif
+3. Streaming writes (test 194)
+4. CLI progress indicators and confirmation prompts
+5. TLS/systemd infrastructure tests (if applicable)
+
+---
+
 ## Session 8 (2026-04-22) — Email Archive, Export/Import, Code Quality: 178 → 208 tests
 
 ### Completed Features (30 new tests)

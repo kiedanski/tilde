@@ -490,3 +490,81 @@ pub fn create_file_sink(data_dir: &Path) -> FileSink {
         Priority::Low, // file sink logs everything
     )
 }
+
+/// Check disk usage for a path and fire notifications at 80% and 90% thresholds
+pub fn check_disk_usage(
+    path: &Path,
+    sinks: &[Box<dyn NotificationSink>],
+    rate_limiter: &NotificationRateLimiter,
+    conn: &Connection,
+) {
+    match get_disk_usage_percent(path) {
+        Some(used_percent) => {
+            if used_percent >= 80 {
+                notify(sinks, rate_limiter, conn, events::disk_usage_high(used_percent));
+            }
+        }
+        None => {
+            warn!(path = %path.display(), "Could not determine disk usage");
+        }
+    }
+}
+
+/// Get disk usage percentage for the filesystem containing the given path
+pub fn get_disk_usage_percent(path: &Path) -> Option<u8> {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::mem::MaybeUninit;
+
+        let c_path = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+        let mut stat = MaybeUninit::<libc::statvfs>::uninit();
+        let result = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+        if result != 0 {
+            return None;
+        }
+        let stat = unsafe { stat.assume_init() };
+        let total = (stat.f_blocks as u64).wrapping_mul(stat.f_frsize);
+        let available = (stat.f_bavail as u64).wrapping_mul(stat.f_frsize);
+        if total == 0 {
+            return None;
+        }
+        let used = total - available;
+        Some((used * 100 / total) as u8)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_disk_usage_percent() {
+        // Should return Some on unix systems
+        let result = get_disk_usage_percent(std::path::Path::new("/"));
+        assert!(result.is_some(), "Should return disk usage for /");
+        let pct = result.unwrap();
+        assert!(pct <= 100, "Percentage should be <= 100, got {}", pct);
+    }
+
+    #[test]
+    fn test_disk_usage_high_event() {
+        let event = events::disk_usage_high(85);
+        assert_eq!(event.event_type, "disk_usage_high");
+        assert_eq!(event.priority, Priority::High);
+        assert!(event.message.contains("85%"));
+    }
+
+    #[test]
+    fn test_rate_limiter() {
+        let limiter = NotificationRateLimiter::new(2);
+        assert!(limiter.check("test_event"));
+        assert!(limiter.check("test_event"));
+        assert!(!limiter.check("test_event")); // 3rd should be rate-limited
+    }
+}

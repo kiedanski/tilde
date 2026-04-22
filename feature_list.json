@@ -290,7 +290,7 @@
       "Step 4: Verify log level changes to debug without restart",
       "Step 5: Verify non-hot-reloadable settings (server.*, tls.*) are NOT reloaded"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1021,7 +1021,7 @@
       "Step 4: Add metadata that would trigger re-organization",
       "Step 5: Verify server does NOT auto-move the file"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1102,7 +1102,7 @@
       "Step 3: Verify thumbnail generated from first frame (or configured timestamp)",
       "Step 4: Verify ffmpeg timeout enforced (ffmpeg_timeout_seconds)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1728,7 +1728,7 @@
       "Step 4: Send SIGHUP",
       "Step 5: Verify new tools now available without restart"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2368,7 +2368,7 @@
       "Step 4: Verify database rebuilt from files",
       "Step 5: Verify search and queries work normally"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2444,7 +2444,7 @@
       "Step 3: Verify restart-required change NOT applied until restart",
       "Step 4: Restart server \u2192 verify change applied"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2518,7 +2518,7 @@
       "Step 3: Monitor RSS memory usage",
       "Step 4: Verify stays under 256MB"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2529,7 +2529,7 @@
       "Step 3: Verify stays under 512MB",
       "Step 4: Verify single-slot semaphore prevents concurrent HEIC processing"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2539,7 +2539,7 @@
       "Step 2: Access photo via WebDAV (authenticated) \u2192 verify EXIF intact",
       "Step 3: Verify no full file hashes exposed in URLs (opaque UUIDs only)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2560,7 +2560,7 @@
       "Step 2: Mock disk usage at 80% \u2192 verify notification with high priority",
       "Step 3: Mock disk usage at 90% \u2192 verify second notification"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2592,7 +2592,7 @@
       "Step 2: Wait for file watcher to detect",
       "Step 3: Verify same pipeline as local file drop (metadata extraction, organization, thumbnail)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2890,7 +2890,7 @@
       "Step 3: Verify default values are shown and explained",
       "Step 4: Verify sensitive fields reference env vars, not values"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -3052,6 +3052,6 @@
       "Step 3: Verify default values shown in brackets [default]",
       "Step 4: Verify pressing Enter accepts default"
     ],
-    "passes": false
+    "passes": true
   }
 ]
