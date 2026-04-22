@@ -270,7 +270,13 @@ pub struct PhotosConfig {
     #[serde(default = "default_thumbnail_sizes")]
     pub thumbnail_sizes: Vec<u32>,
     #[serde(default = "default_thumbnail_quality")]
-    pub thumbnail_quality: u32,
+    pub thumbnail_quality: u8,
+    #[serde(default = "default_watch_debounce")]
+    pub watch_debounce_seconds: u64,
+    #[serde(default = "default_exiftool_timeout")]
+    pub exiftool_timeout_seconds: u64,
+    #[serde(default = "default_ffmpeg_timeout")]
+    pub ffmpeg_timeout_seconds: u64,
 }
 
 impl Default for PhotosConfig {
@@ -280,6 +286,9 @@ impl Default for PhotosConfig {
             organization_pattern: default_org_pattern(),
             thumbnail_sizes: default_thumbnail_sizes(),
             thumbnail_quality: default_thumbnail_quality(),
+            watch_debounce_seconds: default_watch_debounce(),
+            exiftool_timeout_seconds: default_exiftool_timeout(),
+            ffmpeg_timeout_seconds: default_ffmpeg_timeout(),
         }
     }
 }
@@ -331,7 +340,10 @@ fn default_chunked_ttl() -> u32 { 24 }
 fn default_true() -> bool { true }
 fn default_org_pattern() -> String { "{year}/{month:02}".to_string() }
 fn default_thumbnail_sizes() -> Vec<u32> { vec![256, 1920] }
-fn default_thumbnail_quality() -> u32 { 80 }
+fn default_thumbnail_quality() -> u8 { 80 }
+fn default_watch_debounce() -> u64 { 5 }
+fn default_exiftool_timeout() -> u64 { 30 }
+fn default_ffmpeg_timeout() -> u64 { 60 }
 fn default_notes_root() -> String { "notes".to_string() }
 fn default_mcp_rate_limit() -> u32 { 60 }
 fn default_audit_retention() -> u32 { 90 }

@@ -877,7 +877,7 @@
       "Step 11: Verify photo_tags entries created from EXIF keywords if present",
       "Step 12: Verify thumbnail generation job enqueued in jobs table"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -888,7 +888,7 @@
       "Step 3: Verify file remains at vacation/beach/img.jpg path (not reorganized)",
       "Step 4: Verify database record created with correct path"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -899,7 +899,7 @@
       "Step 3: Verify file moved to photos/_untriaged/",
       "Step 4: Verify database record marks it as untriaged"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -922,7 +922,7 @@
       "Step 4: Drop a valid JPEG with .txt extension into _inbox/",
       "Step 5: Verify it's processed correctly as a JPEG"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -934,7 +934,7 @@
       "Step 4: Verify processing starts after 5s debounce",
       "Step 5: Verify complete file is processed (not partial)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -954,7 +954,7 @@
       "Step 12: Verify gps_latitude and gps_longitude extracted",
       "Step 13: Verify orientation extracted"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -971,7 +971,7 @@
       "Step 9: Verify original_sha256 unchanged in photos table",
       "Step 10: Verify photo_tags table has entry with photo_id, tag='trip:jamaica', prefix='trip'"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -982,7 +982,7 @@
       "Step 3: Verify tag removed from file's XMP/IPTC metadata",
       "Step 4: Verify tags_json updated in database"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -997,7 +997,7 @@
       "Step 7: Add plain tag 'sunset'",
       "Step 8: Verify prefix=NULL"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1009,7 +1009,7 @@
       "Step 4: Import photo with date 2025-01 but no trip tag",
       "Step 5: Verify organized to photos/2025/01/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1054,7 +1054,7 @@
       "Step 4: Verify current_sha256 changed",
       "Step 5: Verify original_sha256 unchanged"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1066,7 +1066,7 @@
       "Step 4: Verify no thumbnail generation attempted",
       "Step 5: Verify file served as opaque blob via WebDAV"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1080,7 +1080,7 @@
       "Step 6: Verify 1920px has longest edge \u2264 1920px",
       "Step 7: Verify thumbnail_256_generated and thumbnail_1920_generated flags set"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1147,7 +1147,7 @@
       "Step 5: Run `tilde photos thumbnail regenerate --all`",
       "Step 6: Verify all thumbnails regenerated"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1159,7 +1159,7 @@
       "Step 4: Verify file moved to _errors/ with error sidecar",
       "Step 5: Verify server continues serving other requests"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2356,7 +2356,7 @@
       "Step 3: Regenerate thumbnails",
       "Step 4: Verify new thumbnails are smaller in file size"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2665,7 +2665,7 @@
       "Step 2: Import WebP image \u2192 verify thumbnail generated",
       "Step 3: Verify both produce WebP thumbnails at 256px and 1920px"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

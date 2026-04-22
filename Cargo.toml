@@ -71,8 +71,8 @@ comrak = "0.36"
 # Paths
 directories = "6"
 
-# Image
-image = "0.25"
+# Image (disable heavy codecs like AVIF/rav1e to save disk and compile time)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif"] }
 
 # Embed
 rust-embed = "8"

@@ -181,6 +181,52 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         tilde_card::ensure_default_addressbook(&db);
     }
 
+    // Start photo file watcher for _inbox/ and _library-drop/
+    let _photo_watcher = {
+        let photos_base = data_dir.join("photos");
+        let pattern = state.config.photos.organization_pattern.clone();
+        let debounce = state.config.photos.watch_debounce_seconds;
+        let quality = state.config.photos.thumbnail_quality;
+        match tilde_photos::watcher::start_watcher(
+            state.db.clone(),
+            photos_base,
+            cache_dir,
+            pattern,
+            debounce,
+            quality,
+        ) {
+            Ok(w) => {
+                info!("Photo file watcher started");
+                Some(w)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to start photo file watcher");
+                None
+            }
+        }
+    };
+
+    // Process any existing files in _inbox/ on startup
+    {
+        let photos_base = data_dir.join("photos");
+        let pattern = state.config.photos.organization_pattern.clone();
+        let db = state.db.lock().unwrap();
+        match tilde_photos::ingest::process_inbox(&db, &photos_base, &pattern) {
+            Ok(results) if !results.is_empty() => {
+                info!(count = results.len(), "Processed existing inbox files on startup");
+            }
+            Err(e) => tracing::warn!(error = %e, "Failed to process inbox on startup"),
+            _ => {}
+        }
+        match tilde_photos::ingest::process_library_drop(&db, &photos_base) {
+            Ok(results) if !results.is_empty() => {
+                info!(count = results.len(), "Processed existing library-drop files on startup");
+            }
+            Err(e) => tracing::warn!(error = %e, "Failed to process library-drop on startup"),
+            _ => {}
+        }
+    }
+
     let app = build_router(state, dav_state, caldav_state, carddav_state);
 
     println!("tilde server listening on http://{}", listen_addr);
@@ -1310,35 +1356,178 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                 println!("No photos found. Drop files in {} to index.", photos_dir.join("_inbox").display());
             }
         }
-        PhotosCommands::Tag { uuid: _, command: _ } => {
-            println!("Photo tagging requires ExifTool (not yet integrated)");
+        PhotosCommands::Tag { uuid, command } => {
+            use tilde_cli::TagCommands;
+            let _photos_dir_path = photos_dir.clone();
+            // Find the photo's file path from the database
+            let file_path: Option<String> = conn.query_row(
+                "SELECT f.path FROM photos p JOIN files f ON p.file_id = f.id WHERE p.id = ?1",
+                [&uuid],
+                |row| row.get(0),
+            ).ok();
+
+            match file_path {
+                Some(rel_path) => {
+                    let full_path = config.data_dir().join(&rel_path);
+                    if !full_path.exists() {
+                        println!("Photo file not found at {}", full_path.display());
+                        return Ok(());
+                    }
+
+                    match command {
+                        TagCommands::Add { tag } => {
+                            // Read current tags, add new one, write back
+                            match tilde_photos::exiftool::read_metadata(&full_path) {
+                                Ok(meta) => {
+                                    let mut tags = meta.tags.clone();
+                                    if !tags.contains(&tag) {
+                                        tags.push(tag.clone());
+                                    }
+                                    tilde_photos::exiftool::write_tags(&full_path, &tags)?;
+
+                                    // Update database
+                                    let prefix = tilde_photos::exiftool::classify_tag_prefix(&tag);
+                                    conn.execute(
+                                        "INSERT OR IGNORE INTO photo_tags (photo_id, tag, prefix) VALUES (?1, ?2, ?3)",
+                                        rusqlite::params![uuid, tag, prefix],
+                                    )?;
+                                    let tags_json = serde_json::to_string(&tags)?;
+                                    conn.execute(
+                                        "UPDATE photos SET tags_json = ?1 WHERE id = ?2",
+                                        rusqlite::params![tags_json, uuid],
+                                    )?;
+
+                                    println!("Tag '{}' added to photo {}", tag, uuid);
+                                }
+                                Err(e) => {
+                                    if tilde_photos::exiftool::is_available() {
+                                        println!("Failed to read metadata: {}", e);
+                                    } else {
+                                        println!("ExifTool is not installed. Install it to manage photo tags.");
+                                    }
+                                }
+                            }
+                        }
+                        TagCommands::Remove { tag } => {
+                            match tilde_photos::exiftool::remove_tags(&full_path, &[tag.clone()]) {
+                                Ok(()) => {
+                                    conn.execute(
+                                        "DELETE FROM photo_tags WHERE photo_id = ?1 AND tag = ?2",
+                                        rusqlite::params![uuid, tag],
+                                    )?;
+                                    // Update tags_json in photos table
+                                    let remaining: Vec<String> = conn.prepare(
+                                        "SELECT tag FROM photo_tags WHERE photo_id = ?1"
+                                    )?.query_map([&uuid], |row| row.get(0))?
+                                        .filter_map(|r| r.ok())
+                                        .collect();
+                                    let tags_json = serde_json::to_string(&remaining)?;
+                                    conn.execute(
+                                        "UPDATE photos SET tags_json = ?1 WHERE id = ?2",
+                                        rusqlite::params![tags_json, uuid],
+                                    )?;
+                                    println!("Tag '{}' removed from photo {}", tag, uuid);
+                                }
+                                Err(e) => println!("Failed to remove tag: {}", e),
+                            }
+                        }
+                    }
+                }
+                None => println!("Photo with UUID {} not found", uuid),
+            }
         }
         PhotosCommands::Reindex => {
             print!("Rebuilding photo index from files... ");
-            // Scan photos directory and index any unindexed files
             let mut indexed = 0;
             if photos_dir.exists() {
-                indexed = index_photos_from_dir(&conn, &photos_dir, &photos_dir)?;
+                indexed = reindex_photos_from_dir(&conn, &photos_dir, &photos_dir)?;
             }
             println!("done ({} photos indexed)", indexed);
         }
-        PhotosCommands::Thumbnail { command: _ } => {
-            println!("Thumbnail generation not yet implemented");
+        PhotosCommands::Thumbnail { command } => {
+            use tilde_cli::ThumbnailCommands;
+            let cache_dir = config.cache_dir();
+            let quality = config.photos.thumbnail_quality;
+
+            match command {
+                ThumbnailCommands::Regenerate { all, missing: _ } => {
+                    let condition = if all {
+                        "1=1"
+                    } else {
+                        "p.thumbnail_256_generated = 0 OR p.thumbnail_1920_generated = 0"
+                    };
+                    let sql = format!(
+                        "SELECT p.id, f.path FROM photos p JOIN files f ON p.file_id = f.id WHERE p.content_readable = 1 AND ({})",
+                        condition
+                    );
+                    let mut stmt = conn.prepare(&sql)?;
+                    let photos: Vec<(String, String)> = stmt.query_map([], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })?.filter_map(|r| r.ok()).collect();
+
+                    let total = photos.len();
+                    println!("Generating thumbnails for {} photos...", total);
+                    let mut success = 0;
+                    let mut failed = 0;
+
+                    for (i, (photo_id, rel_path)) in photos.iter().enumerate() {
+                        let full_path = config.data_dir().join(rel_path);
+                        if !full_path.exists() {
+                            failed += 1;
+                            continue;
+                        }
+
+                        let ext = full_path.extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("");
+
+                        let result = if tilde_photos::is_photo_ext(ext) {
+                            tilde_photos::thumbnail::generate_thumbnails(&full_path, photo_id, &cache_dir, quality)
+                        } else if tilde_photos::is_video_ext(ext) {
+                            tilde_photos::thumbnail::generate_video_thumbnail(&full_path, photo_id, &cache_dir, quality, config.photos.ffmpeg_timeout_seconds)
+                        } else {
+                            failed += 1;
+                            continue;
+                        };
+
+                        match result {
+                            Ok(_) => {
+                                tilde_photos::thumbnail::mark_thumbnails_generated(&conn, photo_id, true, true)?;
+                                success += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("  Failed for {}: {}", rel_path, e);
+                                failed += 1;
+                            }
+                        }
+
+                        if (i + 1) % 10 == 0 {
+                            println!("  Progress: {}/{}", i + 1, total);
+                        }
+                    }
+
+                    println!("Thumbnails: {} generated, {} failed", success, failed);
+                }
+            }
         }
     }
     Ok(())
 }
 
-fn index_photos_from_dir(conn: &rusqlite::Connection, dir: &std::path::Path, base: &std::path::Path) -> anyhow::Result<usize> {
+fn reindex_photos_from_dir(conn: &rusqlite::Connection, dir: &std::path::Path, base: &std::path::Path) -> anyhow::Result<usize> {
     let mut count = 0;
-    let photo_exts = ["jpg", "jpeg", "png", "webp", "heic", "heif", "tiff", "raw", "cr2", "nef", "arw"];
 
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
 
         if path.is_dir() {
-            count += index_photos_from_dir(conn, &path, base)?;
+            // Skip special directories
+            let name = path.file_name().unwrap().to_string_lossy();
+            if name.starts_with('_') || name.starts_with('.') {
+                continue;
+            }
+            count += reindex_photos_from_dir(conn, &path, base)?;
             continue;
         }
 
@@ -1347,7 +1536,7 @@ fn index_photos_from_dir(conn: &rusqlite::Connection, dir: &std::path::Path, bas
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
 
-        if !photo_exts.contains(&ext.as_str()) {
+        if !tilde_photos::is_media_ext(&ext) {
             continue;
         }
 
@@ -1366,36 +1555,15 @@ fn index_photos_from_dir(conn: &rusqlite::Connection, dir: &std::path::Path, bas
             continue;
         }
 
-        let meta = path.metadata()?;
-        let file_id = uuid::Uuid::new_v4().to_string();
-        let photo_id = file_id.clone();
-        let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
-        let size = meta.len() as i64;
+        // Determine content type from magic bytes or extension
+        let content_type = tilde_photos::validate_magic_bytes(&path)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("image/{}", ext));
 
-        // Create file entry
-        conn.execute(
-            "INSERT OR IGNORE INTO files (id, path, parent_path, name, size_bytes, content_type, etag, is_directory, created_at, modified_at, hlc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10)",
-            rusqlite::params![
-                file_id,
-                format!("photos/{}", rel_path),
-                format!("photos/{}", path.parent().and_then(|p| p.strip_prefix(base).ok()).map(|p| p.to_string_lossy().to_string()).unwrap_or_default()),
-                path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-                size,
-                format!("image/{}", ext),
-                format!("\"{}\"", &file_id[..8]),
-                now, now, now,
-            ],
-        )?;
-
-        // Create photo entry
-        conn.execute(
-            "INSERT OR IGNORE INTO photos (id, file_id, original_sha256, current_sha256, created_at, updated_at, hlc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![photo_id, file_id, "pending", "pending", now, now, now],
-        )?;
-
-        count += 1;
+        match tilde_photos::index_photo(conn, &path, base, &content_type) {
+            Ok(_) => count += 1,
+            Err(e) => eprintln!("  Warning: failed to index {}: {}", rel_path, e),
+        }
     }
 
     Ok(count)
