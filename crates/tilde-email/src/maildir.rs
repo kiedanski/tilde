@@ -36,7 +36,12 @@ impl MaildirWriter {
         raw_bytes: &[u8],
     ) -> Result<String> {
         let folder_path = self.ensure_dirs(account, folder)?;
-        let unique_name = format!("{}.{}.{}", jiff::Timestamp::now().as_second(), Uuid::new_v4(), uid);
+        let unique_name = format!(
+            "{}.{}.{}",
+            jiff::Timestamp::now().as_second(),
+            Uuid::new_v4(),
+            uid
+        );
 
         // Write to tmp/ first
         let tmp_path = folder_path.join("tmp").join(&unique_name);
@@ -46,8 +51,12 @@ impl MaildirWriter {
         // Atomic move to cur/ with flags suffix
         let cur_name = format!("{}:2,S", unique_name); // S = Seen flag
         let cur_path = folder_path.join("cur").join(&cur_name);
-        fs::rename(&tmp_path, &cur_path)
-            .with_context(|| format!("Failed to rename tmp → cur: {:?} → {:?}", tmp_path, cur_path))?;
+        fs::rename(&tmp_path, &cur_path).with_context(|| {
+            format!(
+                "Failed to rename tmp → cur: {:?} → {:?}",
+                tmp_path, cur_path
+            )
+        })?;
 
         // Return relative path
         let rel_path = format!("{}/{}/cur/{}", account, folder, cur_name);
@@ -75,10 +84,10 @@ impl MaildirReader {
         }
         for entry in fs::read_dir(&self.base_path)? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                if let Some(name) = entry.file_name().to_str() {
-                    accounts.push(name.to_string());
-                }
+            if entry.file_type()?.is_dir()
+                && let Some(name) = entry.file_name().to_str()
+            {
+                accounts.push(name.to_string());
             }
         }
         accounts.sort();
@@ -96,10 +105,10 @@ impl MaildirReader {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
                 // Check if it has cur/ subdirectory (valid Maildir folder)
-                if entry.path().join("cur").exists() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        folders.push(name.to_string());
-                    }
+                if entry.path().join("cur").exists()
+                    && let Some(name) = entry.file_name().to_str()
+                {
+                    folders.push(name.to_string());
                 }
             }
         }

@@ -3,7 +3,7 @@
 use axum::{
     Router,
     extract::{ConnectInfo, Path as AxumPath, Query, State},
-    http::{Method, StatusCode, header, HeaderValue, Request},
+    http::{HeaderValue, Method, Request, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Json, Redirect},
     routing::{any, get, post},
@@ -15,12 +15,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tower_http::{trace::TraceLayer, compression::CompressionLayer};
-use tilde_core::{config::Config, auth};
-use tilde_dav;
-use tilde_cal;
-use tilde_card;
-use tilde_mcp;
+use tilde_core::{auth, config::Config};
+use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 
 /// Per-IP rate limit tracking for auth endpoints
 #[derive(Debug, Clone)]
@@ -51,12 +47,20 @@ pub struct AppState {
 pub type SharedState = Arc<AppState>;
 
 /// Build the axum router with all routes
-pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState, caldav_state: tilde_cal::SharedCalDavState, carddav_state: tilde_card::SharedCardDavState) -> Router {
+pub fn build_router(
+    state: SharedState,
+    dav_state: tilde_dav::SharedDavState,
+    caldav_state: tilde_cal::SharedCalDavState,
+    carddav_state: tilde_card::SharedCardDavState,
+) -> Router {
     // Routes that require authentication
     let authenticated = Router::new()
         .route("/api/auth/verify", get(auth_verify_handler))
         .route("/api/auth/session", get(session_info_handler))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
 
     // WebDAV routes
     let dav_router = tilde_dav::build_dav_router(dav_state.clone());
@@ -71,7 +75,9 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState, ca
     let notes_router = tilde_dav::build_dav_router(notes_state);
 
     // Photos DAV — points to photos directory under data dir
-    let photos_root = dav_state.files_root.parent()
+    let photos_root = dav_state
+        .files_root
+        .parent()
         .map(|p| p.join("photos"))
         .unwrap_or_else(|| dav_state.files_root.join("../photos"));
     let photos_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
@@ -90,23 +96,35 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState, ca
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/status.php", get(status_php_handler))
-        .route("/ocs/v2.php/cloud/capabilities", get(ocs_capabilities_handler))
+        .route(
+            "/ocs/v2.php/cloud/capabilities",
+            get(ocs_capabilities_handler),
+        )
         .route("/.well-known/caldav", get(well_known_caldav))
         .route("/.well-known/carddav", get(well_known_carddav))
         // Nextcloud compat redirects
         .route("/remote.php/dav/{*path}", any(remote_php_dav_redirect))
-        .route("/remote.php/webdav/{*path}", any(remote_php_webdav_redirect))
+        .route(
+            "/remote.php/webdav/{*path}",
+            any(remote_php_webdav_redirect),
+        )
         // Auth endpoints (public)
         .route("/api/auth/login", post(login_handler))
         // Nextcloud Login Flow v2
         .route("/login/v2", post(login_flow_initiate))
         .route("/login/v2/poll", post(login_flow_poll))
-        .route("/login/v2/auth", get(login_flow_auth_page).post(login_flow_auth_submit))
+        .route(
+            "/login/v2/auth",
+            get(login_flow_auth_page).post(login_flow_auth_submit),
+        )
         // MCP endpoint
         .route("/mcp/", post(mcp_handler))
         .route("/mcp", post(mcp_handler))
         // OAuth Protected Resource Metadata (RFC 9728 stub)
-        .route("/.well-known/oauth-protected-resource", get(oauth_protected_resource))
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(oauth_protected_resource),
+        )
         // Webhook endpoint
         .route("/api/webhook/{token_prefix}", post(webhook_handler))
         // Authenticated routes
@@ -125,16 +143,16 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState, ca
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(add_request_id))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), host_filter_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            host_filter_middleware,
+        ))
         .layer(axum::middleware::map_response(add_security_headers))
         .with_state(state)
 }
 
 /// Add X-Request-Id header to all requests/responses
-async fn add_request_id(
-    req: Request<axum::body::Body>,
-    next: Next,
-) -> axum::response::Response {
+async fn add_request_id(req: Request<axum::body::Body>, next: Next) -> axum::response::Response {
     let request_id = uuid::Uuid::new_v4().to_string();
     let mut response = next.run(req).await;
     response.headers_mut().insert(
@@ -155,10 +173,7 @@ async fn add_security_headers(mut response: axum::response::Response) -> axum::r
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(
-        header::X_FRAME_OPTIONS,
-        HeaderValue::from_static("DENY"),
-    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     response
 }
 
@@ -168,12 +183,10 @@ async fn health_handler(State(state): State<SharedState>) -> impl IntoResponse {
 
     // Check database connectivity
     let db_status = match state.db.lock() {
-        Ok(conn) => {
-            match conn.query_row("SELECT 1", [], |_| Ok(())) {
-                Ok(_) => "ok",
-                Err(_) => "error",
-            }
-        }
+        Ok(conn) => match conn.query_row("SELECT 1", [], |_| Ok(())) {
+            Ok(_) => "ok",
+            Err(_) => "error",
+        },
         Err(_) => "error",
     };
 
@@ -199,11 +212,17 @@ async fn metrics_handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> axum::response::Response {
     if !addr.ip().is_loopback() {
-        return (StatusCode::FORBIDDEN, Json(json!({"error": "metrics endpoint is localhost-only"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "metrics endpoint is localhost-only"})),
+        )
+            .into_response();
     }
     let uptime = state.start_time.elapsed().as_secs();
 
-    let db_size = state.config.db_path()
+    let db_size = state
+        .config
+        .db_path()
         .metadata()
         .map(|m| m.len())
         .unwrap_or(0);
@@ -222,7 +241,8 @@ async fn metrics_handler(
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
         metrics,
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// GET /status.php — Nextcloud status stub
@@ -274,12 +294,18 @@ async fn ocs_capabilities_handler() -> impl IntoResponse {
 
 /// GET /.well-known/caldav — Redirect to /caldav/
 async fn well_known_caldav() -> impl IntoResponse {
-    (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, "/caldav/")])
+    (
+        StatusCode::MOVED_PERMANENTLY,
+        [(header::LOCATION, "/caldav/")],
+    )
 }
 
 /// GET /.well-known/carddav — Redirect to /carddav/
 async fn well_known_carddav() -> impl IntoResponse {
-    (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, "/carddav/")])
+    (
+        StatusCode::MOVED_PERMANENTLY,
+        [(header::LOCATION, "/carddav/")],
+    )
 }
 
 /// POST /api/auth/login — Authenticate with admin password, returns session token
@@ -290,10 +316,17 @@ async fn login_handler(
 ) -> axum::response::Response {
     let password = match body.get("password").and_then(|v| v.as_str()) {
         Some(p) => p,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "password required"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "password required"})),
+            )
+                .into_response();
+        }
     };
 
-    let client_ip = body.get("source_ip")
+    let client_ip = body
+        .get("source_ip")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| addr.ip().to_string());
@@ -331,13 +364,26 @@ async fn login_handler(
                 let mut attempts = state.login_attempts.lock().unwrap();
                 attempts.remove(&client_ip);
             }
-            match auth::create_session(&db, user_agent, Some(&client_ip), state.config.auth.session_ttl_hours) {
-                Ok(token) => (StatusCode::OK, Json(json!({
-                    "token": token,
-                    "token_prefix": &token[..std::cmp::min(22, token.len())],
-                    "expires_in_hours": state.config.auth.session_ttl_hours,
-                }))).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+            match auth::create_session(
+                &db,
+                user_agent,
+                Some(&client_ip),
+                state.config.auth.session_ttl_hours,
+            ) {
+                Ok(token) => (
+                    StatusCode::OK,
+                    Json(json!({
+                        "token": token,
+                        "token_prefix": &token[..std::cmp::min(22, token.len())],
+                        "expires_in_hours": state.config.auth.session_ttl_hours,
+                    })),
+                )
+                    .into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response(),
             }
         }
         Ok(false) => {
@@ -350,9 +396,17 @@ async fn login_handler(
                 entry.attempts.push(Instant::now());
             }
             tracing::warn!(ip = %client_ip, "Failed login attempt");
-            (StatusCode::UNAUTHORIZED, Json(json!({"error": "invalid password"}))).into_response()
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "invalid password"})),
+            )
+                .into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -362,7 +416,8 @@ async fn auth_middleware(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<axum::response::Response, StatusCode> {
-    let auth_header = req.headers()
+    let auth_header = req
+        .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
@@ -419,16 +474,19 @@ async fn session_info_handler(
     State(state): State<SharedState>,
     req: Request<axum::body::Body>,
 ) -> impl IntoResponse {
-    let auth_header = req.headers()
+    let auth_header = req
+        .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
 
-    if let Some(h) = auth_header {
-        if h.starts_with("Bearer ") && h[7..].starts_with("tilde_session_") {
-            let token = &h[7..];
-            let token_hash = auth::hash_token(token);
-            let db = state.db.lock().unwrap();
-            let result = db.query_row(
+    if let Some(h) = auth_header
+        && h.starts_with("Bearer ")
+        && h[7..].starts_with("tilde_session_")
+    {
+        let token = &h[7..];
+        let token_hash = auth::hash_token(token);
+        let db = state.db.lock().unwrap();
+        let result = db.query_row(
                 "SELECT token_prefix, created_at, last_used_at, expires_at FROM auth_sessions WHERE id = ?1",
                 [&token_hash],
                 |row| {
@@ -440,17 +498,13 @@ async fn session_info_handler(
                     ))
                 },
             );
-            match result {
-                Ok((prefix, created, last_used, expires)) => {
-                    return Json(json!({
-                        "token_prefix": prefix,
-                        "created_at": created,
-                        "last_used_at": last_used,
-                        "expires_at": expires,
-                    }));
-                }
-                Err(_) => {}
-            }
+        if let Ok((prefix, created, last_used, expires)) = result {
+            return Json(json!({
+                "token_prefix": prefix,
+                "created_at": created,
+                "last_used_at": last_used,
+                "expires_at": expires,
+            }));
         }
     }
     Json(json!({"error": "session info unavailable"}))
@@ -499,7 +553,8 @@ async fn principals_handler(
         StatusCode::MULTI_STATUS,
         [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
         xml.to_string(),
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// Host header filter — reject requests for unknown hostnames
@@ -515,7 +570,8 @@ async fn host_filter_middleware(
         return Ok(next.run(req).await);
     }
 
-    let host = req.headers()
+    let host = req
+        .headers()
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .map(|h| {
@@ -550,7 +606,8 @@ async fn login_flow_initiate(
     let csrf_token = auth::hash_token(&auth::generate_session_token()); // random hash
 
     // Build the login URL from the Host header
-    let host = req.headers()
+    let host = req
+        .headers()
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost");
@@ -590,17 +647,25 @@ async fn login_flow_poll(
 ) -> axum::response::Response {
     // Parse form data: token=<poll_token>
     let form_str = String::from_utf8_lossy(&body);
-    let token = form_str.split('&')
-        .find_map(|pair| {
-            let mut parts = pair.splitn(2, '=');
-            let key = parts.next()?;
-            let val = parts.next()?;
-            if key == "token" { Some(val.to_string()) } else { None }
-        });
+    let token = form_str.split('&').find_map(|pair| {
+        let (key, val) = pair.split_once('=')?;
+
+        if key == "token" {
+            Some(val.to_string())
+        } else {
+            None
+        }
+    });
 
     let token = match token {
         Some(t) => t,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "token required"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "token required"})),
+            )
+                .into_response();
+        }
     };
 
     let mut flows = state.login_flows.lock().unwrap();
@@ -608,7 +673,11 @@ async fn login_flow_poll(
     match flows.get(&token) {
         Some(session) if session.consumed => {
             // Already consumed — return 404 per spec
-            (StatusCode::NOT_FOUND, Json(json!({"error": "flow already consumed"}))).into_response()
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "flow already consumed"})),
+            )
+                .into_response()
         }
         Some(session) if session.app_password.is_some() => {
             let app_password = session.app_password.clone().unwrap();
@@ -628,15 +697,22 @@ async fn login_flow_poll(
                 "server": server_url,
                 "loginName": "admin",
                 "appPassword": app_password
-            })).into_response()
+            }))
+            .into_response()
         }
         Some(_) => {
             // Not yet authenticated
-            (StatusCode::NOT_FOUND, Json(json!({"error": "not yet authenticated"}))).into_response()
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "not yet authenticated"})),
+            )
+                .into_response()
         }
-        None => {
-            (StatusCode::NOT_FOUND, Json(json!({"error": "unknown token"}))).into_response()
-        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown token"})),
+        )
+            .into_response(),
     }
 }
 
@@ -665,10 +741,16 @@ async fn login_flow_auth_page(
 
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8"),
-         (header::HeaderName::from_static("content-security-policy"), "default-src 'self'; style-src 'unsafe-inline'")],
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (
+                header::HeaderName::from_static("content-security-policy"),
+                "default-src 'self'; style-src 'unsafe-inline'",
+            ),
+        ],
         html,
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// POST /login/v2/auth — Process login form submission
@@ -689,7 +771,9 @@ async fn login_flow_auth_submit(
     }
 
     let csrf_token = form_data.get("csrf_token").cloned().unwrap_or_default();
-    let flow_token = form_data.get("token").cloned()
+    let flow_token = form_data
+        .get("token")
+        .cloned()
         .or_else(|| params.get("token").cloned())
         .unwrap_or_default();
     let password = form_data.get("password").cloned().unwrap_or_default();
@@ -729,7 +813,8 @@ async fn login_flow_auth_submit(
             Ok(pw) => pw,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to create app password for login flow");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+                    .into_response();
             }
         }
     };
@@ -787,7 +872,8 @@ async fn login_flow_auth_submit(
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
         html,
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// Render login page with error message
@@ -804,7 +890,8 @@ fn render_login_error(flow_token: &str, csrf_token: &str, error: &str) -> axum::
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
         html,
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// GET /.well-known/oauth-protected-resource — OAuth Protected Resource Metadata (RFC 9728 stub)
@@ -833,7 +920,8 @@ async fn mcp_handler(
     req: Request<axum::body::Body>,
 ) -> axum::response::Response {
     // Extract auth header before consuming the request
-    let auth_header = req.headers()
+    let auth_header = req
+        .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
@@ -848,11 +936,13 @@ async fn mcp_handler(
             match auth::validate_mcp_token(&db, token) {
                 Ok(Some((name, scopes))) => {
                     // Get rate limit for this token
-                    let rl = db.query_row(
-                        "SELECT rate_limit FROM mcp_tokens WHERE token_hash = ?1",
-                        [&auth::hash_token(token)],
-                        |row| row.get::<_, u32>(0),
-                    ).unwrap_or(state.config.mcp.default_rate_limit);
+                    let rl = db
+                        .query_row(
+                            "SELECT rate_limit FROM mcp_tokens WHERE token_hash = ?1",
+                            [&auth::hash_token(token)],
+                            |row| row.get::<_, u32>(0),
+                        )
+                        .unwrap_or(state.config.mcp.default_rate_limit);
                     (name, scopes, rl)
                 }
                 _ => {
@@ -921,27 +1011,39 @@ async fn webhook_handler(
     let result = db.query_row(
         "SELECT name, scopes, rate_limit, revoked FROM webhook_tokens WHERE token_prefix = ?1",
         [&token_prefix],
-        |row| Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i32>(2)?,
-            row.get::<_, bool>(3)?,
-        )),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i32>(2)?,
+                row.get::<_, bool>(3)?,
+            ))
+        },
     );
 
     let (name, scopes, _rate_limit, revoked) = match result {
         Ok(r) => r,
         Err(_) => {
-            return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown webhook token"}))).into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "unknown webhook token"})),
+            )
+                .into_response();
         }
     };
 
     if revoked {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "webhook token revoked"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "webhook token revoked"})),
+        )
+            .into_response();
     }
 
     // Update last_used_at
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
     let _ = db.execute(
         "UPDATE webhook_tokens SET last_used_at = ?1 WHERE token_prefix = ?2",
         rusqlite::params![now, token_prefix],
@@ -976,18 +1078,26 @@ async fn webhook_handler(
                         tracing::info!(webhook = %name, collection = collection_name, "Webhook data ingested");
                         (StatusCode::OK, Json(json!({"id": id, "status": "ok"}))).into_response()
                     }
-                    Err(e) => {
-                        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
-                    }
+                    Err(e) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": e.to_string()})),
+                    )
+                        .into_response(),
                 }
             }
-            Err(_) => {
-                (StatusCode::NOT_FOUND, Json(json!({"error": format!("collection '{}' not found", collection_name)}))).into_response()
-            }
+            Err(_) => (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("collection '{}' not found", collection_name)})),
+            )
+                .into_response(),
         }
     } else {
         // Generic webhook — just log it
         tracing::info!(webhook = %name, scopes = %scopes, "Webhook received");
-        (StatusCode::OK, Json(json!({"status": "ok", "webhook": name}))).into_response()
+        (
+            StatusCode::OK,
+            Json(json!({"status": "ok", "webhook": name})),
+        )
+            .into_response()
     }
 }

@@ -1,7 +1,7 @@
 //! SQLite database initialization and migration runner
 
 use rusqlite::Connection;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use tracing::info;
 
@@ -19,7 +19,7 @@ pub fn init_db(path: &str) -> anyhow::Result<Connection> {
          PRAGMA synchronous=NORMAL;
          PRAGMA busy_timeout=5000;
          PRAGMA foreign_keys=ON;
-         PRAGMA mmap_size=33554432;"
+         PRAGMA mmap_size=33554432;",
     )?;
 
     info!(path = path, "Database initialized with WAL mode");
@@ -51,9 +51,7 @@ fn load_migrations(migrations_dir: &Path) -> anyhow::Result<Vec<Migration>> {
 
     let mut entries: Vec<_> = std::fs::read_dir(migrations_dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path().extension().is_some_and(|ext| ext == "sql")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "sql"))
         .collect();
 
     entries.sort_by_key(|e| e.file_name());
@@ -71,7 +69,12 @@ fn load_migrations(migrations_dir: &Path) -> anyhow::Result<Vec<Migration>> {
         let sql = std::fs::read_to_string(entry.path())?;
         let checksum = compute_checksum(&sql);
 
-        migrations.push(Migration { version, name, sql, checksum });
+        migrations.push(Migration {
+            version,
+            name,
+            sql,
+            checksum,
+        });
     }
 
     Ok(migrations)
@@ -86,7 +89,7 @@ pub fn run_migrations(conn: &Connection, migrations_dir: &Path) -> anyhow::Resul
             name TEXT NOT NULL,
             applied_at TEXT NOT NULL,
             checksum TEXT NOT NULL
-        );"
+        );",
     )?;
 
     let migrations = load_migrations(migrations_dir)?;
@@ -111,7 +114,9 @@ pub fn run_migrations(conn: &Connection, migrations_dir: &Path) -> anyhow::Resul
                 anyhow::bail!(
                     "Migration {} checksum mismatch! Expected {}, found {}. \
                      Migration files must not be modified after being applied.",
-                    migration.name, stored_checksum, migration.checksum
+                    migration.name,
+                    stored_checksum,
+                    migration.checksum
                 );
             }
 
@@ -123,7 +128,9 @@ pub fn run_migrations(conn: &Connection, migrations_dir: &Path) -> anyhow::Resul
         conn.execute_batch(&migration.sql)?;
 
         // Record migration
-        let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        let now = jiff::Zoned::now()
+            .strftime("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string();
         conn.execute(
             "INSERT INTO migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![migration.version, migration.name, now, migration.checksum],
@@ -139,12 +146,9 @@ pub fn run_migrations(conn: &Connection, migrations_dir: &Path) -> anyhow::Resul
 
 /// Get list of applied migrations
 pub fn get_applied_migrations(conn: &Connection) -> anyhow::Result<Vec<(i64, String, String)>> {
-    let mut stmt = conn.prepare(
-        "SELECT version, name, applied_at FROM migrations ORDER BY version"
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    })?;
+    let mut stmt =
+        conn.prepare("SELECT version, name, applied_at FROM migrations ORDER BY version")?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
     let mut result = Vec::new();
     for row in rows {
         result.push(row?);
@@ -162,16 +166,24 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let conn = init_db(db_path.to_str().unwrap()).unwrap();
 
-        let mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0)).unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(mode, "wal");
 
-        let fk: i32 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0)).unwrap();
+        let fk: i32 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(fk, 1);
 
-        let timeout: i32 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0)).unwrap();
+        let timeout: i32 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(timeout, 5000);
 
-        let sync: i32 = conn.query_row("PRAGMA synchronous", [], |row| row.get(0)).unwrap();
+        let sync: i32 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(sync, 1); // NORMAL
     }
 

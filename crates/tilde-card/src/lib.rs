@@ -3,7 +3,7 @@
 use axum::{
     Router,
     extract::{Path as AxumPath, State},
-    http::{header, HeaderValue, Method, StatusCode},
+    http::{HeaderValue, Method, StatusCode, header},
     response::IntoResponse,
     routing::any,
 };
@@ -27,7 +27,9 @@ pub fn build_carddav_router(state: SharedCardDavState) -> Router {
 }
 
 pub fn ensure_default_addressbook(db: &Connection) {
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
     let _ = db.execute(
         "INSERT OR IGNORE INTO addressbooks (id, name, display_name, ctag, sync_token, created_at, updated_at)
          VALUES (?1, 'default', 'Contacts', '1', 0, ?2, ?3)",
@@ -38,28 +40,45 @@ pub fn ensure_default_addressbook(db: &Connection) {
 fn compute_etag(data: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data.as_bytes());
-    format!("{:x}", hasher.finalize()).chars().take(16).collect()
+    format!("{:x}", hasher.finalize())
+        .chars()
+        .take(16)
+        .collect()
 }
 
 fn xml_response(status: StatusCode, body: String) -> axum::response::Response {
-    (status, [(header::CONTENT_TYPE, "application/xml; charset=utf-8")], body).into_response()
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
+        body,
+    )
+        .into_response()
 }
 
 async fn carddav_root_handler(
-    method: Method, State(state): State<SharedCardDavState>, req: axum::extract::Request,
+    method: Method,
+    State(state): State<SharedCardDavState>,
+    req: axum::extract::Request,
 ) -> axum::response::Response {
     handle_request(&state, method, "", req).await
 }
 
 async fn carddav_handler(
-    method: Method, State(state): State<SharedCardDavState>,
-    AxumPath(path): AxumPath<String>, req: axum::extract::Request,
+    method: Method,
+    State(state): State<SharedCardDavState>,
+    AxumPath(path): AxumPath<String>,
+    req: axum::extract::Request,
 ) -> axum::response::Response {
     handle_request(&state, method, &path, req).await
 }
 
-fn check_auth(state: &SharedCardDavState, req: &axum::extract::Request, scope_prefix: &str) -> bool {
-    let auth_header = req.headers()
+fn check_auth(
+    state: &SharedCardDavState,
+    req: &axum::extract::Request,
+    scope_prefix: &str,
+) -> bool {
+    let auth_header = req
+        .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
@@ -69,32 +88,57 @@ fn check_auth(state: &SharedCardDavState, req: &axum::extract::Request, scope_pr
             let db = state.db.lock().unwrap();
             if token.starts_with("tilde_session_") {
                 auth::validate_session(&db, token, state.session_ttl_hours).unwrap_or(false)
-            } else { false }
+            } else {
+                false
+            }
         }
         Some(ref h) if h.starts_with("Basic ") => {
-            let decoded = base64::Engine::decode(
-                &base64::engine::general_purpose::STANDARD, &h[6..],
-            ).ok().and_then(|bytes| String::from_utf8(bytes).ok());
+            let decoded =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &h[6..])
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok());
             if let Some(creds) = decoded {
                 if let Some((_user, password)) = creds.split_once(':') {
                     let db = state.db.lock().unwrap();
-                    if auth::verify_admin_password(&db, password).unwrap_or(false) { return true; }
+                    if auth::verify_admin_password(&db, password).unwrap_or(false) {
+                        return true;
+                    }
                     auth::verify_app_password(&db, password, scope_prefix).unwrap_or(false)
-                } else { false }
-            } else { false }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
         }
         _ => false,
     }
 }
 
 async fn handle_request(
-    state: &SharedCardDavState, method: Method, path: &str, req: axum::extract::Request,
+    state: &SharedCardDavState,
+    method: Method,
+    path: &str,
+    req: axum::extract::Request,
 ) -> axum::response::Response {
     if !check_auth(state, &req, "/carddav/") {
-        return (StatusCode::UNAUTHORIZED, [(header::WWW_AUTHENTICATE, "Basic realm=\"tilde\"")]).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Basic realm=\"tilde\"")],
+        )
+            .into_response();
     }
-    let depth = req.headers().get("depth").and_then(|v| v.to_str().ok()).unwrap_or("0").to_string();
-    let if_match = req.headers().get(header::IF_MATCH).and_then(|v| v.to_str().ok()).map(|s| s.trim_matches('"').to_string());
+    let depth = req
+        .headers()
+        .get("depth")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("0")
+        .to_string();
+    let if_match = req
+        .headers()
+        .get(header::IF_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_matches('"').to_string());
     let body = match axum::body::to_bytes(req.into_body(), 10_485_760).await {
         Ok(b) => String::from_utf8_lossy(&b).to_string(),
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
@@ -103,8 +147,16 @@ async fn handle_request(
     match method.as_str() {
         "OPTIONS" => {
             let mut resp = StatusCode::OK.into_response();
-            resp.headers_mut().insert(header::HeaderName::from_static("dav"), HeaderValue::from_static("1, 2, 3, addressbook"));
-            resp.headers_mut().insert(header::HeaderName::from_static("allow"), HeaderValue::from_static("OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT, MKCOL"));
+            resp.headers_mut().insert(
+                header::HeaderName::from_static("dav"),
+                HeaderValue::from_static("1, 2, 3, addressbook"),
+            );
+            resp.headers_mut().insert(
+                header::HeaderName::from_static("allow"),
+                HeaderValue::from_static(
+                    "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT, MKCOL",
+                ),
+            );
             resp
         }
         "PROPFIND" => handle_propfind(state, path, &depth),
@@ -129,13 +181,21 @@ fn parse_path(path: &str) -> (Option<&str>, Option<&str>, Option<&str>) {
     }
 }
 
-fn handle_propfind(state: &SharedCardDavState, path: &str, depth: &str) -> axum::response::Response {
+fn handle_propfind(
+    state: &SharedCardDavState,
+    path: &str,
+    depth: &str,
+) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let (principal, ab_name, contact_name) = parse_path(path);
 
     if principal.is_none() || (principal.is_some() && ab_name.is_none()) {
         let mut responses = String::new();
-        let href = if let Some(p) = principal { format!("/carddav/{}/", p) } else { "/carddav/".to_string() };
+        let href = if let Some(p) = principal {
+            format!("/carddav/{}/", p)
+        } else {
+            "/carddav/".to_string()
+        };
         responses.push_str(&format!(
             r#"<d:response>
   <d:href>{}</d:href>
@@ -147,19 +207,38 @@ fn handle_propfind(state: &SharedCardDavState, path: &str, depth: &str) -> axum:
     </d:prop>
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
-</d:response>"#, href));
+</d:response>"#,
+            href
+        ));
 
         if depth == "1" {
             let p = principal.unwrap_or("admin");
-            let mut stmt = db.prepare("SELECT name, display_name, ctag, description, sync_token FROM addressbooks").unwrap();
-            let abs = stmt.query_map([], |row| Ok((
-                row.get::<_, String>(0)?, row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?,
-                row.get::<_, i64>(4)?,
-            ))).unwrap();
+            let mut stmt = db
+                .prepare(
+                    "SELECT name, display_name, ctag, description, sync_token FROM addressbooks",
+                )
+                .unwrap();
+            let abs = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                })
+                .unwrap();
             for ab in abs.flatten() {
                 let (name, display_name, ctag, desc, sync_token) = ab;
-                let desc_xml = desc.map(|d| format!("<card:addressbook-description>{}</card:addressbook-description>", escape_xml(&d))).unwrap_or_default();
+                let desc_xml = desc
+                    .map(|d| {
+                        format!(
+                            "<card:addressbook-description>{}</card:addressbook-description>",
+                            escape_xml(&d)
+                        )
+                    })
+                    .unwrap_or_default();
                 responses.push_str(&format!(
                     r#"
 <d:response>
@@ -174,14 +253,26 @@ fn handle_propfind(state: &SharedCardDavState, path: &str, depth: &str) -> axum:
     </d:prop>
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
-</d:response>"#, p, name, escape_xml(&display_name), ctag, sync_token, desc_xml));
+</d:response>"#,
+                    p,
+                    name,
+                    escape_xml(&display_name),
+                    ctag,
+                    sync_token,
+                    desc_xml
+                ));
             }
         }
 
-        return xml_response(StatusCode::MULTI_STATUS, format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
+        return xml_response(
+            StatusCode::MULTI_STATUS,
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav" xmlns:cs="http://calendarserver.org/ns/">
-{}</d:multistatus>"#, responses));
+{}</d:multistatus>"#,
+                responses
+            ),
+        );
     }
 
     if let Some(ab_name) = ab_name {
@@ -276,11 +367,20 @@ fn handle_propfind(state: &SharedCardDavState, path: &str, depth: &str) -> axum:
     }
 }
 
-fn handle_proppatch(state: &SharedCardDavState, path: &str, body: &str) -> axum::response::Response {
+fn handle_proppatch(
+    state: &SharedCardDavState,
+    path: &str,
+    body: &str,
+) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let (_, ab_name, _) = parse_path(path);
-    let ab_name = match ab_name { Some(n) => n, None => return StatusCode::BAD_REQUEST.into_response() };
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let ab_name = match ab_name {
+        Some(n) => n,
+        None => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
     if let Some(display_name) = extract_xml_value(body, "displayname") {
         let updated = db.execute(
@@ -288,8 +388,10 @@ fn handle_proppatch(state: &SharedCardDavState, path: &str, body: &str) -> axum:
             rusqlite::params![display_name, now, ab_name],
         ).unwrap_or(0);
         if updated > 0 {
-            return xml_response(StatusCode::MULTI_STATUS, format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?>
+            return xml_response(
+                StatusCode::MULTI_STATUS,
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:">
 <d:response>
   <d:href>/carddav/admin/{}/</d:href>
@@ -298,7 +400,10 @@ fn handle_proppatch(state: &SharedCardDavState, path: &str, body: &str) -> axum:
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>
-</d:multistatus>"#, ab_name));
+</d:multistatus>"#,
+                    ab_name
+                ),
+            );
         }
     }
     StatusCode::NOT_FOUND.into_response()
@@ -307,17 +412,30 @@ fn handle_proppatch(state: &SharedCardDavState, path: &str, body: &str) -> axum:
 fn handle_mkcol(state: &SharedCardDavState, path: &str, body: &str) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let (_, ab_name, _) = parse_path(path);
-    let ab_name = match ab_name { Some(n) => n, None => return StatusCode::BAD_REQUEST.into_response() };
+    let ab_name = match ab_name {
+        Some(n) => n,
+        None => return StatusCode::BAD_REQUEST.into_response(),
+    };
 
-    let exists: bool = db.query_row(
-        "SELECT COUNT(*) FROM addressbooks WHERE name = ?1", [ab_name], |row| row.get::<_, i64>(0),
-    ).unwrap_or(0) > 0;
-    if exists { return (StatusCode::CONFLICT, "Addressbook already exists").into_response(); }
+    let exists: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM addressbooks WHERE name = ?1",
+            [ab_name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if exists {
+        return (StatusCode::CONFLICT, "Addressbook already exists").into_response();
+    }
 
-    let display_name = extract_xml_value(body, "displayname").unwrap_or_else(|| ab_name.to_string());
+    let display_name =
+        extract_xml_value(body, "displayname").unwrap_or_else(|| ab_name.to_string());
     let description = extract_xml_value(body, "addressbook-description");
     let id = uuid::Uuid::new_v4().to_string();
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
     match db.execute(
         "INSERT INTO addressbooks (id, name, display_name, description, ctag, sync_token, created_at, updated_at)
@@ -329,31 +447,54 @@ fn handle_mkcol(state: &SharedCardDavState, path: &str, body: &str) -> axum::res
     }
 }
 
-fn handle_put(state: &SharedCardDavState, path: &str, body: &str, if_match: Option<&str>) -> axum::response::Response {
+fn handle_put(
+    state: &SharedCardDavState,
+    path: &str,
+    body: &str,
+    if_match: Option<&str>,
+) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let (_, ab_name, contact_name) = parse_path(path);
-    let ab_name = match ab_name { Some(n) => n, None => return StatusCode::BAD_REQUEST.into_response() };
-    let contact_name = match contact_name { Some(n) => n, None => return StatusCode::BAD_REQUEST.into_response() };
+    let ab_name = match ab_name {
+        Some(n) => n,
+        None => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let contact_name = match contact_name {
+        Some(n) => n,
+        None => return StatusCode::BAD_REQUEST.into_response(),
+    };
     let uid = contact_name.trim_end_matches(".vcf");
 
     let ab_id: String = match db.query_row(
-        "SELECT id FROM addressbooks WHERE name = ?1", [ab_name], |row| row.get(0),
-    ) { Ok(id) => id, Err(_) => return StatusCode::NOT_FOUND.into_response() };
+        "SELECT id FROM addressbooks WHERE name = ?1",
+        [ab_name],
+        |row| row.get(0),
+    ) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
 
     let existing = db.query_row(
         "SELECT etag FROM contacts WHERE addressbook_id = ?1 AND uid = ?2 AND deleted = 0",
-        rusqlite::params![ab_id, uid], |row| row.get::<_, String>(0),
+        rusqlite::params![ab_id, uid],
+        |row| row.get::<_, String>(0),
     );
 
     if let Some(expected) = if_match {
         match &existing {
-            Ok(current) => { if current != expected.trim_matches('"') { return StatusCode::PRECONDITION_FAILED.into_response(); } }
+            Ok(current) => {
+                if current != expected.trim_matches('"') {
+                    return StatusCode::PRECONDITION_FAILED.into_response();
+                }
+            }
             Err(_) => return StatusCode::PRECONDITION_FAILED.into_response(),
         }
     }
 
     let etag = compute_etag(body);
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
     let fn_name = extract_vcard_field(body, "FN");
     let email = extract_vcard_field(body, "EMAIL");
     let phone = extract_vcard_field(body, "TEL");
@@ -374,7 +515,14 @@ fn handle_put(state: &SharedCardDavState, path: &str, body: &str, if_match: Opti
         ).unwrap();
     }
 
-    let new_st: i64 = db.query_row("SELECT sync_token FROM addressbooks WHERE id = ?1", [&ab_id], |row| row.get(0)).unwrap_or(0) + 1;
+    let new_st: i64 = db
+        .query_row(
+            "SELECT sync_token FROM addressbooks WHERE id = ?1",
+            [&ab_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+        + 1;
     db.execute("UPDATE addressbooks SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![new_st, now, ab_id]).unwrap();
 
     let change_type = if is_new { "created" } else { "modified" };
@@ -384,15 +532,25 @@ fn handle_put(state: &SharedCardDavState, path: &str, body: &str, if_match: Opti
         rusqlite::params![ab_id, format!("{}.vcf", uid), change_type, new_st, now],
     ).unwrap();
 
-    let status = if is_new { StatusCode::CREATED } else { StatusCode::NO_CONTENT };
+    let status = if is_new {
+        StatusCode::CREATED
+    } else {
+        StatusCode::NO_CONTENT
+    };
     (status, [(header::ETAG, format!("\"{}\"", etag))]).into_response()
 }
 
 fn handle_get(state: &SharedCardDavState, path: &str) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let (_, ab_name, contact_name) = parse_path(path);
-    let ab_name = match ab_name { Some(n) => n, None => return StatusCode::NOT_FOUND.into_response() };
-    let contact_name = match contact_name { Some(n) => n, None => return StatusCode::NOT_FOUND.into_response() };
+    let ab_name = match ab_name {
+        Some(n) => n,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let contact_name = match contact_name {
+        Some(n) => n,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
     let uid = contact_name.trim_end_matches(".vcf");
 
     match db.query_row(
@@ -403,9 +561,16 @@ fn handle_get(state: &SharedCardDavState, path: &str) -> axum::response::Respons
     ) {
         Ok((vcard, etag)) => (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, "text/vcard; charset=utf-8".to_string()), (header::ETAG, format!("\"{}\"", etag))],
+            [
+                (
+                    header::CONTENT_TYPE,
+                    "text/vcard; charset=utf-8".to_string(),
+                ),
+                (header::ETAG, format!("\"{}\"", etag)),
+            ],
             vcard,
-        ).into_response(),
+        )
+            .into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -413,23 +578,42 @@ fn handle_get(state: &SharedCardDavState, path: &str) -> axum::response::Respons
 fn handle_delete(state: &SharedCardDavState, path: &str) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let (_, ab_name, contact_name) = parse_path(path);
-    let ab_name = match ab_name { Some(n) => n, None => return StatusCode::NOT_FOUND.into_response() };
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let ab_name = match ab_name {
+        Some(n) => n,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
     match contact_name {
         Some(name) => {
             let uid = name.trim_end_matches(".vcf");
             let ab_id: String = match db.query_row(
-                "SELECT id FROM addressbooks WHERE name = ?1", [ab_name], |row| row.get(0),
-            ) { Ok(id) => id, Err(_) => return StatusCode::NOT_FOUND.into_response() };
+                "SELECT id FROM addressbooks WHERE name = ?1",
+                [ab_name],
+                |row| row.get(0),
+            ) {
+                Ok(id) => id,
+                Err(_) => return StatusCode::NOT_FOUND.into_response(),
+            };
 
             let affected = db.execute(
                 "UPDATE contacts SET deleted = 1, updated_at = ?1 WHERE addressbook_id = ?2 AND uid = ?3 AND deleted = 0",
                 rusqlite::params![now, ab_id, uid],
             ).unwrap_or(0);
-            if affected == 0 { return StatusCode::NOT_FOUND.into_response(); }
+            if affected == 0 {
+                return StatusCode::NOT_FOUND.into_response();
+            }
 
-            let new_st: i64 = db.query_row("SELECT sync_token FROM addressbooks WHERE id = ?1", [&ab_id], |row| row.get(0)).unwrap_or(0) + 1;
+            let new_st: i64 = db
+                .query_row(
+                    "SELECT sync_token FROM addressbooks WHERE id = ?1",
+                    [&ab_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0)
+                + 1;
             db.execute("UPDATE addressbooks SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![new_st, now, ab_id]).unwrap();
             db.execute(
                 "INSERT INTO sync_changes (collection_type, collection_id, object_uri, change_type, sync_token, created_at)
@@ -439,15 +623,24 @@ fn handle_delete(state: &SharedCardDavState, path: &str) -> axum::response::Resp
             StatusCode::NO_CONTENT.into_response()
         }
         None => {
-            let affected = db.execute("DELETE FROM addressbooks WHERE name = ?1", [ab_name]).unwrap_or(0);
-            if affected == 0 { StatusCode::NOT_FOUND.into_response() } else { StatusCode::NO_CONTENT.into_response() }
+            let affected = db
+                .execute("DELETE FROM addressbooks WHERE name = ?1", [ab_name])
+                .unwrap_or(0);
+            if affected == 0 {
+                StatusCode::NOT_FOUND.into_response()
+            } else {
+                StatusCode::NO_CONTENT.into_response()
+            }
         }
     }
 }
 
 fn handle_report(state: &SharedCardDavState, path: &str, body: &str) -> axum::response::Response {
     let (_, ab_name, _) = parse_path(path);
-    let ab_name = match ab_name { Some(n) => n, None => return StatusCode::BAD_REQUEST.into_response() };
+    let ab_name = match ab_name {
+        Some(n) => n,
+        None => return StatusCode::BAD_REQUEST.into_response(),
+    };
     let principal = "admin";
 
     if body.contains("addressbook-multiget") {
@@ -459,16 +652,30 @@ fn handle_report(state: &SharedCardDavState, path: &str, body: &str) -> axum::re
     }
 }
 
-fn handle_multiget(state: &SharedCardDavState, ab_name: &str, principal: &str, body: &str) -> axum::response::Response {
+fn handle_multiget(
+    state: &SharedCardDavState,
+    ab_name: &str,
+    principal: &str,
+    body: &str,
+) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let hrefs = extract_hrefs(body);
     let ab_id: String = match db.query_row(
-        "SELECT id FROM addressbooks WHERE name = ?1", [ab_name], |row| row.get(0),
-    ) { Ok(id) => id, Err(_) => return StatusCode::NOT_FOUND.into_response() };
+        "SELECT id FROM addressbooks WHERE name = ?1",
+        [ab_name],
+        |row| row.get(0),
+    ) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
 
     let mut responses = String::new();
     for href in &hrefs {
-        let uid = href.rsplit('/').next().unwrap_or("").trim_end_matches(".vcf");
+        let uid = href
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(".vcf");
         match db.query_row(
             "SELECT uid, etag, vcard_data FROM contacts WHERE addressbook_id = ?1 AND uid = ?2 AND deleted = 0",
             rusqlite::params![ab_id, uid],
@@ -497,25 +704,44 @@ fn handle_multiget(state: &SharedCardDavState, ab_name: &str, principal: &str, b
         }
     }
 
-    xml_response(StatusCode::MULTI_STATUS, format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+    xml_response(
+        StatusCode::MULTI_STATUS,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
-{}</d:multistatus>"#, responses))
+{}</d:multistatus>"#,
+            responses
+        ),
+    )
 }
 
-fn handle_sync_collection(state: &SharedCardDavState, ab_name: &str, principal: &str, body: &str) -> axum::response::Response {
+fn handle_sync_collection(
+    state: &SharedCardDavState,
+    ab_name: &str,
+    principal: &str,
+    body: &str,
+) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let ab_id: String = match db.query_row(
-        "SELECT id FROM addressbooks WHERE name = ?1", [ab_name], |row| row.get(0),
-    ) { Ok(id) => id, Err(_) => return StatusCode::NOT_FOUND.into_response() };
+        "SELECT id FROM addressbooks WHERE name = ?1",
+        [ab_name],
+        |row| row.get(0),
+    ) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
 
     let sync_token = extract_xml_value(body, "sync-token")
         .and_then(|t| t.rsplit('/').next().and_then(|n| n.parse::<i64>().ok()))
         .unwrap_or(0);
 
-    let current_st: i64 = db.query_row(
-        "SELECT sync_token FROM addressbooks WHERE id = ?1", [&ab_id], |row| row.get(0),
-    ).unwrap_or(0);
+    let current_st: i64 = db
+        .query_row(
+            "SELECT sync_token FROM addressbooks WHERE id = ?1",
+            [&ab_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     let mut responses = String::new();
 
@@ -523,7 +749,17 @@ fn handle_sync_collection(state: &SharedCardDavState, ab_name: &str, principal: 
         let mut stmt = db.prepare(
             "SELECT uid, etag, vcard_data FROM contacts WHERE addressbook_id = ?1 AND deleted = 0"
         ).unwrap();
-        for obj in stmt.query_map([&ab_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).unwrap().flatten() {
+        for obj in stmt
+            .query_map([&ab_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .flatten()
+        {
             let (uid, etag, vcard) = obj;
             responses.push_str(&format!(
                 r#"<d:response>
@@ -535,14 +771,26 @@ fn handle_sync_collection(state: &SharedCardDavState, ab_name: &str, principal: 
     </d:prop>
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
-</d:response>"#, principal, ab_name, uid, etag, escape_xml(&vcard)));
+</d:response>"#,
+                principal,
+                ab_name,
+                uid,
+                etag,
+                escape_xml(&vcard)
+            ));
         }
     } else {
         let mut stmt = db.prepare(
             "SELECT object_uri, change_type FROM sync_changes
              WHERE collection_type = 'addressbook' AND collection_id = ?1 AND sync_token > ?2 ORDER BY sync_token"
         ).unwrap();
-        for change in stmt.query_map(rusqlite::params![ab_id, sync_token], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap().flatten() {
+        for change in stmt
+            .query_map(rusqlite::params![ab_id, sync_token], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .flatten()
+        {
             let (object_uri, change_type) = change;
             let uid = object_uri.trim_end_matches(".vcf");
             if change_type == "deleted" {
@@ -571,18 +819,26 @@ fn handle_sync_collection(state: &SharedCardDavState, ab_name: &str, principal: 
         }
     }
 
-    xml_response(StatusCode::MULTI_STATUS, format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+    xml_response(
+        StatusCode::MULTI_STATUS,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
 {}
 <d:sync-token>http://tilde.local/sync/{}</d:sync-token>
-</d:multistatus>"#, responses, current_st))
+</d:multistatus>"#,
+            responses, current_st
+        ),
+    )
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn extract_xml_value(xml: &str, tag_name: &str) -> Option<String> {
@@ -612,16 +868,18 @@ fn extract_hrefs(xml: &str) -> Vec<String> {
         let mut found = None;
         for pat in &["<d:href>", "<D:href>", "<href>"] {
             if let Some(pos) = xml[search_from..].find(pat) {
-                found = Some((search_from + pos + pat.len(), ));
+                found = Some((search_from + pos + pat.len(),));
                 break;
             }
         }
         match found {
-            Some((content_start, )) => {
+            Some((content_start,)) => {
                 if let Some(end) = xml[content_start..].find("</") {
                     hrefs.push(xml[content_start..content_start + end].trim().to_string());
                     search_from = content_start + end;
-                } else { break; }
+                } else {
+                    break;
+                }
             }
             None => break,
         }
@@ -632,14 +890,13 @@ fn extract_hrefs(xml: &str) -> Vec<String> {
 fn extract_vcard_field(vcard: &str, field: &str) -> Option<String> {
     for line in vcard.lines() {
         let line = line.trim_end_matches('\r');
-        if line.starts_with(field) {
-            let rest = &line[field.len()..];
-            if rest.starts_with(':') {
-                return Some(rest[1..].to_string());
-            } else if rest.starts_with(';') {
-                if let Some(colon_pos) = rest.find(':') {
-                    return Some(rest[colon_pos + 1..].to_string());
-                }
+        if let Some(rest) = line.strip_prefix(field) {
+            if let Some(value) = rest.strip_prefix(':') {
+                return Some(value.to_string());
+            } else if rest.starts_with(';')
+                && let Some(colon_pos) = rest.find(':')
+            {
+                return Some(rest[colon_pos + 1..].to_string());
             }
         }
     }
@@ -648,33 +905,66 @@ fn extract_vcard_field(vcard: &str, field: &str) -> Option<String> {
 
 // ─── Public query API for CLI/MCP ──────────────────────────────────────────
 
-pub fn search_contacts(db: &Connection, query: &str) -> Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>)> {
+type ContactRecord = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+pub fn search_contacts(db: &Connection, query: &str) -> Vec<ContactRecord> {
     let pattern = format!("%{}%", query);
-    let mut stmt = db.prepare(
-        "SELECT uid, fn_name, email, phone, org FROM contacts
-         WHERE deleted = 0 AND (fn_name LIKE ?1 OR email LIKE ?1 OR phone LIKE ?1 OR org LIKE ?1)"
-    ).unwrap();
-    stmt.query_map([&pattern], |row| Ok((
-        row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?,
-        row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?,
-        row.get::<_, Option<String>>(4)?,
-    ))).unwrap().flatten().collect()
+    let mut stmt = db
+        .prepare(
+            "SELECT uid, fn_name, email, phone, org FROM contacts
+         WHERE deleted = 0 AND (fn_name LIKE ?1 OR email LIKE ?1 OR phone LIKE ?1 OR org LIKE ?1)",
+        )
+        .unwrap();
+    stmt.query_map([&pattern], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })
+    .unwrap()
+    .flatten()
+    .collect()
 }
 
-pub fn list_contacts(db: &Connection) -> Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>)> {
-    let mut stmt = db.prepare(
-        "SELECT uid, fn_name, email, phone, org FROM contacts WHERE deleted = 0"
-    ).unwrap();
-    stmt.query_map([], |row| Ok((
-        row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?,
-        row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?,
-        row.get::<_, Option<String>>(4)?,
-    ))).unwrap().flatten().collect()
+pub fn list_contacts(db: &Connection) -> Vec<ContactRecord> {
+    let mut stmt = db
+        .prepare("SELECT uid, fn_name, email, phone, org FROM contacts WHERE deleted = 0")
+        .unwrap();
+    stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })
+    .unwrap()
+    .flatten()
+    .collect()
 }
 
 pub fn list_addressbooks(db: &Connection) -> Vec<(String, String, Option<String>)> {
-    let mut stmt = db.prepare("SELECT name, display_name, description FROM addressbooks").unwrap();
-    stmt.query_map([], |row| Ok((
-        row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?,
-    ))).unwrap().flatten().collect()
+    let mut stmt = db
+        .prepare("SELECT name, display_name, description FROM addressbooks")
+        .unwrap();
+    stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })
+    .unwrap()
+    .flatten()
+    .collect()
 }

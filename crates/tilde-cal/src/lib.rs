@@ -6,7 +6,7 @@
 use axum::{
     Router,
     extract::{Path as AxumPath, State},
-    http::{header, HeaderValue, Method, StatusCode},
+    http::{HeaderValue, Method, StatusCode, header},
     response::IntoResponse,
     routing::any,
 };
@@ -32,7 +32,9 @@ pub fn build_caldav_router(state: SharedCalDavState) -> Router {
 
 /// Ensure default calendar exists
 pub fn ensure_default_calendar(db: &Connection) {
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
     let _ = db.execute(
         "INSERT OR IGNORE INTO calendars (id, name, display_name, ctag, sync_token, created_at, updated_at)
          VALUES (?1, 'default', 'Personal', '1', 0, ?2, ?3)",
@@ -52,7 +54,8 @@ fn xml_response(status: StatusCode, body: String) -> axum::response::Response {
         status,
         [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
         body,
-    ).into_response()
+    )
+        .into_response()
 }
 
 async fn caldav_root_handler(
@@ -73,7 +76,8 @@ async fn caldav_handler(
 }
 
 fn check_auth(state: &SharedCalDavState, req: &axum::extract::Request, scope_prefix: &str) -> bool {
-    let auth_header = req.headers()
+    let auth_header = req
+        .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
@@ -89,9 +93,10 @@ fn check_auth(state: &SharedCalDavState, req: &axum::extract::Request, scope_pre
             }
         }
         Some(ref h) if h.starts_with("Basic ") => {
-            let decoded = base64::Engine::decode(
-                &base64::engine::general_purpose::STANDARD, &h[6..],
-            ).ok().and_then(|bytes| String::from_utf8(bytes).ok());
+            let decoded =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &h[6..])
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok());
             if let Some(creds) = decoded {
                 if let Some((_user, password)) = creds.split_once(':') {
                     let db = state.db.lock().unwrap();
@@ -118,16 +123,22 @@ async fn handle_caldav_request(
 ) -> axum::response::Response {
     // Auth check
     if !check_auth(state, &req, "/caldav/") {
-        return (StatusCode::UNAUTHORIZED, [(header::WWW_AUTHENTICATE, "Basic realm=\"tilde\"")]).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Basic realm=\"tilde\"")],
+        )
+            .into_response();
     }
 
-    let depth = req.headers()
+    let depth = req
+        .headers()
         .get("depth")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("0")
         .to_string();
 
-    let if_match = req.headers()
+    let if_match = req
+        .headers()
         .get(header::IF_MATCH)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim_matches('"').to_string());
@@ -180,8 +191,8 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
     // Root or principal level: list calendars
     if principal.is_none() || (principal.is_some() && cal_name.is_none()) {
         let mut responses = String::new();
-        let href = if principal.is_some() {
-            format!("/caldav/{}/", principal.unwrap())
+        let href = if let Some(p) = &principal {
+            format!("/caldav/{}/", p)
         } else {
             "/caldav/".to_string()
         };
@@ -205,21 +216,30 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
             let mut stmt = db.prepare(
                 "SELECT name, display_name, ctag, description, color, sync_token FROM calendars"
             ).unwrap();
-            let calendars = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, i64>(5)?,
-                ))
-            }).unwrap();
+            let calendars = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                })
+                .unwrap();
 
             let p = principal.unwrap_or("admin");
             for cal in calendars.flatten() {
                 let (name, display_name, ctag, description, color, sync_token) = cal;
-                let desc_xml = description.map(|d| format!("<cal:calendar-description>{}</cal:calendar-description>", escape_xml(&d))).unwrap_or_default();
+                let desc_xml = description
+                    .map(|d| {
+                        format!(
+                            "<cal:calendar-description>{}</cal:calendar-description>",
+                            escape_xml(&d)
+                        )
+                    })
+                    .unwrap_or_default();
                 let color_xml = color.map(|c| format!("<x:calendar-color xmlns:x=\"http://apple.com/ns/ical/\">{}</x:calendar-color>", escape_xml(&c))).unwrap_or_default();
                 responses.push_str(&format!(
                     r#"
@@ -240,7 +260,13 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>"#,
-                    p, name, escape_xml(&display_name), ctag, sync_token, desc_xml, color_xml
+                    p,
+                    name,
+                    escape_xml(&display_name),
+                    ctag,
+                    sync_token,
+                    desc_xml,
+                    color_xml
                 ));
             }
         }
@@ -307,7 +333,14 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
             match cal_result {
                 Ok((cal_id, display_name, ctag, description, color, sync_token)) => {
                     let p = principal.unwrap_or("admin");
-                    let desc_xml = description.map(|d| format!("<cal:calendar-description>{}</cal:calendar-description>", escape_xml(&d))).unwrap_or_default();
+                    let desc_xml = description
+                        .map(|d| {
+                            format!(
+                                "<cal:calendar-description>{}</cal:calendar-description>",
+                                escape_xml(&d)
+                            )
+                        })
+                        .unwrap_or_default();
                     let color_xml = color.map(|c| format!("<x:calendar-color xmlns:x=\"http://apple.com/ns/ical/\">{}</x:calendar-color>", escape_xml(&c))).unwrap_or_default();
                     let mut responses = format!(
                         r#"<d:response>
@@ -327,16 +360,24 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>"#,
-                        p, cal_name, escape_xml(&display_name), ctag, sync_token, desc_xml, color_xml
+                        p,
+                        cal_name,
+                        escape_xml(&display_name),
+                        ctag,
+                        sync_token,
+                        desc_xml,
+                        color_xml
                     );
 
                     if depth == "1" {
                         let mut stmt = db.prepare(
                             "SELECT uid, etag FROM calendar_objects WHERE calendar_id = ?1 AND deleted = 0"
                         ).unwrap();
-                        let objects = stmt.query_map([&cal_id], |row| {
-                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                        }).unwrap();
+                        let objects = stmt
+                            .query_map([&cal_id], |row| {
+                                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                            })
+                            .unwrap();
                         for obj in objects.flatten() {
                             let (uid, etag) = obj;
                             responses.push_str(&format!(
@@ -382,7 +423,9 @@ fn handle_proppatch(state: &SharedCalDavState, path: &str, body: &str) -> axum::
         None => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
     if let Some(display_name) = extract_xml_value(body, "displayname") {
         let updated = db.execute(
@@ -400,7 +443,9 @@ fn handle_proppatch(state: &SharedCalDavState, path: &str, body: &str) -> axum::
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>
-</d:multistatus>"#, cal_name);
+</d:multistatus>"#,
+                cal_name
+            );
             return xml_response(StatusCode::MULTI_STATUS, xml);
         }
     }
@@ -408,7 +453,11 @@ fn handle_proppatch(state: &SharedCalDavState, path: &str, body: &str) -> axum::
     StatusCode::NOT_FOUND.into_response()
 }
 
-fn handle_mkcalendar(state: &SharedCalDavState, path: &str, body: &str) -> axum::response::Response {
+fn handle_mkcalendar(
+    state: &SharedCalDavState,
+    path: &str,
+    body: &str,
+) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let (_principal, cal_name, _) = parse_path(path);
 
@@ -417,20 +466,28 @@ fn handle_mkcalendar(state: &SharedCalDavState, path: &str, body: &str) -> axum:
         None => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    let exists: bool = db.query_row(
-        "SELECT COUNT(*) FROM calendars WHERE name = ?1", [cal_name], |row| row.get::<_, i64>(0),
-    ).unwrap_or(0) > 0;
+    let exists: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM calendars WHERE name = ?1",
+            [cal_name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
 
     if exists {
         return (StatusCode::CONFLICT, "Calendar already exists").into_response();
     }
 
-    let display_name = extract_xml_value(body, "displayname").unwrap_or_else(|| cal_name.to_string());
+    let display_name =
+        extract_xml_value(body, "displayname").unwrap_or_else(|| cal_name.to_string());
     let description = extract_xml_value(body, "calendar-description");
     let color = extract_xml_value(body, "calendar-color");
 
     let id = uuid::Uuid::new_v4().to_string();
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
     match db.execute(
         "INSERT INTO calendars (id, name, display_name, color, description, ctag, sync_token, created_at, updated_at)
@@ -445,16 +502,29 @@ fn handle_mkcalendar(state: &SharedCalDavState, path: &str, body: &str) -> axum:
     }
 }
 
-fn handle_put(state: &SharedCalDavState, path: &str, body: &str, if_match: Option<&str>) -> axum::response::Response {
+fn handle_put(
+    state: &SharedCalDavState,
+    path: &str,
+    body: &str,
+    if_match: Option<&str>,
+) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let (_principal, cal_name, obj_name) = parse_path(path);
 
-    let cal_name = match cal_name { Some(n) => n, None => return StatusCode::BAD_REQUEST.into_response() };
-    let obj_name = match obj_name { Some(n) => n, None => return StatusCode::BAD_REQUEST.into_response() };
+    let cal_name = match cal_name {
+        Some(n) => n,
+        None => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let obj_name = match obj_name {
+        Some(n) => n,
+        None => return StatusCode::BAD_REQUEST.into_response(),
+    };
     let uid = obj_name.trim_end_matches(".ics");
 
     let cal_id: String = match db.query_row(
-        "SELECT id FROM calendars WHERE name = ?1", [cal_name], |row| row.get(0),
+        "SELECT id FROM calendars WHERE name = ?1",
+        [cal_name],
+        |row| row.get(0),
     ) {
         Ok(id) => id,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
@@ -478,9 +548,15 @@ fn handle_put(state: &SharedCalDavState, path: &str, body: &str, if_match: Optio
     }
 
     let etag = compute_etag(body);
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
-    let component_type = if body.contains("VTODO") { "VTODO" } else { "VEVENT" };
+    let component_type = if body.contains("VTODO") {
+        "VTODO"
+    } else {
+        "VEVENT"
+    };
     let summary = extract_ics_field(body, "SUMMARY");
     let dtstart = extract_ics_field(body, "DTSTART");
     let dtend = extract_ics_field(body, "DTEND");
@@ -511,9 +587,14 @@ fn handle_put(state: &SharedCalDavState, path: &str, body: &str, if_match: Optio
     }
 
     // Update ctag and sync_token
-    let new_sync_token: i64 = db.query_row(
-        "SELECT sync_token FROM calendars WHERE id = ?1", [&cal_id], |row| row.get(0),
-    ).unwrap_or(0) + 1;
+    let new_sync_token: i64 = db
+        .query_row(
+            "SELECT sync_token FROM calendars WHERE id = ?1",
+            [&cal_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+        + 1;
 
     db.execute(
         "UPDATE calendars SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3",
@@ -527,7 +608,11 @@ fn handle_put(state: &SharedCalDavState, path: &str, body: &str, if_match: Optio
         rusqlite::params![cal_id, format!("{}.ics", uid), change_type, new_sync_token, now],
     ).unwrap();
 
-    let status = if is_new { StatusCode::CREATED } else { StatusCode::NO_CONTENT };
+    let status = if is_new {
+        StatusCode::CREATED
+    } else {
+        StatusCode::NO_CONTENT
+    };
     (status, [(header::ETAG, format!("\"{}\"", etag))]).into_response()
 }
 
@@ -535,7 +620,10 @@ fn handle_get(state: &SharedCalDavState, path: &str) -> axum::response::Response
     let db = state.db.lock().unwrap();
     let (_principal, cal_name, obj_name) = parse_path(path);
 
-    let cal_name = match cal_name { Some(n) => n, None => return StatusCode::NOT_FOUND.into_response() };
+    let cal_name = match cal_name {
+        Some(n) => n,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
 
     match obj_name {
         Some(name) => {
@@ -549,10 +637,16 @@ fn handle_get(state: &SharedCalDavState, path: &str) -> axum::response::Response
             ) {
                 Ok((ics_data, etag)) => (
                     StatusCode::OK,
-                    [(header::CONTENT_TYPE, "text/calendar; charset=utf-8".to_string()),
-                     (header::ETAG, format!("\"{}\"", etag))],
+                    [
+                        (
+                            header::CONTENT_TYPE,
+                            "text/calendar; charset=utf-8".to_string(),
+                        ),
+                        (header::ETAG, format!("\"{}\"", etag)),
+                    ],
                     ics_data,
-                ).into_response(),
+                )
+                    .into_response(),
                 Err(_) => StatusCode::NOT_FOUND.into_response(),
             }
         }
@@ -563,14 +657,21 @@ fn handle_get(state: &SharedCalDavState, path: &str) -> axum::response::Response
 fn handle_delete(state: &SharedCalDavState, path: &str) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let (_principal, cal_name, obj_name) = parse_path(path);
-    let cal_name = match cal_name { Some(n) => n, None => return StatusCode::NOT_FOUND.into_response() };
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let cal_name = match cal_name {
+        Some(n) => n,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
     match obj_name {
         Some(name) => {
             let uid = name.trim_end_matches(".ics");
             let cal_id: String = match db.query_row(
-                "SELECT id FROM calendars WHERE name = ?1", [cal_name], |row| row.get(0),
+                "SELECT id FROM calendars WHERE name = ?1",
+                [cal_name],
+                |row| row.get(0),
             ) {
                 Ok(id) => id,
                 Err(_) => return StatusCode::NOT_FOUND.into_response(),
@@ -581,11 +682,18 @@ fn handle_delete(state: &SharedCalDavState, path: &str) -> axum::response::Respo
                 rusqlite::params![now, cal_id, uid],
             ).unwrap_or(0);
 
-            if affected == 0 { return StatusCode::NOT_FOUND.into_response(); }
+            if affected == 0 {
+                return StatusCode::NOT_FOUND.into_response();
+            }
 
-            let new_sync_token: i64 = db.query_row(
-                "SELECT sync_token FROM calendars WHERE id = ?1", [&cal_id], |row| row.get(0),
-            ).unwrap_or(0) + 1;
+            let new_sync_token: i64 = db
+                .query_row(
+                    "SELECT sync_token FROM calendars WHERE id = ?1",
+                    [&cal_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0)
+                + 1;
 
             db.execute(
                 "UPDATE calendars SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3",
@@ -601,15 +709,24 @@ fn handle_delete(state: &SharedCalDavState, path: &str) -> axum::response::Respo
             StatusCode::NO_CONTENT.into_response()
         }
         None => {
-            let affected = db.execute("DELETE FROM calendars WHERE name = ?1", [cal_name]).unwrap_or(0);
-            if affected == 0 { StatusCode::NOT_FOUND.into_response() } else { StatusCode::NO_CONTENT.into_response() }
+            let affected = db
+                .execute("DELETE FROM calendars WHERE name = ?1", [cal_name])
+                .unwrap_or(0);
+            if affected == 0 {
+                StatusCode::NOT_FOUND.into_response()
+            } else {
+                StatusCode::NO_CONTENT.into_response()
+            }
         }
     }
 }
 
 fn handle_report(state: &SharedCalDavState, path: &str, body: &str) -> axum::response::Response {
     let (_principal, cal_name, _) = parse_path(path);
-    let cal_name = match cal_name { Some(n) => n, None => return StatusCode::BAD_REQUEST.into_response() };
+    let cal_name = match cal_name {
+        Some(n) => n,
+        None => return StatusCode::BAD_REQUEST.into_response(),
+    };
     let principal = "admin";
 
     if body.contains("calendar-multiget") {
@@ -623,16 +740,28 @@ fn handle_report(state: &SharedCalDavState, path: &str, body: &str) -> axum::res
     }
 }
 
-fn handle_calendar_query_report(state: &SharedCalDavState, cal_name: &str, principal: &str, body: &str) -> axum::response::Response {
+fn handle_calendar_query_report(
+    state: &SharedCalDavState,
+    cal_name: &str,
+    principal: &str,
+    body: &str,
+) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let cal_id: String = match db.query_row(
-        "SELECT id FROM calendars WHERE name = ?1", [cal_name], |row| row.get(0),
-    ) { Ok(id) => id, Err(_) => return StatusCode::NOT_FOUND.into_response() };
+        "SELECT id FROM calendars WHERE name = ?1",
+        [cal_name],
+        |row| row.get(0),
+    ) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
 
     let start = extract_xml_attr(body, "time-range", "start");
     let end = extract_xml_attr(body, "time-range", "end");
 
-    let mut query = "SELECT uid, etag, ics_data FROM calendar_objects WHERE calendar_id = ?1 AND deleted = 0".to_string();
+    let mut query =
+        "SELECT uid, etag, ics_data FROM calendar_objects WHERE calendar_id = ?1 AND deleted = 0"
+            .to_string();
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(cal_id)];
 
     if let Some(ref s) = start {
@@ -647,9 +776,17 @@ fn handle_calendar_query_report(state: &SharedCalDavState, cal_name: &str, princ
 
     let mut stmt = db.prepare(&query).unwrap();
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let objects: Vec<(String, String, String)> = stmt.query_map(param_refs.as_slice(), |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-    }).unwrap().flatten().collect();
+    let objects: Vec<(String, String, String)> = stmt
+        .query_map(param_refs.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .flatten()
+        .collect();
 
     let mut responses = String::new();
     for (uid, etag, ics_data) in &objects {
@@ -663,26 +800,51 @@ fn handle_calendar_query_report(state: &SharedCalDavState, cal_name: &str, princ
     </d:prop>
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
-</d:response>"#, principal, cal_name, uid, etag, escape_xml(ics_data)));
+</d:response>"#,
+            principal,
+            cal_name,
+            uid,
+            etag,
+            escape_xml(ics_data)
+        ));
     }
 
-    xml_response(StatusCode::MULTI_STATUS, format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+    xml_response(
+        StatusCode::MULTI_STATUS,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
-{}</d:multistatus>"#, responses))
+{}</d:multistatus>"#,
+            responses
+        ),
+    )
 }
 
-fn handle_multiget_report(state: &SharedCalDavState, cal_name: &str, principal: &str, body: &str) -> axum::response::Response {
+fn handle_multiget_report(
+    state: &SharedCalDavState,
+    cal_name: &str,
+    principal: &str,
+    body: &str,
+) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let hrefs = extract_hrefs(body);
 
     let cal_id: String = match db.query_row(
-        "SELECT id FROM calendars WHERE name = ?1", [cal_name], |row| row.get(0),
-    ) { Ok(id) => id, Err(_) => return StatusCode::NOT_FOUND.into_response() };
+        "SELECT id FROM calendars WHERE name = ?1",
+        [cal_name],
+        |row| row.get(0),
+    ) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
 
     let mut responses = String::new();
     for href in &hrefs {
-        let uid = href.rsplit('/').next().unwrap_or("").trim_end_matches(".ics");
+        let uid = href
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(".ics");
         match db.query_row(
             "SELECT uid, etag, ics_data FROM calendar_objects WHERE calendar_id = ?1 AND uid = ?2 AND deleted = 0",
             rusqlite::params![cal_id, uid],
@@ -711,25 +873,44 @@ fn handle_multiget_report(state: &SharedCalDavState, cal_name: &str, principal: 
         }
     }
 
-    xml_response(StatusCode::MULTI_STATUS, format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+    xml_response(
+        StatusCode::MULTI_STATUS,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
-{}</d:multistatus>"#, responses))
+{}</d:multistatus>"#,
+            responses
+        ),
+    )
 }
 
-fn handle_sync_collection_report(state: &SharedCalDavState, cal_name: &str, principal: &str, body: &str) -> axum::response::Response {
+fn handle_sync_collection_report(
+    state: &SharedCalDavState,
+    cal_name: &str,
+    principal: &str,
+    body: &str,
+) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let cal_id: String = match db.query_row(
-        "SELECT id FROM calendars WHERE name = ?1", [cal_name], |row| row.get(0),
-    ) { Ok(id) => id, Err(_) => return StatusCode::NOT_FOUND.into_response() };
+        "SELECT id FROM calendars WHERE name = ?1",
+        [cal_name],
+        |row| row.get(0),
+    ) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
 
     let sync_token = extract_xml_value(body, "sync-token")
         .and_then(|t| t.rsplit('/').next().and_then(|n| n.parse::<i64>().ok()))
         .unwrap_or(0);
 
-    let current_sync_token: i64 = db.query_row(
-        "SELECT sync_token FROM calendars WHERE id = ?1", [&cal_id], |row| row.get(0),
-    ).unwrap_or(0);
+    let current_sync_token: i64 = db
+        .query_row(
+            "SELECT sync_token FROM calendars WHERE id = ?1",
+            [&cal_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     let mut responses = String::new();
 
@@ -737,9 +918,17 @@ fn handle_sync_collection_report(state: &SharedCalDavState, cal_name: &str, prin
         let mut stmt = db.prepare(
             "SELECT uid, etag, ics_data FROM calendar_objects WHERE calendar_id = ?1 AND deleted = 0"
         ).unwrap();
-        let objects: Vec<(String, String, String)> = stmt.query_map([&cal_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-        }).unwrap().flatten().collect();
+        let objects: Vec<(String, String, String)> = stmt
+            .query_map([&cal_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .flatten()
+            .collect();
 
         for (uid, etag, ics_data) in &objects {
             responses.push_str(&format!(
@@ -752,18 +941,29 @@ fn handle_sync_collection_report(state: &SharedCalDavState, cal_name: &str, prin
     </d:prop>
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
-</d:response>"#, principal, cal_name, uid, etag, escape_xml(ics_data)));
+</d:response>"#,
+                principal,
+                cal_name,
+                uid,
+                etag,
+                escape_xml(ics_data)
+            ));
         }
     } else {
-        let mut stmt = db.prepare(
-            "SELECT object_uri, change_type FROM sync_changes
+        let mut stmt = db
+            .prepare(
+                "SELECT object_uri, change_type FROM sync_changes
              WHERE collection_type = 'calendar' AND collection_id = ?1 AND sync_token > ?2
-             ORDER BY sync_token"
-        ).unwrap();
-        let changes: Vec<(String, String)> = stmt.query_map(
-            rusqlite::params![cal_id, sync_token],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        ).unwrap().flatten().collect();
+             ORDER BY sync_token",
+            )
+            .unwrap();
+        let changes: Vec<(String, String)> = stmt
+            .query_map(rusqlite::params![cal_id, sync_token], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .flatten()
+            .collect();
 
         for (object_uri, change_type) in &changes {
             let uid = object_uri.trim_end_matches(".ics");
@@ -772,56 +972,76 @@ fn handle_sync_collection_report(state: &SharedCalDavState, cal_name: &str, prin
                     r#"<d:response>
   <d:href>/caldav/{}/{}/{}.ics</d:href>
   <d:status>HTTP/1.1 404 Not Found</d:status>
-</d:response>"#, principal, cal_name, uid));
-            } else {
-                if let Ok((uid, etag, ics_data)) = db.query_row(
-                    "SELECT uid, etag, ics_data FROM calendar_objects WHERE calendar_id = ?1 AND uid = ?2 AND deleted = 0",
-                    rusqlite::params![cal_id, uid],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
-                ) {
-                    responses.push_str(&format!(
-                        r#"<d:response>
-  <d:href>/caldav/{}/{}/{}.ics</d:href>
-  <d:propstat>
-    <d:prop>
-      <d:getetag>"{}"</d:getetag>
-      <cal:calendar-data>{}</cal:calendar-data>
-    </d:prop>
-    <d:status>HTTP/1.1 200 OK</d:status>
-  </d:propstat>
-</d:response>"#, principal, cal_name, uid, etag, escape_xml(&ics_data)));
-                }
-            }
+</d:response>"#,
+                    principal, cal_name, uid
+                ));
+            } else if let Ok((uid, etag, ics_data)) = db.query_row(
+                                "SELECT uid, etag, ics_data FROM calendar_objects WHERE calendar_id = ?1 AND uid = ?2 AND deleted = 0",
+                                rusqlite::params![cal_id, uid],
+                                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+                            ) {
+                                responses.push_str(&format!(
+                                    r#"<d:response>
+              <d:href>/caldav/{}/{}/{}.ics</d:href>
+              <d:propstat>
+                <d:prop>
+                  <d:getetag>"{}"</d:getetag>
+                  <cal:calendar-data>{}</cal:calendar-data>
+                </d:prop>
+                <d:status>HTTP/1.1 200 OK</d:status>
+              </d:propstat>
+            </d:response>"#, principal, cal_name, uid, etag, escape_xml(&ics_data)));
+                            }
         }
     }
 
-    xml_response(StatusCode::MULTI_STATUS, format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+    xml_response(
+        StatusCode::MULTI_STATUS,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
 {}
 <d:sync-token>http://tilde.local/sync/{}</d:sync-token>
-</d:multistatus>"#, responses, current_sync_token))
+</d:multistatus>"#,
+            responses, current_sync_token
+        ),
+    )
 }
 
-fn handle_freebusy_report(state: &SharedCalDavState, cal_name: &str, _principal: &str, body: &str) -> axum::response::Response {
+fn handle_freebusy_report(
+    state: &SharedCalDavState,
+    cal_name: &str,
+    _principal: &str,
+    body: &str,
+) -> axum::response::Response {
     let db = state.db.lock().unwrap();
     let cal_id: String = match db.query_row(
-        "SELECT id FROM calendars WHERE name = ?1", [cal_name], |row| row.get(0),
-    ) { Ok(id) => id, Err(_) => return StatusCode::NOT_FOUND.into_response() };
+        "SELECT id FROM calendars WHERE name = ?1",
+        [cal_name],
+        |row| row.get(0),
+    ) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
 
     let start = extract_xml_attr(body, "time-range", "start").unwrap_or_default();
     let end = extract_xml_attr(body, "time-range", "end").unwrap_or_default();
 
-    let mut stmt = db.prepare(
-        "SELECT dtstart, dtend FROM calendar_objects
+    let mut stmt = db
+        .prepare(
+            "SELECT dtstart, dtend FROM calendar_objects
          WHERE calendar_id = ?1 AND deleted = 0 AND component_type = 'VEVENT'
-         AND dtend >= ?2 AND dtstart <= ?3"
-    ).unwrap();
+         AND dtend >= ?2 AND dtstart <= ?3",
+        )
+        .unwrap();
 
-    let busy: Vec<(String, String)> = stmt.query_map(
-        rusqlite::params![cal_id, start, end],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-    ).unwrap().flatten().collect();
+    let busy: Vec<(String, String)> = stmt
+        .query_map(rusqlite::params![cal_id, start, end], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .flatten()
+        .collect();
 
     let mut fb_lines = String::new();
     for (s, e) in &busy {
@@ -831,27 +1051,44 @@ fn handle_freebusy_report(state: &SharedCalDavState, cal_name: &str, _principal:
     let ics = format!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//tilde//EN\r\n\
          BEGIN:VFREEBUSY\r\nDTSTART:{}\r\nDTEND:{}\r\n{}END:VFREEBUSY\r\n\
-         END:VCALENDAR\r\n", start, end, fb_lines);
+         END:VCALENDAR\r\n",
+        start, end, fb_lines
+    );
 
-    (StatusCode::OK, [(header::CONTENT_TYPE, "text/calendar; charset=utf-8")], ics).into_response()
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/calendar; charset=utf-8")],
+        ics,
+    )
+        .into_response()
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn extract_xml_value(xml: &str, tag_name: &str) -> Option<String> {
     let patterns = [
-        format!("<{}>", tag_name), format!("<d:{}>", tag_name),
-        format!("<cal:{}>", tag_name), format!("<C:{}>", tag_name), format!("<D:{}>", tag_name),
+        format!("<{}>", tag_name),
+        format!("<d:{}>", tag_name),
+        format!("<cal:{}>", tag_name),
+        format!("<C:{}>", tag_name),
+        format!("<D:{}>", tag_name),
     ];
     for pat in &patterns {
         if let Some(start_idx) = xml.find(pat.as_str()) {
             let content_start = start_idx + pat.len();
             if let Some(end_idx) = xml[content_start..].find("</") {
-                return Some(xml[content_start..content_start + end_idx].trim().to_string());
+                return Some(
+                    xml[content_start..content_start + end_idx]
+                        .trim()
+                        .to_string(),
+                );
             }
         }
     }
@@ -860,7 +1097,11 @@ fn extract_xml_value(xml: &str, tag_name: &str) -> Option<String> {
     if let Some(pos) = xml.find(&search) {
         let content_start = pos + search.len();
         if let Some(end_idx) = xml[content_start..].find("</") {
-            return Some(xml[content_start..content_start + end_idx].trim().to_string());
+            return Some(
+                xml[content_start..content_start + end_idx]
+                    .trim()
+                    .to_string(),
+            );
         }
     }
     None
@@ -902,7 +1143,9 @@ fn extract_hrefs(xml: &str) -> Vec<String> {
                 if let Some(end) = xml[content_start..].find("</") {
                     hrefs.push(xml[content_start..content_start + end].trim().to_string());
                     search_from = content_start + end;
-                } else { break; }
+                } else {
+                    break;
+                }
             }
             None => break,
         }
@@ -913,14 +1156,13 @@ fn extract_hrefs(xml: &str) -> Vec<String> {
 fn extract_ics_field(ics: &str, field: &str) -> Option<String> {
     for line in ics.lines() {
         let line = line.trim_end_matches('\r');
-        if line.starts_with(field) {
-            let rest = &line[field.len()..];
-            if rest.starts_with(':') {
-                return Some(rest[1..].to_string());
-            } else if rest.starts_with(';') {
-                if let Some(colon_pos) = rest.find(':') {
-                    return Some(rest[colon_pos + 1..].to_string());
-                }
+        if let Some(rest) = line.strip_prefix(field) {
+            if let Some(value) = rest.strip_prefix(':') {
+                return Some(value.to_string());
+            } else if rest.starts_with(';')
+                && let Some(colon_pos) = rest.find(':')
+            {
+                return Some(rest[colon_pos + 1..].to_string());
             }
         }
     }
@@ -929,57 +1171,112 @@ fn extract_ics_field(ics: &str, field: &str) -> Option<String> {
 
 // ─── Public query API for CLI/MCP ──────────────────────────────────────────
 
+type EventRecord = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 pub fn list_events(
-    db: &Connection, calendar: Option<&str>, from: Option<&str>, to: Option<&str>,
-) -> Vec<(String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> {
+    db: &Connection,
+    calendar: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Vec<EventRecord> {
     let mut query = String::from(
         "SELECT co.uid, co.component_type, co.summary, co.dtstart, co.dtend, co.location, co.status
-         FROM calendar_objects co JOIN calendars c ON co.calendar_id = c.id WHERE co.deleted = 0");
+         FROM calendar_objects co JOIN calendars c ON co.calendar_id = c.id WHERE co.deleted = 0",
+    );
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
     let mut idx = 1;
     if let Some(cal) = calendar {
-        query.push_str(&format!(" AND c.name = ?{}", idx)); params.push(Box::new(cal.to_string())); idx += 1;
+        query.push_str(&format!(" AND c.name = ?{}", idx));
+        params.push(Box::new(cal.to_string()));
+        idx += 1;
     }
     if let Some(f) = from {
-        query.push_str(&format!(" AND (co.dtend IS NULL OR co.dtend >= ?{})", idx)); params.push(Box::new(f.to_string())); idx += 1;
+        query.push_str(&format!(" AND (co.dtend IS NULL OR co.dtend >= ?{})", idx));
+        params.push(Box::new(f.to_string()));
+        idx += 1;
     }
     if let Some(t) = to {
-        query.push_str(&format!(" AND (co.dtstart IS NULL OR co.dtstart <= ?{})", idx)); params.push(Box::new(t.to_string()));
+        query.push_str(&format!(
+            " AND (co.dtstart IS NULL OR co.dtstart <= ?{})",
+            idx
+        ));
+        params.push(Box::new(t.to_string()));
     }
     query.push_str(" ORDER BY co.dtstart");
     let mut stmt = db.prepare(&query).unwrap();
     let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    stmt.query_map(refs.as_slice(), |row| Ok((
-        row.get::<_, String>(0)?, row.get::<_, String>(1)?,
-        row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?,
-        row.get::<_, Option<String>>(4)?, row.get::<_, Option<String>>(5)?,
-        row.get::<_, Option<String>>(6)?,
-    ))).unwrap().flatten().collect()
+    stmt.query_map(refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+        ))
+    })
+    .unwrap()
+    .flatten()
+    .collect()
 }
 
 pub fn list_calendars(db: &Connection) -> Vec<(String, String, String, Option<String>)> {
-    let mut stmt = db.prepare("SELECT name, display_name, ctag, description FROM calendars").unwrap();
-    stmt.query_map([], |row| Ok((
-        row.get::<_, String>(0)?, row.get::<_, String>(1)?,
-        row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?,
-    ))).unwrap().flatten().collect()
+    let mut stmt = db
+        .prepare("SELECT name, display_name, ctag, description FROM calendars")
+        .unwrap();
+    stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })
+    .unwrap()
+    .flatten()
+    .collect()
 }
 
 pub fn create_event(
-    db: &Connection, calendar_name: &str, summary: &str, start: &str, end: &str,
-    location: Option<&str>, description: Option<&str>,
+    db: &Connection,
+    calendar_name: &str,
+    summary: &str,
+    start: &str,
+    end: &str,
+    location: Option<&str>,
+    description: Option<&str>,
 ) -> anyhow::Result<String> {
-    let cal_id: String = db.query_row(
-        "SELECT id FROM calendars WHERE name = ?1", [calendar_name], |row| row.get(0),
-    ).map_err(|_| anyhow::anyhow!("calendar '{}' not found", calendar_name))?;
+    let cal_id: String = db
+        .query_row(
+            "SELECT id FROM calendars WHERE name = ?1",
+            [calendar_name],
+            |row| row.get(0),
+        )
+        .map_err(|_| anyhow::anyhow!("calendar '{}' not found", calendar_name))?;
 
     let uid = uuid::Uuid::new_v4().to_string();
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
     let mut ics = format!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//tilde//EN\r\nBEGIN:VEVENT\r\nUID:{}\r\nSUMMARY:{}\r\nDTSTART:{}\r\nDTEND:{}\r\n",
-        uid, summary, start, end);
-    if let Some(loc) = location { ics.push_str(&format!("LOCATION:{}\r\n", loc)); }
-    if let Some(desc) = description { ics.push_str(&format!("DESCRIPTION:{}\r\n", desc)); }
+        uid, summary, start, end
+    );
+    if let Some(loc) = location {
+        ics.push_str(&format!("LOCATION:{}\r\n", loc));
+    }
+    if let Some(desc) = description {
+        ics.push_str(&format!("DESCRIPTION:{}\r\n", desc));
+    }
     ics.push_str("END:VEVENT\r\nEND:VCALENDAR\r\n");
     let etag = compute_etag(&ics);
 
@@ -989,26 +1286,49 @@ pub fn create_event(
         rusqlite::params![uuid::Uuid::new_v4().to_string(), cal_id, uid, ics, etag, summary, start, end, location, description, now, now],
     )?;
 
-    let new_st: i64 = db.query_row("SELECT sync_token FROM calendars WHERE id = ?1", [&cal_id], |row| row.get(0)).unwrap_or(0) + 1;
+    let new_st: i64 = db
+        .query_row(
+            "SELECT sync_token FROM calendars WHERE id = ?1",
+            [&cal_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+        + 1;
     db.execute("UPDATE calendars SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![new_st, now, cal_id])?;
     Ok(uid)
 }
 
 pub fn create_task(
-    db: &Connection, calendar_name: Option<&str>, summary: &str, due: Option<&str>, priority: Option<i32>,
+    db: &Connection,
+    calendar_name: Option<&str>,
+    summary: &str,
+    due: Option<&str>,
+    priority: Option<i32>,
 ) -> anyhow::Result<String> {
     let cal_name = calendar_name.unwrap_or("default");
     ensure_default_calendar(db);
-    let cal_id: String = db.query_row(
-        "SELECT id FROM calendars WHERE name = ?1", [cal_name], |row| row.get(0),
-    ).map_err(|_| anyhow::anyhow!("calendar '{}' not found", cal_name))?;
+    let cal_id: String = db
+        .query_row(
+            "SELECT id FROM calendars WHERE name = ?1",
+            [cal_name],
+            |row| row.get(0),
+        )
+        .map_err(|_| anyhow::anyhow!("calendar '{}' not found", cal_name))?;
 
     let uid = uuid::Uuid::new_v4().to_string();
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
     let mut ics = format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//tilde//EN\r\nBEGIN:VTODO\r\nUID:{}\r\nSUMMARY:{}\r\nSTATUS:NEEDS-ACTION\r\n", uid, summary);
-    if let Some(d) = due { ics.push_str(&format!("DUE:{}\r\n", d)); }
-    if let Some(p) = priority { ics.push_str(&format!("PRIORITY:{}\r\n", p)); }
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//tilde//EN\r\nBEGIN:VTODO\r\nUID:{}\r\nSUMMARY:{}\r\nSTATUS:NEEDS-ACTION\r\n",
+        uid, summary
+    );
+    if let Some(d) = due {
+        ics.push_str(&format!("DUE:{}\r\n", d));
+    }
+    if let Some(p) = priority {
+        ics.push_str(&format!("PRIORITY:{}\r\n", p));
+    }
     ics.push_str("END:VTODO\r\nEND:VCALENDAR\r\n");
     let etag = compute_etag(&ics);
 
@@ -1018,31 +1338,59 @@ pub fn create_task(
         rusqlite::params![uuid::Uuid::new_v4().to_string(), cal_id, uid, ics, etag, summary, due, priority, now, now],
     )?;
 
-    let new_st: i64 = db.query_row("SELECT sync_token FROM calendars WHERE id = ?1", [&cal_id], |row| row.get(0)).unwrap_or(0) + 1;
+    let new_st: i64 = db
+        .query_row(
+            "SELECT sync_token FROM calendars WHERE id = ?1",
+            [&cal_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+        + 1;
     db.execute("UPDATE calendars SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![new_st, now, cal_id])?;
     Ok(uid)
 }
 
+type TaskRecord = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i32>,
+    Option<String>,
+);
+
 pub fn list_tasks(
-    db: &Connection, calendar: Option<&str>, status: Option<&str>,
-) -> Vec<(String, Option<String>, Option<String>, Option<i32>, Option<String>)> {
+    db: &Connection,
+    calendar: Option<&str>,
+    status: Option<&str>,
+) -> Vec<TaskRecord> {
     let mut query = String::from(
         "SELECT co.uid, co.summary, co.dtstart, co.priority, co.status
          FROM calendar_objects co JOIN calendars c ON co.calendar_id = c.id
-         WHERE co.deleted = 0 AND co.component_type = 'VTODO'");
+         WHERE co.deleted = 0 AND co.component_type = 'VTODO'",
+    );
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
     let mut idx = 1;
     if let Some(cal) = calendar {
-        query.push_str(&format!(" AND c.name = ?{}", idx)); params.push(Box::new(cal.to_string())); idx += 1;
+        query.push_str(&format!(" AND c.name = ?{}", idx));
+        params.push(Box::new(cal.to_string()));
+        idx += 1;
     }
     if let Some(s) = status {
-        query.push_str(&format!(" AND co.status = ?{}", idx)); params.push(Box::new(s.to_string()));
+        query.push_str(&format!(" AND co.status = ?{}", idx));
+        params.push(Box::new(s.to_string()));
     }
     let mut stmt = db.prepare(&query).unwrap();
     let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    stmt.query_map(refs.as_slice(), |row| Ok((
-        row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?,
-        row.get::<_, Option<String>>(2)?, row.get::<_, Option<i32>>(3)?,
-        row.get::<_, Option<String>>(4)?,
-    ))).unwrap().flatten().collect()
+    stmt.query_map(refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<i32>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })
+    .unwrap()
+    .flatten()
+    .collect()
 }

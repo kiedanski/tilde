@@ -2,9 +2,9 @@
 //!
 //! Priority-routed notification system with rate limiting.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::collections::HashMap;
 use std::time::Instant;
 
 use rusqlite::Connection;
@@ -103,7 +103,9 @@ impl NotificationSink for FileSink {
 
     fn send(&self, event: &NotificationEvent) -> anyhow::Result<()> {
         use std::io::Write;
-        let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        let now = jiff::Zoned::now()
+            .strftime("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string();
         let line = format!(
             "[{}] [{}] [{}] {}\n",
             now, event.priority, event.event_type, event.message
@@ -126,13 +128,21 @@ pub fn log_notification(
     event: &NotificationEvent,
     sinks_notified: &[&str],
 ) -> anyhow::Result<()> {
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
     let sinks_json = serde_json::to_string(sinks_notified)?;
 
     conn.execute(
         "INSERT INTO notification_log (event_type, priority, message, sinks_notified, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![event.event_type, event.priority.to_string(), event.message, sinks_json, now],
+        rusqlite::params![
+            event.event_type,
+            event.priority.to_string(),
+            event.message,
+            sinks_json,
+            now
+        ],
     )?;
 
     Ok(())
@@ -175,7 +185,11 @@ pub struct NtfySink {
 
 impl NtfySink {
     pub fn new(topic_url: String, token: Option<String>, min_priority: Priority) -> Self {
-        Self { topic_url, token, min_priority }
+        Self {
+            topic_url,
+            token,
+            min_priority,
+        }
     }
 }
 
@@ -197,7 +211,8 @@ impl NotificationSink for NtfySink {
         };
 
         let client = reqwest::blocking::Client::new();
-        let mut req = client.post(&self.topic_url)
+        let mut req = client
+            .post(&self.topic_url)
             .header("Title", format!("tilde: {}", event.event_type))
             .header("Priority", ntfy_priority)
             .header("Tags", &event.event_type)
@@ -243,9 +258,7 @@ impl NotificationSink for WebhookSink {
         });
 
         let client = reqwest::blocking::Client::new();
-        client.post(&self.url)
-            .json(&payload)
-            .send()?;
+        client.post(&self.url).json(&payload).send()?;
 
         info!(sink = "webhook", event_type = %event.event_type, "Notification sent to webhook");
         Ok(())
@@ -264,14 +277,32 @@ pub struct SmtpSink {
 }
 
 impl SmtpSink {
-    pub fn new(host: String, port: u16, username: String, password: String, to_address: String, min_priority: Priority) -> Self {
-        Self { host, port, username, password, to_address, min_priority }
+    pub fn new(
+        host: String,
+        port: u16,
+        username: String,
+        password: String,
+        to_address: String,
+        min_priority: Priority,
+    ) -> Self {
+        Self {
+            host,
+            port,
+            username,
+            password,
+            to_address,
+            min_priority,
+        }
     }
 }
 
 impl NotificationSink for SmtpSink {
-    fn name(&self) -> &str { "smtp" }
-    fn min_priority(&self) -> Priority { self.min_priority }
+    fn name(&self) -> &str {
+        "smtp"
+    }
+    fn min_priority(&self) -> Priority {
+        self.min_priority
+    }
 
     fn send(&self, event: &NotificationEvent) -> anyhow::Result<()> {
         // SMTP implementation would use lettre or similar
@@ -296,14 +327,28 @@ pub struct MatrixSink {
 }
 
 impl MatrixSink {
-    pub fn new(homeserver: String, access_token: String, room_id: String, min_priority: Priority) -> Self {
-        Self { homeserver, access_token, room_id, min_priority }
+    pub fn new(
+        homeserver: String,
+        access_token: String,
+        room_id: String,
+        min_priority: Priority,
+    ) -> Self {
+        Self {
+            homeserver,
+            access_token,
+            room_id,
+            min_priority,
+        }
     }
 }
 
 impl NotificationSink for MatrixSink {
-    fn name(&self) -> &str { "matrix" }
-    fn min_priority(&self) -> Priority { self.min_priority }
+    fn name(&self) -> &str {
+        "matrix"
+    }
+    fn min_priority(&self) -> Priority {
+        self.min_priority
+    }
 
     fn send(&self, event: &NotificationEvent) -> anyhow::Result<()> {
         let url = format!(
@@ -318,7 +363,8 @@ impl NotificationSink for MatrixSink {
         });
 
         let client = reqwest::blocking::Client::new();
-        client.post(&url)
+        client
+            .post(&url)
             .header("Authorization", format!("Bearer {}", self.access_token))
             .json(&body)
             .send()?;
@@ -337,13 +383,21 @@ pub struct SignalSink {
 
 impl SignalSink {
     pub fn new(api_url: String, recipient: String, min_priority: Priority) -> Self {
-        Self { api_url, recipient, min_priority }
+        Self {
+            api_url,
+            recipient,
+            min_priority,
+        }
     }
 }
 
 impl NotificationSink for SignalSink {
-    fn name(&self) -> &str { "signal" }
-    fn min_priority(&self) -> Priority { self.min_priority }
+    fn name(&self) -> &str {
+        "signal"
+    }
+    fn min_priority(&self) -> Priority {
+        self.min_priority
+    }
 
     fn send(&self, event: &NotificationEvent) -> anyhow::Result<()> {
         let url = format!("{}/v2/send", self.api_url);
@@ -353,9 +407,7 @@ impl NotificationSink for SignalSink {
         });
 
         let client = reqwest::blocking::Client::new();
-        client.post(&url)
-            .json(&body)
-            .send()?;
+        client.post(&url).json(&body).send()?;
 
         info!(sink = "signal", recipient = %self.recipient, event_type = %event.event_type, "Notification sent via Signal");
         Ok(())

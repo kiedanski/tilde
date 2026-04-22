@@ -1,9 +1,9 @@
 //! SQLite indexing and FTS5 search for email messages
 
+use crate::maildir::MaildirReader;
+use crate::parser::ParsedEmail;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
-use crate::parser::ParsedEmail;
-use crate::maildir::MaildirReader;
 use std::path::Path;
 
 /// Index a parsed email into SQLite + FTS5.
@@ -38,7 +38,9 @@ pub fn index_email(
     } else {
         Some(serde_json::to_string(&email.references)?)
     };
-    let now = jiff::Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let now = jiff::Timestamp::now()
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
 
     conn.execute(
         "INSERT INTO email_messages (
@@ -67,7 +69,8 @@ pub fn index_email(
             maildir_path,
             now,
         ],
-    ).context("Failed to insert email message")?;
+    )
+    .context("Failed to insert email message")?;
 
     // Get the rowid for FTS
     let rowid = conn.last_insert_rowid();
@@ -99,18 +102,21 @@ pub fn search_emails(
          JOIN email_messages e ON e.id = f.rowid
          WHERE email_fts MATCH ?1
          ORDER BY e.date DESC
-         LIMIT ?2"
+         LIMIT ?2",
     )?;
 
-    let results = stmt.query_map(rusqlite::params![query, limit as i64], |row| {
-        Ok(EmailSearchResult {
-            message_id: row.get(0)?,
-            from_address: row.get(1)?,
-            subject: row.get(2)?,
-            date: row.get(3)?,
-            snippet: row.get(4)?,
-        })
-    })?.filter_map(|r| r.ok()).collect();
+    let results = stmt
+        .query_map(rusqlite::params![query, limit as i64], |row| {
+            Ok(EmailSearchResult {
+                message_id: row.get(0)?,
+                from_address: row.get(1)?,
+                subject: row.get(2)?,
+                date: row.get(3)?,
+                snippet: row.get(4)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     Ok(results)
 }
@@ -160,34 +166,40 @@ pub fn get_thread(conn: &Connection, message_id: &str) -> Result<Vec<ThreadMessa
         }
 
         // Find replies to this message
-        let mut stmt = conn.prepare(
-            "SELECT message_id FROM email_messages WHERE in_reply_to = ?1"
-        )?;
-        let replies: Vec<String> = stmt.query_map([&mid], |row| row.get(0))?
+        let mut stmt =
+            conn.prepare("SELECT message_id FROM email_messages WHERE in_reply_to = ?1")?;
+        let replies: Vec<String> = stmt
+            .query_map([&mid], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
         queue.extend(replies);
 
         // Find parent via in_reply_to
-        let parent: Option<String> = conn.query_row(
-            "SELECT in_reply_to FROM email_messages WHERE message_id = ?1",
-            [&mid],
-            |row| row.get(0),
-        ).ok().flatten();
+        let parent: Option<String> = conn
+            .query_row(
+                "SELECT in_reply_to FROM email_messages WHERE message_id = ?1",
+                [&mid],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
         if let Some(p) = parent {
             queue.push(p);
         }
 
         // Follow references
-        let refs: Option<String> = conn.query_row(
-            "SELECT references_list FROM email_messages WHERE message_id = ?1",
-            [&mid],
-            |row| row.get(0),
-        ).ok().flatten();
-        if let Some(refs_json) = refs {
-            if let Ok(refs_list) = serde_json::from_str::<Vec<String>>(&refs_json) {
-                queue.extend(refs_list);
-            }
+        let refs: Option<String> = conn
+            .query_row(
+                "SELECT references_list FROM email_messages WHERE message_id = ?1",
+                [&mid],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        if let Some(refs_json) = refs
+            && let Ok(refs_list) = serde_json::from_str::<Vec<String>>(&refs_json)
+        {
+            queue.extend(refs_list);
         }
     }
 
@@ -210,11 +222,13 @@ pub struct ThreadMessage {
 
 /// Add a local tag to an email (not synced to IMAP).
 pub fn add_tag(conn: &Connection, message_id: &str, tag: &str) -> Result<()> {
-    let current: Option<String> = conn.query_row(
-        "SELECT tags_json FROM email_messages WHERE message_id = ?1",
-        [message_id],
-        |row| row.get(0),
-    ).context("Message not found")?;
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT tags_json FROM email_messages WHERE message_id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .context("Message not found")?;
 
     let mut tags: Vec<String> = current
         .and_then(|j| serde_json::from_str(&j).ok())
@@ -235,11 +249,13 @@ pub fn add_tag(conn: &Connection, message_id: &str, tag: &str) -> Result<()> {
 
 /// Remove a local tag from an email.
 pub fn remove_tag(conn: &Connection, message_id: &str, tag: &str) -> Result<()> {
-    let current: Option<String> = conn.query_row(
-        "SELECT tags_json FROM email_messages WHERE message_id = ?1",
-        [message_id],
-        |row| row.get(0),
-    ).context("Message not found")?;
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT tags_json FROM email_messages WHERE message_id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .context("Message not found")?;
 
     let mut tags: Vec<String> = current
         .and_then(|j| serde_json::from_str(&j).ok())
@@ -264,11 +280,13 @@ pub fn extract_attachments(
     output_dir: &Path,
 ) -> Result<Vec<String>> {
     // Get the maildir_path for this message
-    let maildir_path: String = conn.query_row(
-        "SELECT maildir_path FROM email_messages WHERE message_id = ?1",
-        [message_id],
-        |row| row.get(0),
-    ).context("Message not found")?;
+    let maildir_path: String = conn
+        .query_row(
+            "SELECT maildir_path FROM email_messages WHERE message_id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .context("Message not found")?;
 
     // Read the raw message
     let reader = MaildirReader::new(mail_dir);
@@ -295,10 +313,7 @@ pub fn extract_attachments(
 }
 
 /// Reindex all emails from Maildir, rebuilding the SQLite database.
-pub fn reindex_from_maildir(
-    conn: &Connection,
-    mail_dir: &Path,
-) -> Result<usize> {
+pub fn reindex_from_maildir(conn: &Connection, mail_dir: &Path) -> Result<usize> {
     let reader = MaildirReader::new(mail_dir);
     let accounts = reader.list_accounts()?;
     let mut count = 0;
@@ -310,13 +325,13 @@ pub fn reindex_from_maildir(
     for account in &accounts {
         let folders = reader.list_folders(account)?;
         for folder in &folders {
-            let messages = reader.read_folder(account, &folder)?;
+            let messages = reader.read_folder(account, folder)?;
             for msg in messages {
                 match ParsedEmail::parse(&msg.raw) {
                     Ok(email) => {
                         // Extract UID from filename if possible
                         let uid = extract_uid_from_path(&msg.path);
-                        if let Err(e) = index_email(conn, account, &folder, uid, &msg.path, &email) {
+                        if let Err(e) = index_email(conn, account, folder, uid, &msg.path, &email) {
                             tracing::warn!(path = %msg.path, error = %e, "Failed to index email during reindex");
                         } else {
                             count += 1;
@@ -336,7 +351,8 @@ pub fn reindex_from_maildir(
 
 fn extract_uid_from_path(path: &str) -> u32 {
     // Filename format: <timestamp>.<uuid>.<uid>:2,<flags>
-    path.rsplit('/').next()
+    path.rsplit('/')
+        .next()
         .and_then(|filename| {
             let base = filename.split(':').next()?;
             let parts: Vec<&str> = base.split('.').collect();
@@ -362,13 +378,14 @@ pub fn prune_old_emails(
     let cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     // Get paths of messages to delete
-    let mut stmt = conn.prepare(
-        "SELECT id, maildir_path FROM email_messages WHERE account = ?1 AND date < ?2"
-    )?;
-    let rows: Vec<(i64, String)> = stmt.query_map(
-        rusqlite::params![account, cutoff_str],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?.filter_map(|r| r.ok()).collect();
+    let mut stmt = conn
+        .prepare("SELECT id, maildir_path FROM email_messages WHERE account = ?1 AND date < ?2")?;
+    let rows: Vec<(i64, String)> = stmt
+        .query_map(rusqlite::params![account, cutoff_str], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     let count = rows.len();
     for (id, path) in &rows {

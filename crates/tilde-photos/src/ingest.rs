@@ -2,11 +2,11 @@
 //!
 //! Processes files from _inbox/ and _library-drop/ directories.
 
-use crate::{exiftool, organize, is_photo_ext, is_video_ext, validate_magic_bytes, is_encrypted};
+use crate::{exiftool, is_encrypted, is_photo_ext, is_video_ext, organize, validate_magic_bytes};
+use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
-use tracing::{info, warn, error, debug};
-use anyhow::{Context, Result};
+use tracing::{debug, error, info, warn};
 
 /// Process a single file from the _inbox/ directory.
 ///
@@ -21,7 +21,8 @@ pub fn process_inbox_file(
     photos_base: &Path,
     organization_pattern: &str,
 ) -> Result<IngestResult> {
-    let filename = file_path.file_name()
+    let filename = file_path
+        .file_name()
         .context("No filename")?
         .to_string_lossy()
         .to_string();
@@ -33,16 +34,15 @@ pub fn process_inbox_file(
         Some(ct) => ct.to_string(),
         None => {
             // Fall back to extension-based type
-            let ext = file_path.extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if is_photo_ext(ext) {
                 format!("image/{}", ext.to_lowercase())
             } else if is_video_ext(ext) {
                 format!("video/{}", ext.to_lowercase())
             } else {
                 return move_to_errors(
-                    file_path, photos_base,
+                    file_path,
+                    photos_base,
                     "Unsupported file type: magic bytes not recognized and extension not a known photo/video type",
                 );
             }
@@ -57,7 +57,10 @@ pub fn process_inbox_file(
             atomic_move(file_path, &dest)?;
         }
         let photo_id = crate::index_photo(conn, &dest, photos_base, &content_type)?;
-        return Ok(IngestResult::Indexed { photo_id, destination: dest });
+        return Ok(IngestResult::Indexed {
+            photo_id,
+            destination: dest,
+        });
     }
 
     // Step 3: Read metadata via ExifTool
@@ -78,7 +81,10 @@ pub fn process_inbox_file(
         let dest = unique_path(&dest);
         atomic_move(file_path, &dest)?;
         let photo_id = crate::index_photo(conn, &dest, photos_base, &content_type)?;
-        return Ok(IngestResult::Untriaged { photo_id, destination: dest });
+        return Ok(IngestResult::Untriaged {
+            photo_id,
+            destination: dest,
+        });
     }
 
     // Step 5: Compute destination
@@ -101,7 +107,10 @@ pub fn process_inbox_file(
 
     info!(file = %filename, dest = %dest.display(), photo_id = %photo_id, "Photo organized and indexed");
 
-    Ok(IngestResult::Indexed { photo_id, destination: dest })
+    Ok(IngestResult::Indexed {
+        photo_id,
+        destination: dest,
+    })
 }
 
 /// Process a single file from the _library-drop/ directory.
@@ -112,7 +121,8 @@ pub fn process_library_drop_file(
     photos_base: &Path,
     library_drop_dir: &Path,
 ) -> Result<IngestResult> {
-    let filename = file_path.file_name()
+    let filename = file_path
+        .file_name()
         .context("No filename")?
         .to_string_lossy()
         .to_string();
@@ -123,9 +133,7 @@ pub fn process_library_drop_file(
     let content_type = match validate_magic_bytes(file_path) {
         Some(ct) => ct.to_string(),
         None => {
-            let ext = file_path.extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if is_photo_ext(ext) || is_video_ext(ext) {
                 format!("image/{}", ext.to_lowercase())
             } else {
@@ -135,7 +143,8 @@ pub fn process_library_drop_file(
     };
 
     // Preserve directory structure relative to _library-drop/
-    let rel_path = file_path.strip_prefix(library_drop_dir)
+    let rel_path = file_path
+        .strip_prefix(library_drop_dir)
         .unwrap_or(Path::new(&filename));
 
     let dest = photos_base.join(rel_path);
@@ -150,7 +159,10 @@ pub fn process_library_drop_file(
 
     info!(file = %filename, dest = %dest.display(), "Library-drop file indexed");
 
-    Ok(IngestResult::Indexed { photo_id, destination: dest })
+    Ok(IngestResult::Indexed {
+        photo_id,
+        destination: dest,
+    })
 }
 
 /// Move a file to the _errors/ directory with an error description sidecar
@@ -158,7 +170,8 @@ fn move_to_errors(file_path: &Path, photos_base: &Path, error_msg: &str) -> Resu
     let errors_dir = photos_base.join("_errors");
     std::fs::create_dir_all(&errors_dir)?;
 
-    let filename = file_path.file_name()
+    let filename = file_path
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -166,14 +179,25 @@ fn move_to_errors(file_path: &Path, photos_base: &Path, error_msg: &str) -> Resu
     atomic_move(file_path, &dest)?;
 
     // Write error sidecar
-    let sidecar_path = dest.with_extension(
-        format!("{}.error.txt", dest.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default())
-    );
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
-    std::fs::write(&sidecar_path, format!(
-        "Error processing file: {}\nTimestamp: {}\nOriginal path: {}\nDescription: {}\n",
-        filename, now, file_path.display(), error_msg,
-    ))?;
+    let sidecar_path = dest.with_extension(format!(
+        "{}.error.txt",
+        dest.extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default()
+    ));
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    std::fs::write(
+        &sidecar_path,
+        format!(
+            "Error processing file: {}\nTimestamp: {}\nOriginal path: {}\nDescription: {}\n",
+            filename,
+            now,
+            file_path.display(),
+            error_msg,
+        ),
+    )?;
 
     warn!(file = %filename, error = %error_msg, "File moved to _errors/");
 
@@ -186,9 +210,18 @@ fn move_to_errors(file_path: &Path, photos_base: &Path, error_msg: &str) -> Resu
 /// Result of processing a single file
 #[derive(Debug)]
 pub enum IngestResult {
-    Indexed { photo_id: String, destination: PathBuf },
-    Untriaged { photo_id: String, destination: PathBuf },
-    Error { destination: PathBuf, error: String },
+    Indexed {
+        photo_id: String,
+        destination: PathBuf,
+    },
+    Untriaged {
+        photo_id: String,
+        destination: PathBuf,
+    },
+    Error {
+        destination: PathBuf,
+        error: String,
+    },
 }
 
 /// Scan and process all files in _inbox/
@@ -203,7 +236,13 @@ pub fn process_inbox(
     }
 
     let mut results = Vec::new();
-    process_dir_recursive(conn, &inbox, photos_base, organization_pattern, &mut results)?;
+    process_dir_recursive(
+        conn,
+        &inbox,
+        photos_base,
+        organization_pattern,
+        &mut results,
+    )?;
     Ok(results)
 }
 
@@ -241,17 +280,20 @@ fn process_dir_recursive(
 }
 
 /// Scan and process all files in _library-drop/
-pub fn process_library_drop(
-    conn: &Connection,
-    photos_base: &Path,
-) -> Result<Vec<IngestResult>> {
+pub fn process_library_drop(conn: &Connection, photos_base: &Path) -> Result<Vec<IngestResult>> {
     let library_drop = photos_base.join("_library-drop");
     if !library_drop.exists() {
         return Ok(vec![]);
     }
 
     let mut results = Vec::new();
-    process_library_drop_recursive(conn, &library_drop, photos_base, &library_drop, &mut results)?;
+    process_library_drop_recursive(
+        conn,
+        &library_drop,
+        photos_base,
+        &library_drop,
+        &mut results,
+    )?;
     Ok(results)
 }
 
@@ -295,8 +337,7 @@ fn atomic_move(src: &Path, dst: &Path) -> Result<()> {
         Ok(()) => Ok(()),
         Err(_) => {
             // Cross-filesystem: copy then delete
-            std::fs::copy(src, dst)
-                .context("Failed to copy file during cross-filesystem move")?;
+            std::fs::copy(src, dst).context("Failed to copy file during cross-filesystem move")?;
             std::fs::remove_file(src)
                 .context("Failed to remove source after cross-filesystem copy")?;
             Ok(())
@@ -310,10 +351,12 @@ fn unique_path(path: &Path) -> PathBuf {
         return path.to_path_buf();
     }
 
-    let stem = path.file_stem()
+    let stem = path
+        .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
     let parent = path.parent().unwrap_or(Path::new("."));

@@ -15,9 +15,7 @@ pub const PHOTO_EXTENSIONS: &[&str] = &[
 ];
 
 /// Video extensions (for thumbnail extraction via ffmpeg)
-pub const VIDEO_EXTENSIONS: &[&str] = &[
-    "mp4", "mov", "avi", "mkv", "webm",
-];
+pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm"];
 
 /// Check if a file extension is a supported photo type
 pub fn is_photo_ext(ext: &str) -> bool {
@@ -61,13 +59,21 @@ pub fn validate_magic_bytes(path: &Path) -> Option<&'static str> {
     // HEIC/HEIF: ftyp at offset 4
     if n >= 12 && &header[4..8] == b"ftyp" {
         let brand = &header[8..12];
-        if brand == b"heic" || brand == b"heix" || brand == b"hevc"
-            || brand == b"mif1" || brand == b"msf1" {
+        if brand == b"heic"
+            || brand == b"heix"
+            || brand == b"hevc"
+            || brand == b"mif1"
+            || brand == b"msf1"
+        {
             return Some("image/heic");
         }
         // MP4/MOV video
-        if brand == b"isom" || brand == b"mp41" || brand == b"mp42"
-            || brand == b"M4V " || brand == b"qt  " {
+        if brand == b"isom"
+            || brand == b"mp41"
+            || brand == b"mp42"
+            || brand == b"M4V "
+            || brand == b"qt  "
+        {
             return Some("video/mp4");
         }
     }
@@ -103,10 +109,11 @@ pub fn index_photo(
     photos_base: &Path,
     content_type: &str,
 ) -> anyhow::Result<String> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     use std::io::Read;
 
-    let rel_path = file_path.strip_prefix(photos_base)
+    let rel_path = file_path
+        .strip_prefix(photos_base)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| file_path.file_name().unwrap().to_string_lossy().to_string());
 
@@ -116,7 +123,9 @@ pub fn index_photo(
     let mut buf = [0u8; 8192];
     loop {
         let n = file.read(&mut buf)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
     }
     let sha256 = format!("{:x}", hasher.finalize());
@@ -125,14 +134,21 @@ pub fn index_photo(
     let size = meta.len() as i64;
     let file_id = uuid::Uuid::new_v4().to_string();
     let photo_id = file_id.clone();
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
-    let filename = file_path.file_name()
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    let filename = file_path
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let parent = format!("photos/{}", file_path.parent()
-        .and_then(|p| p.strip_prefix(photos_base).ok())
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default());
+    let parent = format!(
+        "photos/{}",
+        file_path
+            .parent()
+            .and_then(|p| p.strip_prefix(photos_base).ok())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    );
 
     let encrypted = is_encrypted(content_type);
 
@@ -158,7 +174,11 @@ pub fn index_photo(
     let width = exif.as_ref().and_then(|e| e.width);
     let height = exif.as_ref().and_then(|e| e.height);
     let tags_json = exif.as_ref().and_then(|e| {
-        if e.tags.is_empty() { None } else { Some(serde_json::to_string(&e.tags).unwrap()) }
+        if e.tags.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&e.tags).unwrap())
+        }
     });
 
     // Insert file entry

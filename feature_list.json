@@ -2975,7 +2975,7 @@
       "Step 2: Verify zero warnings",
       "Step 3: Verify proper use of idiomatic Rust patterns"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",
@@ -2985,7 +2985,7 @@
       "Step 2: Verify no formatting differences",
       "Step 3: Verify consistent style across all crates"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",

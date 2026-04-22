@@ -1,6 +1,9 @@
 //! Configuration loading via figment (TOML + env + CLI)
 
-use figment::{Figment, providers::{Format, Toml, Env, Serialized}};
+use figment::{
+    Figment,
+    providers::{Env, Format, Serialized, Toml},
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -48,18 +51,15 @@ impl Config {
         }
 
         // Layer env vars: supports both flat (TILDE_HOSTNAME) and nested (TILDE_SERVER__LISTEN_PORT)
-        figment = figment.merge(
-            Env::prefixed("TILDE_")
-                .map(|key| {
-                    let key_lower = key.as_str().to_ascii_lowercase();
-                    match key_lower.as_str() {
-                        "hostname" => "server.hostname".into(),
-                        "acme_email" => "tls.acme_email".into(),
-                        "admin_password" => "auth.admin_password".into(),
-                        _ => key_lower.replace("__", ".").into()
-                    }
-                })
-        );
+        figment = figment.merge(Env::prefixed("TILDE_").map(|key| {
+            let key_lower = key.as_str().to_ascii_lowercase();
+            match key_lower.as_str() {
+                "hostname" => "server.hostname".into(),
+                "acme_email" => "tls.acme_email".into(),
+                "admin_password" => "auth.admin_password".into(),
+                _ => key_lower.replace("__", ".").into(),
+            }
+        }));
 
         let config: Config = figment.extract()?;
         Ok(config)
@@ -73,8 +73,8 @@ impl Config {
             PathBuf::from(dir)
         } else if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
             PathBuf::from(xdg).join("tilde")
-        } else if let Some(data_dir) = directories::ProjectDirs::from("", "", "tilde")
-            .map(|d| d.data_dir().to_path_buf())
+        } else if let Some(data_dir) =
+            directories::ProjectDirs::from("", "", "tilde").map(|d| d.data_dir().to_path_buf())
         {
             data_dir
         } else {
@@ -92,8 +92,8 @@ impl Config {
             PathBuf::from(dir)
         } else if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
             PathBuf::from(xdg).join("tilde")
-        } else if let Some(cache_dir) = directories::ProjectDirs::from("", "", "tilde")
-            .map(|d| d.cache_dir().to_path_buf())
+        } else if let Some(cache_dir) =
+            directories::ProjectDirs::from("", "", "tilde").map(|d| d.cache_dir().to_path_buf())
         {
             cache_dir
         } else {
@@ -109,8 +109,8 @@ impl Config {
             PathBuf::from(dir)
         } else if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
             PathBuf::from(xdg).join("tilde")
-        } else if let Some(config_dir) = directories::ProjectDirs::from("", "", "tilde")
-            .map(|d| d.config_dir().to_path_buf())
+        } else if let Some(config_dir) =
+            directories::ProjectDirs::from("", "", "tilde").map(|d| d.config_dir().to_path_buf())
         {
             config_dir
         } else {
@@ -327,26 +327,66 @@ impl Default for McpConfig {
     }
 }
 
-fn default_listen_addr() -> String { "0.0.0.0".to_string() }
-fn default_listen_port() -> u16 { 443 }
-fn default_tls_mode() -> String { "acme".to_string() }
-fn default_session_ttl() -> u32 { 24 }
-fn default_max_login_attempts() -> u32 { 5 }
-fn default_lockout_duration() -> u32 { 15 }
-fn default_log_level() -> String { "info".to_string() }
-fn default_log_format() -> String { "json".to_string() }
-fn default_max_upload_size() -> u64 { 10240 }
-fn default_chunked_ttl() -> u32 { 24 }
-fn default_true() -> bool { true }
-fn default_org_pattern() -> String { "{year}/{month:02}".to_string() }
-fn default_thumbnail_sizes() -> Vec<u32> { vec![256, 1920] }
-fn default_thumbnail_quality() -> u8 { 80 }
-fn default_watch_debounce() -> u64 { 5 }
-fn default_exiftool_timeout() -> u64 { 30 }
-fn default_ffmpeg_timeout() -> u64 { 60 }
-fn default_notes_root() -> String { "notes".to_string() }
-fn default_mcp_rate_limit() -> u32 { 60 }
-fn default_audit_retention() -> u32 { 90 }
+fn default_listen_addr() -> String {
+    "0.0.0.0".to_string()
+}
+fn default_listen_port() -> u16 {
+    443
+}
+fn default_tls_mode() -> String {
+    "acme".to_string()
+}
+fn default_session_ttl() -> u32 {
+    24
+}
+fn default_max_login_attempts() -> u32 {
+    5
+}
+fn default_lockout_duration() -> u32 {
+    15
+}
+fn default_log_level() -> String {
+    "info".to_string()
+}
+fn default_log_format() -> String {
+    "json".to_string()
+}
+fn default_max_upload_size() -> u64 {
+    10240
+}
+fn default_chunked_ttl() -> u32 {
+    24
+}
+fn default_true() -> bool {
+    true
+}
+fn default_org_pattern() -> String {
+    "{year}/{month:02}".to_string()
+}
+fn default_thumbnail_sizes() -> Vec<u32> {
+    vec![256, 1920]
+}
+fn default_thumbnail_quality() -> u8 {
+    80
+}
+fn default_watch_debounce() -> u64 {
+    5
+}
+fn default_exiftool_timeout() -> u64 {
+    30
+}
+fn default_ffmpeg_timeout() -> u64 {
+    60
+}
+fn default_notes_root() -> String {
+    "notes".to_string()
+}
+fn default_mcp_rate_limit() -> u32 {
+    60
+}
+fn default_audit_retention() -> u32 {
+    90
+}
 
 #[cfg(test)]
 mod tests {

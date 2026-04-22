@@ -93,13 +93,9 @@ pub enum Commands {
         command: BackupCommands,
     },
     /// Export data
-    Export {
-        path: String,
-    },
+    Export { path: String },
     /// Import data
-    Import {
-        path: String,
-    },
+    Import { path: String },
     /// Notification management
     Notifications {
         #[command(subcommand)]
@@ -150,9 +146,16 @@ pub enum AuthCommands {
 
 #[derive(clap::Subcommand)]
 pub enum AppPasswordCommands {
-    Create { #[arg(long)] name: String, #[arg(long)] scope: String },
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        scope: String,
+    },
     List,
-    Revoke { id: String },
+    Revoke {
+        id: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -168,34 +171,58 @@ pub enum McpCommands {
         command: TokenCommands,
     },
     Audit {
-        #[arg(long)] since: Option<String>,
-        #[arg(long)] tool: Option<String>,
-        #[arg(long)] token: Option<String>,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
+        tool: Option<String>,
+        #[arg(long)]
+        token: Option<String>,
     },
 }
 
 #[derive(clap::Subcommand)]
 pub enum TokenCommands {
-    Create { #[arg(long)] name: String, #[arg(long)] scopes: String },
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        scopes: String,
+    },
     List,
-    Revoke { id: String },
-    Rotate { id: String },
+    Revoke {
+        id: String,
+    },
+    Rotate {
+        id: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
 pub enum NotesCommands {
-    Search { query: String },
-    List { #[arg(long)] path: Option<String> },
+    Search {
+        query: String,
+    },
+    List {
+        #[arg(long)]
+        path: Option<String>,
+    },
 }
 
 #[derive(clap::Subcommand)]
 pub enum PhotosCommands {
     List {
-        #[arg(long)] tag: Option<String>,
-        #[arg(long)] since: Option<String>,
-        #[arg(long)] until: Option<String>,
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
+        until: Option<String>,
     },
-    Tag { uuid: String, #[command(subcommand)] command: TagCommands },
+    Tag {
+        uuid: String,
+        #[command(subcommand)]
+        command: TagCommands,
+    },
     Reindex,
     Thumbnail {
         #[command(subcommand)]
@@ -212,8 +239,10 @@ pub enum TagCommands {
 #[derive(clap::Subcommand)]
 pub enum ThumbnailCommands {
     Regenerate {
-        #[arg(long)] all: bool,
-        #[arg(long)] missing: bool,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        missing: bool,
     },
 }
 
@@ -221,9 +250,12 @@ pub enum ThumbnailCommands {
 pub enum CalendarCommands {
     List,
     Events {
-        #[arg(long)] from: Option<String>,
-        #[arg(long)] to: Option<String>,
-        #[arg(long)] calendar: Option<String>,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        calendar: Option<String>,
     },
 }
 
@@ -235,14 +267,45 @@ pub enum ContactsCommands {
 
 #[derive(clap::Subcommand)]
 pub enum CollectionCommands {
-    Create { name: String, #[arg(long)] schema: String },
+    Create {
+        name: String,
+        #[arg(long)]
+        schema: String,
+    },
     List,
-    Add { name: String, #[arg(long)] data: String },
-    Get { name: String, id: String },
-    Update { name: String, id: String, #[arg(long)] data: String },
-    Delete { name: String, id: String },
-    ListRecords { name: String, #[arg(long)] filter: Option<String>, #[arg(long)] sort: Option<String>, #[arg(long)] limit: Option<u32> },
-    Export { name: String, #[arg(long, default_value = "json")] format: String },
+    Add {
+        name: String,
+        #[arg(long)]
+        data: String,
+    },
+    Get {
+        name: String,
+        id: String,
+    },
+    Update {
+        name: String,
+        id: String,
+        #[arg(long)]
+        data: String,
+    },
+    Delete {
+        name: String,
+        id: String,
+    },
+    ListRecords {
+        name: String,
+        #[arg(long)]
+        filter: Option<String>,
+        #[arg(long)]
+        sort: Option<String>,
+        #[arg(long)]
+        limit: Option<u32>,
+    },
+    Export {
+        name: String,
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -291,9 +354,15 @@ pub enum TrackersCommands {
 
 #[derive(clap::Subcommand)]
 pub enum EmailCommands {
-    Search { query: String },
-    Thread { message_id: String },
-    Show { message_id: String },
+    Search {
+        query: String,
+    },
+    Thread {
+        message_id: String,
+    },
+    Show {
+        message_id: String,
+    },
     /// Extract attachments from a message
     Attachments {
         #[command(subcommand)]
@@ -326,10 +395,23 @@ pub enum AttachmentsCommands {
 #[derive(clap::Subcommand)]
 pub enum BackupCommands {
     Status,
-    Now { #[arg(long)] offsite: Option<String> },
-    List { #[arg(long)] offsite: Option<String> },
-    Verify { #[arg(long)] offsite: Option<String> },
-    Pin { snapshot_id: String, #[arg(long)] reason: String },
+    Now {
+        #[arg(long)]
+        offsite: Option<String>,
+    },
+    List {
+        #[arg(long)]
+        offsite: Option<String>,
+    },
+    Verify {
+        #[arg(long)]
+        offsite: Option<String>,
+    },
+    Pin {
+        snapshot_id: String,
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 #[derive(clap::Subcommand)]

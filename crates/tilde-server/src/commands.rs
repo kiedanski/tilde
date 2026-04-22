@@ -2,13 +2,15 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tilde_cli::{
+    AppPasswordCommands, AttachmentsCommands, AuthCommands, BookmarksCommands, CalendarCommands,
+    CollectionCommands, ContactsCommands, EmailCommands, McpCommands, NotesCommands,
+    NotificationCommands, PhotosCommands, SessionCommands, TokenCommands, TrackersCommands,
+    WebhookCommands, WebhookTokenCommands,
+};
+use tilde_core::{auth, config::Config, db};
+use tilde_server::{AppState, SharedState, build_router};
 use tracing::info;
-use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands, NotesCommands, CollectionCommands, BookmarksCommands, TrackersCommands, WebhookCommands, WebhookTokenCommands, NotificationCommands, PhotosCommands, EmailCommands, AttachmentsCommands, CalendarCommands, ContactsCommands};
-use tilde_core::{config::Config, db, auth};
-use tilde_server::{AppState, build_router, SharedState};
-use tilde_dav;
-use tilde_cal;
-use tilde_card;
 
 pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
     println!("tilde init — Interactive Setup Wizard");
@@ -82,14 +84,17 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     let migrations_dir = tilde_cli::find_migrations_dir();
     db::run_migrations(&conn, &migrations_dir)?;
 
-    if let Ok(pw) = std::env::var("TILDE_ADMIN_PASSWORD") {
-        if auth::get_admin_password_hash(&conn)?.is_none() {
-            auth::store_admin_password(&conn, &pw)?;
-            info!("Admin password set from environment variable");
-        }
+    if let Ok(pw) = std::env::var("TILDE_ADMIN_PASSWORD")
+        && auth::get_admin_password_hash(&conn)?.is_none()
+    {
+        auth::store_admin_password(&conn, &pw)?;
+        info!("Admin password set from environment variable");
     }
 
-    let listen_addr = format!("{}:{}", config.server.listen_addr, config.server.listen_port);
+    let listen_addr = format!(
+        "{}:{}",
+        config.server.listen_addr, config.server.listen_port
+    );
 
     let data_dir = config.data_dir();
     let cache_dir = config.cache_dir();
@@ -121,20 +126,25 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     // Cleanup expired upload sessions on startup
     {
-        let now_str = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
-        let mut stmt = conn.prepare(
-            "SELECT session_id, staging_dir FROM chunked_uploads WHERE expires_at < ?1"
-        )?;
-        let expired: Vec<(String, String)> = stmt.query_map([&now_str], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?.filter_map(|r| r.ok()).collect();
+        let now_str = jiff::Zoned::now()
+            .strftime("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string();
+        let mut stmt = conn
+            .prepare("SELECT session_id, staging_dir FROM chunked_uploads WHERE expires_at < ?1")?;
+        let expired: Vec<(String, String)> = stmt
+            .query_map([&now_str], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
 
         for (session_id, staging_dir) in &expired {
             let _ = std::fs::remove_dir_all(staging_dir);
             info!(session = %session_id, "Cleaned up expired upload session");
         }
         if !expired.is_empty() {
-            conn.execute("DELETE FROM chunked_uploads WHERE expires_at < ?1", [&now_str])?;
+            conn.execute(
+                "DELETE FROM chunked_uploads WHERE expires_at < ?1",
+                [&now_str],
+            )?;
             info!(count = expired.len(), "Expired upload sessions cleaned up");
         }
     }
@@ -213,14 +223,20 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         let db = state.db.lock().unwrap();
         match tilde_photos::ingest::process_inbox(&db, &photos_base, &pattern) {
             Ok(results) if !results.is_empty() => {
-                info!(count = results.len(), "Processed existing inbox files on startup");
+                info!(
+                    count = results.len(),
+                    "Processed existing inbox files on startup"
+                );
             }
             Err(e) => tracing::warn!(error = %e, "Failed to process inbox on startup"),
             _ => {}
         }
         match tilde_photos::ingest::process_library_drop(&db, &photos_base) {
             Ok(results) if !results.is_empty() => {
-                info!(count = results.len(), "Processed existing library-drop files on startup");
+                info!(
+                    count = results.len(),
+                    "Processed existing library-drop files on startup"
+                );
             }
             Err(e) => tracing::warn!(error = %e, "Failed to process library-drop on startup"),
             _ => {}
@@ -232,7 +248,11 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     println!("tilde server listening on http://{}", listen_addr);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }
@@ -264,10 +284,10 @@ pub async fn run_status(config_path: Option<&str>, json_output: bool) -> anyhow:
             status["database_size_bytes"] = serde_json::json!(db_size);
         }
 
-        if data_dir.exists() {
-            if let Ok(total_size) = walkdir(&data_dir) {
-                status["data_size_bytes"] = serde_json::json!(total_size);
-            }
+        if data_dir.exists()
+            && let Ok(total_size) = walkdir(&data_dir)
+        {
+            status["data_size_bytes"] = serde_json::json!(total_size);
         }
 
         println!("{}", serde_json::to_string_pretty(&status)?);
@@ -276,8 +296,18 @@ pub async fn run_status(config_path: Option<&str>, json_output: bool) -> anyhow:
 
     println!("tilde — Status");
     println!("==============");
-    println!("Hostname:   {}", if config.server.hostname.is_empty() { "(not set)" } else { &config.server.hostname });
-    println!("Listen:     {}:{}", config.server.listen_addr, config.server.listen_port);
+    println!(
+        "Hostname:   {}",
+        if config.server.hostname.is_empty() {
+            "(not set)"
+        } else {
+            &config.server.hostname
+        }
+    );
+    println!(
+        "Listen:     {}:{}",
+        config.server.listen_addr, config.server.listen_port
+    );
     println!("TLS mode:   {}", config.tls.mode);
     println!("Data dir:   {}", data_dir.display());
     println!("Cache dir:  {}", config.cache_dir().display());
@@ -289,7 +319,14 @@ pub async fn run_status(config_path: Option<&str>, json_output: bool) -> anyhow:
         println!("Migrations: {} applied", migrations.len());
 
         let has_password = auth::get_admin_password_hash(&conn)?.is_some();
-        println!("Admin auth: {}", if has_password { "configured" } else { "NOT SET" });
+        println!(
+            "Admin auth: {}",
+            if has_password {
+                "configured"
+            } else {
+                "NOT SET"
+            }
+        );
 
         if let Ok(meta) = db_path.metadata() {
             let size_mb = meta.len() as f64 / 1024.0 / 1024.0;
@@ -299,14 +336,21 @@ pub async fn run_status(config_path: Option<&str>, json_output: bool) -> anyhow:
         println!("Database:   NOT INITIALIZED (run `tilde init`)");
     }
 
-    if data_dir.exists() {
-        if let Ok(total_size) = walkdir(&data_dir) {
-            let size_mb = total_size as f64 / 1024.0 / 1024.0;
-            println!("Data size:  {:.2} MB", size_mb);
-        }
+    if data_dir.exists()
+        && let Ok(total_size) = walkdir(&data_dir)
+    {
+        let size_mb = total_size as f64 / 1024.0 / 1024.0;
+        println!("Data size:  {:.2} MB", size_mb);
     }
 
-    println!("Mode:       {}", if Config::is_systemd_mode() { "systemd" } else { "user" });
+    println!(
+        "Mode:       {}",
+        if Config::is_systemd_mode() {
+            "systemd"
+        } else {
+            "user"
+        }
+    );
 
     Ok(())
 }
@@ -331,8 +375,12 @@ pub async fn run_diagnose(config_path: Option<&str>) -> anyhow::Result<()> {
                         Ok(mode) => println!("[OK]   Journal mode: {}", mode),
                         Err(e) => println!("[FAIL] Journal mode check: {}", e),
                     }
-                    match conn.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0)) {
-                        Ok(result) if result == "ok" => println!("[OK]   Database integrity check passed"),
+                    match conn
+                        .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                    {
+                        Ok(result) if result == "ok" => {
+                            println!("[OK]   Database integrity check passed")
+                        }
                         Ok(result) => println!("[FAIL] Database integrity: {}", result),
                         Err(e) => println!("[FAIL] Integrity check error: {}", e),
                     }
@@ -340,7 +388,10 @@ pub async fn run_diagnose(config_path: Option<&str>) -> anyhow::Result<()> {
                 Err(e) => println!("[FAIL] Database connection failed: {}", e),
             }
         } else {
-            println!("[WARN] Database not found at {}. Run `tilde init`", db_path.display());
+            println!(
+                "[WARN] Database not found at {}. Run `tilde init`",
+                db_path.display()
+            );
         }
     }
 
@@ -397,12 +448,18 @@ pub async fn run_auth(config_path: Option<&str>, command: AuthCommands) -> anyho
                         row.get::<_, bool>(5)?,
                     ))
                 })?;
-                println!("{:<36} {:<20} {:<15} {:<25} {}", "ID", "Name", "Scope", "Created", "Status");
+                println!(
+                    "{:<36} {:<20} {:<15} {:<25} Status",
+                    "ID", "Name", "Scope", "Created"
+                );
                 println!("{}", "-".repeat(110));
                 for row in rows {
                     let (id, name, scope, created, _last_used, revoked) = row?;
                     let status = if revoked { "revoked" } else { "active" };
-                    println!("{:<36} {:<20} {:<15} {:<25} {}", id, name, scope, created, status);
+                    println!(
+                        "{:<36} {:<20} {:<15} {:<25} {}",
+                        id, name, scope, created, status
+                    );
                 }
             }
             AppPasswordCommands::Revoke { id } => {
@@ -426,14 +483,21 @@ pub async fn run_auth(config_path: Option<&str>, command: AuthCommands) -> anyho
                         row.get::<_, bool>(6)?,
                     ))
                 })?;
-                println!("{:<24} {:<20} {:<16} {:<25} {}", "Prefix", "User Agent", "Source IP", "Last Used", "Status");
+                println!(
+                    "{:<24} {:<20} {:<16} {:<25} Status",
+                    "Prefix", "User Agent", "Source IP", "Last Used"
+                );
                 println!("{}", "-".repeat(110));
                 for row in rows {
-                    let (prefix, _created, last_used, _expires, user_agent, source_ip, revoked) = row?;
+                    let (prefix, _created, last_used, _expires, user_agent, source_ip, revoked) =
+                        row?;
                     let status = if revoked { "revoked" } else { "active" };
                     let ua = user_agent.unwrap_or_else(|| "-".to_string());
                     let ip = source_ip.unwrap_or_else(|| "-".to_string());
-                    println!("{:<24} {:<20} {:<16} {:<25} {}", prefix, ua, ip, last_used, status);
+                    println!(
+                        "{:<24} {:<20} {:<16} {:<25} {}",
+                        prefix, ua, ip, last_used, status
+                    );
                 }
             }
             SessionCommands::Revoke { id } => {
@@ -455,7 +519,8 @@ pub async fn run_mcp(config_path: Option<&str>, command: McpCommands) -> anyhow:
     match command {
         McpCommands::Token { command } => match command {
             TokenCommands::Create { name, scopes } => {
-                let token = auth::create_mcp_token(&conn, &name, &scopes, config.mcp.default_rate_limit)?;
+                let token =
+                    auth::create_mcp_token(&conn, &name, &scopes, config.mcp.default_rate_limit)?;
                 println!("MCP token created:");
                 println!("  Name:   {}", name);
                 println!("  Scopes: {}", scopes);
@@ -476,16 +541,25 @@ pub async fn run_mcp(config_path: Option<&str>, command: McpCommands) -> anyhow:
                         row.get::<_, bool>(4)?,
                     ))
                 })?;
-                println!("{:<20} {:<20} {:<20} {:<15} {}", "Name", "Prefix", "Scopes", "Rate Limit", "Status");
+                println!(
+                    "{:<20} {:<20} {:<20} {:<15} Status",
+                    "Name", "Prefix", "Scopes", "Rate Limit"
+                );
                 println!("{}", "-".repeat(90));
                 for row in rows {
                     let (name, prefix, scopes, rate_limit, revoked) = row?;
                     let status = if revoked { "revoked" } else { "active" };
-                    println!("{:<20} {:<20} {:<20} {:<15} {}", name, prefix, scopes, rate_limit, status);
+                    println!(
+                        "{:<20} {:<20} {:<20} {:<15} {}",
+                        name, prefix, scopes, rate_limit, status
+                    );
                 }
             }
             TokenCommands::Revoke { id } => {
-                conn.execute("UPDATE mcp_tokens SET revoked = 1 WHERE id = ?1 OR name = ?1", [&id])?;
+                conn.execute(
+                    "UPDATE mcp_tokens SET revoked = 1 WHERE id = ?1 OR name = ?1",
+                    [&id],
+                )?;
                 println!("MCP token revoked");
             }
             TokenCommands::Rotate { id } => {
@@ -494,7 +568,10 @@ pub async fn run_mcp(config_path: Option<&str>, command: McpCommands) -> anyhow:
                     [&id],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )?;
-                conn.execute("UPDATE mcp_tokens SET revoked = 1 WHERE id = ?1 OR name = ?1", [&id])?;
+                conn.execute(
+                    "UPDATE mcp_tokens SET revoked = 1 WHERE id = ?1 OR name = ?1",
+                    [&id],
+                )?;
                 let token = auth::create_mcp_token(&conn, &name, &scopes, rate_limit)?;
                 println!("MCP token rotated:");
                 println!("  Name:   {}", name);
@@ -505,7 +582,7 @@ pub async fn run_mcp(config_path: Option<&str>, command: McpCommands) -> anyhow:
         },
         McpCommands::Audit { since, tool, token } => {
             let mut sql = String::from(
-                "SELECT token_name, tool_name, duration_ms, created_at FROM mcp_audit_log WHERE 1=1"
+                "SELECT token_name, tool_name, duration_ms, created_at FROM mcp_audit_log WHERE 1=1",
             );
             if let Some(ref s) = since {
                 sql.push_str(&format!(" AND created_at >= '{}'", s));
@@ -528,11 +605,20 @@ pub async fn run_mcp(config_path: Option<&str>, command: McpCommands) -> anyhow:
                 ))
             })?;
 
-            println!("{:<15} {:<25} {:<8} {:<20}", "Token", "Tool", "Duration", "Time");
+            println!(
+                "{:<15} {:<25} {:<8} {:<20}",
+                "Token", "Tool", "Duration", "Time"
+            );
             println!("{}", "-".repeat(70));
             for row in rows {
                 let (token_name, tool_name, duration, time) = row?;
-                println!("{:<15} {:<25} {:<8} {:<20}", token_name, tool_name, format!("{}ms", duration), time);
+                println!(
+                    "{:<15} {:<25} {:<8} {:<20}",
+                    token_name,
+                    tool_name,
+                    format!("{}ms", duration),
+                    time
+                );
             }
         }
     }
@@ -556,9 +642,10 @@ pub async fn run_notes(config_path: Option<&str>, command: NotesCommands) -> any
             let mut stmt = conn.prepare(
                 "SELECT path, snippet(notes_fts, 2, '[', ']', '...', 30) FROM notes_fts WHERE notes_fts MATCH ?1 ORDER BY rank LIMIT 20"
             )?;
-            let results: Vec<(String, String)> = stmt.query_map([&query], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?.filter_map(|r| r.ok()).collect();
+            let results: Vec<(String, String)> = stmt
+                .query_map([&query], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
 
             if results.is_empty() {
                 println!("No notes found matching '{}'", query);
@@ -597,20 +684,26 @@ fn index_notes_fts(conn: &rusqlite::Connection, notes_dir: &std::path::Path) -> 
         return Ok(());
     }
 
-    fn walk_and_index(conn: &rusqlite::Connection, dir: &std::path::Path, base: &std::path::Path) -> anyhow::Result<()> {
+    fn walk_and_index(
+        conn: &rusqlite::Connection,
+        dir: &std::path::Path,
+        base: &std::path::Path,
+    ) -> anyhow::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
                 walk_and_index(conn, &path, base)?;
             } else if path.extension().map(|e| e == "md").unwrap_or(false) {
-                let rel_path = path.strip_prefix(base)
+                let rel_path = path
+                    .strip_prefix(base)
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
                 let content = std::fs::read_to_string(&path).unwrap_or_default();
 
                 // Extract title from first heading or filename
-                let title = content.lines()
+                let title = content
+                    .lines()
                     .find(|l| l.starts_with("# "))
                     .map(|l| l.trim_start_matches("# ").to_string())
                     .unwrap_or_else(|| {
@@ -632,7 +725,10 @@ fn index_notes_fts(conn: &rusqlite::Connection, notes_dir: &std::path::Path) -> 
     Ok(())
 }
 
-pub async fn run_collection(config_path: Option<&str>, command: CollectionCommands) -> anyhow::Result<()> {
+pub async fn run_collection(
+    config_path: Option<&str>,
+    command: CollectionCommands,
+) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
     let migrations_dir = tilde_cli::find_migrations_dir();
@@ -640,14 +736,15 @@ pub async fn run_collection(config_path: Option<&str>, command: CollectionComman
 
     match command {
         CollectionCommands::Create { name, schema } => {
-            let schema_json = std::fs::read_to_string(&schema)
-                .unwrap_or_else(|_| schema.clone()); // Allow inline JSON or file path
+            let schema_json = std::fs::read_to_string(&schema).unwrap_or_else(|_| schema.clone()); // Allow inline JSON or file path
             // Validate it's valid JSON
             let _: serde_json::Value = serde_json::from_str(&schema_json)
                 .map_err(|e| anyhow::anyhow!("Invalid JSON schema: {}", e))?;
 
             let id = uuid::Uuid::new_v4().to_string();
-            let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            let now = jiff::Zoned::now()
+                .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string();
             conn.execute(
                 "INSERT INTO collections (id, name, schema_json, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                 rusqlite::params![id, name, schema_json, now, now],
@@ -655,11 +752,12 @@ pub async fn run_collection(config_path: Option<&str>, command: CollectionComman
             println!("Collection '{}' created", name);
         }
         CollectionCommands::List => {
-            let mut stmt = conn.prepare("SELECT name, created_at FROM collections ORDER BY name")?;
+            let mut stmt =
+                conn.prepare("SELECT name, created_at FROM collections ORDER BY name")?;
             let rows = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
-            println!("{:<30} {}", "Name", "Created");
+            println!("{:<30} Created", "Name");
             println!("{}", "-".repeat(60));
             for row in rows {
                 let (name, created) = row?;
@@ -671,18 +769,22 @@ pub async fn run_collection(config_path: Option<&str>, command: CollectionComman
                 .map_err(|e| anyhow::anyhow!("Invalid JSON data: {}", e))?;
 
             // Get collection and validate schema
-            let (collection_id, schema_json): (String, String) = conn.query_row(
-                "SELECT id, schema_json FROM collections WHERE name = ?1",
-                [&name],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            ).map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
+            let (collection_id, schema_json): (String, String) = conn
+                .query_row(
+                    "SELECT id, schema_json FROM collections WHERE name = ?1",
+                    [&name],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
 
             // Basic schema validation
             let schema: serde_json::Value = serde_json::from_str(&schema_json)?;
             validate_json_schema(&data_val, &schema)?;
 
             let id = uuid::Uuid::new_v4().to_string();
-            let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            let now = jiff::Zoned::now()
+                .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string();
             conn.execute(
                 "INSERT INTO records (id, collection_id, data_json, created_at, updated_at, hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![id, collection_id, data, now, now, now],
@@ -690,10 +792,13 @@ pub async fn run_collection(config_path: Option<&str>, command: CollectionComman
             println!("{}", id);
         }
         CollectionCommands::Get { name, id } => {
-            let (collection_id,): (String,) = conn.query_row(
-                "SELECT id FROM collections WHERE name = ?1", [&name],
-                |row| Ok((row.get(0)?,)),
-            ).map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
+            let (collection_id,): (String,) = conn
+                .query_row(
+                    "SELECT id FROM collections WHERE name = ?1",
+                    [&name],
+                    |row| Ok((row.get(0)?,)),
+                )
+                .map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
 
             let (data, created, updated): (String, String, String) = conn.query_row(
                 "SELECT data_json, created_at, updated_at FROM records WHERE id = ?1 AND collection_id = ?2",
@@ -710,15 +815,20 @@ pub async fn run_collection(config_path: Option<&str>, command: CollectionComman
             let data_val: serde_json::Value = serde_json::from_str(&data)
                 .map_err(|e| anyhow::anyhow!("Invalid JSON data: {}", e))?;
 
-            let (collection_id, schema_json): (String, String) = conn.query_row(
-                "SELECT id, schema_json FROM collections WHERE name = ?1", [&name],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            ).map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
+            let (collection_id, schema_json): (String, String) = conn
+                .query_row(
+                    "SELECT id, schema_json FROM collections WHERE name = ?1",
+                    [&name],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
 
             let schema: serde_json::Value = serde_json::from_str(&schema_json)?;
             validate_json_schema(&data_val, &schema)?;
 
-            let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            let now = jiff::Zoned::now()
+                .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string();
             let updated = conn.execute(
                 "UPDATE records SET data_json = ?1, updated_at = ?2, hlc = ?3 WHERE id = ?4 AND collection_id = ?5",
                 rusqlite::params![data, now, now, id, collection_id],
@@ -730,10 +840,13 @@ pub async fn run_collection(config_path: Option<&str>, command: CollectionComman
             }
         }
         CollectionCommands::Delete { name, id } => {
-            let (collection_id,): (String,) = conn.query_row(
-                "SELECT id FROM collections WHERE name = ?1", [&name],
-                |row| Ok((row.get(0)?,)),
-            ).map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
+            let (collection_id,): (String,) = conn
+                .query_row(
+                    "SELECT id FROM collections WHERE name = ?1",
+                    [&name],
+                    |row| Ok((row.get(0)?,)),
+                )
+                .map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
 
             let deleted = conn.execute(
                 "DELETE FROM records WHERE id = ?1 AND collection_id = ?2",
@@ -745,11 +858,19 @@ pub async fn run_collection(config_path: Option<&str>, command: CollectionComman
                 println!("Record deleted");
             }
         }
-        CollectionCommands::ListRecords { name, filter: _, sort, limit } => {
-            let (collection_id,): (String,) = conn.query_row(
-                "SELECT id FROM collections WHERE name = ?1", [&name],
-                |row| Ok((row.get(0)?,)),
-            ).map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
+        CollectionCommands::ListRecords {
+            name,
+            filter: _,
+            sort,
+            limit,
+        } => {
+            let (collection_id,): (String,) = conn
+                .query_row(
+                    "SELECT id FROM collections WHERE name = ?1",
+                    [&name],
+                    |row| Ok((row.get(0)?,)),
+                )
+                .map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
 
             let mut sql = format!(
                 "SELECT id, data_json, created_at FROM records WHERE collection_id = '{}'",
@@ -766,10 +887,14 @@ pub async fn run_collection(config_path: Option<&str>, command: CollectionComman
 
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })?;
 
-            println!("{:<36} {:<40} {}", "ID", "Data", "Created");
+            println!("{:<36} {:<40} Created", "ID", "Data");
             println!("{}", "-".repeat(90));
             for row in rows {
                 let (id, data, created) = row?;
@@ -777,28 +902,38 @@ pub async fn run_collection(config_path: Option<&str>, command: CollectionComman
             }
         }
         CollectionCommands::Export { name, format } => {
-            let (collection_id,): (String,) = conn.query_row(
-                "SELECT id FROM collections WHERE name = ?1", [&name],
-                |row| Ok((row.get(0)?,)),
-            ).map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
+            let (collection_id,): (String,) = conn
+                .query_row(
+                    "SELECT id FROM collections WHERE name = ?1",
+                    [&name],
+                    |row| Ok((row.get(0)?,)),
+                )
+                .map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
 
             let mut stmt = conn.prepare(
                 "SELECT id, data_json, created_at FROM records WHERE collection_id = ?1 ORDER BY created_at"
             )?;
-            let rows: Vec<(String, String, String)> = stmt.query_map([&collection_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?.filter_map(|r| r.ok()).collect();
+            let rows: Vec<(String, String, String)> = stmt
+                .query_map([&collection_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
 
             match format.as_str() {
                 "json" => {
-                    let records: Vec<serde_json::Value> = rows.iter().map(|(id, data, created)| {
-                        let mut record: serde_json::Value = serde_json::from_str(data).unwrap_or(serde_json::json!({}));
-                        if let Some(obj) = record.as_object_mut() {
-                            obj.insert("_id".to_string(), serde_json::json!(id));
-                            obj.insert("_created_at".to_string(), serde_json::json!(created));
-                        }
-                        record
-                    }).collect();
+                    let records: Vec<serde_json::Value> = rows
+                        .iter()
+                        .map(|(id, data, created)| {
+                            let mut record: serde_json::Value =
+                                serde_json::from_str(data).unwrap_or(serde_json::json!({}));
+                            if let Some(obj) = record.as_object_mut() {
+                                obj.insert("_id".to_string(), serde_json::json!(id));
+                                obj.insert("_created_at".to_string(), serde_json::json!(created));
+                            }
+                            record
+                        })
+                        .collect();
                     println!("{}", serde_json::to_string_pretty(&records)?);
                 }
                 "csv" => {
@@ -807,12 +942,24 @@ pub async fn run_collection(config_path: Option<&str>, command: CollectionComman
                         let first: serde_json::Value = serde_json::from_str(first_data)?;
                         if let Some(obj) = first.as_object() {
                             let keys: Vec<&String> = obj.keys().collect();
-                            println!("id,{},created_at", keys.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(","));
+                            println!(
+                                "id,{},created_at",
+                                keys.iter()
+                                    .map(|k| k.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            );
                             for (id, data, created) in &rows {
                                 let record: serde_json::Value = serde_json::from_str(data)?;
-                                let values: Vec<String> = keys.iter().map(|k| {
-                                    record.get(k.as_str()).map(|v| v.to_string().trim_matches('"').to_string()).unwrap_or_default()
-                                }).collect();
+                                let values: Vec<String> = keys
+                                    .iter()
+                                    .map(|k| {
+                                        record
+                                            .get(k.as_str())
+                                            .map(|v| v.to_string().trim_matches('"').to_string())
+                                            .unwrap_or_default()
+                                    })
+                                    .collect();
                                 println!("{},{},{}", id, values.join(","), created);
                             }
                         }
@@ -827,7 +974,10 @@ pub async fn run_collection(config_path: Option<&str>, command: CollectionComman
 }
 
 /// Basic JSON Schema validation (supports type, required, properties)
-fn validate_json_schema(data: &serde_json::Value, schema: &serde_json::Value) -> anyhow::Result<()> {
+fn validate_json_schema(
+    data: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> anyhow::Result<()> {
     // Check type
     if let Some(expected_type) = schema.get("type").and_then(|t| t.as_str()) {
         let actual_type = match data {
@@ -840,39 +990,51 @@ fn validate_json_schema(data: &serde_json::Value, schema: &serde_json::Value) ->
             _ => "unknown",
         };
         if actual_type != expected_type {
-            return Err(anyhow::anyhow!("Expected type '{}', got '{}'", expected_type, actual_type));
+            return Err(anyhow::anyhow!(
+                "Expected type '{}', got '{}'",
+                expected_type,
+                actual_type
+            ));
         }
     }
 
     // Check required fields
-    if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
-        if let Some(obj) = data.as_object() {
-            for req in required {
-                if let Some(field_name) = req.as_str() {
-                    if !obj.contains_key(field_name) {
-                        return Err(anyhow::anyhow!("Missing required field: '{}'", field_name));
-                    }
-                }
+    if let Some(required) = schema.get("required").and_then(|r| r.as_array())
+        && let Some(obj) = data.as_object()
+    {
+        for req in required {
+            if let Some(field_name) = req.as_str()
+                && !obj.contains_key(field_name)
+            {
+                return Err(anyhow::anyhow!("Missing required field: '{}'", field_name));
             }
         }
     }
 
     // Check property types
-    if let (Some(props), Some(obj)) = (schema.get("properties").and_then(|p| p.as_object()), data.as_object()) {
+    if let (Some(props), Some(obj)) = (
+        schema.get("properties").and_then(|p| p.as_object()),
+        data.as_object(),
+    ) {
         for (key, prop_schema) in props {
-            if let Some(value) = obj.get(key) {
-                if let Some(prop_type) = prop_schema.get("type").and_then(|t| t.as_str()) {
-                    let valid = match prop_type {
-                        "string" => value.is_string(),
-                        "number" | "integer" => value.is_number(),
-                        "boolean" => value.is_boolean(),
-                        "array" => value.is_array(),
-                        "object" => value.is_object(),
-                        _ => true,
-                    };
-                    if !valid {
-                        return Err(anyhow::anyhow!("Field '{}' expected type '{}', got {:?}", key, prop_type, value));
-                    }
+            if let Some(value) = obj.get(key)
+                && let Some(prop_type) = prop_schema.get("type").and_then(|t| t.as_str())
+            {
+                let valid = match prop_type {
+                    "string" => value.is_string(),
+                    "number" | "integer" => value.is_number(),
+                    "boolean" => value.is_boolean(),
+                    "array" => value.is_array(),
+                    "object" => value.is_object(),
+                    _ => true,
+                };
+                if !valid {
+                    return Err(anyhow::anyhow!(
+                        "Field '{}' expected type '{}', got {:?}",
+                        key,
+                        prop_type,
+                        value
+                    ));
                 }
             }
         }
@@ -882,14 +1044,13 @@ fn validate_json_schema(data: &serde_json::Value, schema: &serde_json::Value) ->
 }
 
 fn list_notes_recursive(dir: &std::path::Path, base: &std::path::Path) -> anyhow::Result<()> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .collect();
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
 
     for entry in entries {
         let path = entry.path();
-        let rel_path = path.strip_prefix(base)
+        let rel_path = path
+            .strip_prefix(base)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| path.to_string_lossy().to_string());
 
@@ -897,7 +1058,8 @@ fn list_notes_recursive(dir: &std::path::Path, base: &std::path::Path) -> anyhow
             list_notes_recursive(&path, base)?;
         } else if path.extension().map(|e| e == "md").unwrap_or(false) {
             let meta = path.metadata()?;
-            let modified = meta.modified()
+            let modified = meta
+                .modified()
                 .ok()
                 .map(|t| {
                     let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
@@ -929,7 +1091,10 @@ fn walkdir(path: &std::path::Path) -> anyhow::Result<u64> {
     Ok(total)
 }
 
-pub async fn run_bookmarks(config_path: Option<&str>, command: BookmarksCommands) -> anyhow::Result<()> {
+pub async fn run_bookmarks(
+    config_path: Option<&str>,
+    command: BookmarksCommands,
+) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
     let migrations_dir = tilde_cli::find_migrations_dir();
@@ -939,7 +1104,12 @@ pub async fn run_bookmarks(config_path: Option<&str>, command: BookmarksCommands
     ensure_bookmarks_collection(&conn)?;
 
     match command {
-        BookmarksCommands::Add { url, title, tags, description } => {
+        BookmarksCommands::Add {
+            url,
+            title,
+            tags,
+            description,
+        } => {
             let mut data = serde_json::json!({
                 "url": url,
             });
@@ -954,7 +1124,9 @@ pub async fn run_bookmarks(config_path: Option<&str>, command: BookmarksCommands
                 data["description"] = serde_json::json!(d);
             }
             data["created_at"] = serde_json::json!(
-                jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()
+                jiff::Zoned::now()
+                    .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                    .to_string()
             );
 
             let collection_id: String = conn.query_row(
@@ -965,7 +1137,9 @@ pub async fn run_bookmarks(config_path: Option<&str>, command: BookmarksCommands
 
             let id = uuid::Uuid::new_v4().to_string();
             let data_str = serde_json::to_string(&data)?;
-            let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            let now = jiff::Zoned::now()
+                .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string();
             conn.execute(
                 "INSERT INTO records (id, collection_id, data_json, created_at, updated_at, hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![id, collection_id, data_str, now, now, now],
@@ -983,26 +1157,35 @@ pub async fn run_bookmarks(config_path: Option<&str>, command: BookmarksCommands
             let mut stmt = conn.prepare(
                 "SELECT id, data_json, created_at FROM records WHERE collection_id = ?1 ORDER BY created_at DESC LIMIT ?2"
             )?;
-            let rows: Vec<(String, String, String)> = stmt.query_map(
-                rusqlite::params![collection_id, limit],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            )?.filter_map(|r| r.ok()).collect();
+            let rows: Vec<(String, String, String)> = stmt
+                .query_map(rusqlite::params![collection_id, limit], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
 
-            println!("{:<36} {:<50} {:<30} {}", "ID", "URL", "Title", "Tags");
+            println!("{:<36} {:<50} {:<30} Tags", "ID", "URL", "Title");
             println!("{}", "-".repeat(130));
             for (id, data_str, _created) in &rows {
                 let data: serde_json::Value = serde_json::from_str(data_str).unwrap_or_default();
                 let url = data.get("url").and_then(|v| v.as_str()).unwrap_or("-");
                 let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("-");
-                let tags = data.get("tags").and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                let tags = data
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
                     .unwrap_or_default();
 
                 // Filter by tag if specified
-                if let Some(ref filter_tag) = tag {
-                    if !tags.contains(filter_tag) {
-                        continue;
-                    }
+                if let Some(ref filter_tag) = tag
+                    && !tags.contains(filter_tag)
+                {
+                    continue;
                 }
 
                 println!("{:<36} {:<50} {:<30} {}", id, url, title, tags);
@@ -1012,7 +1195,10 @@ pub async fn run_bookmarks(config_path: Option<&str>, command: BookmarksCommands
     Ok(())
 }
 
-pub async fn run_trackers(config_path: Option<&str>, command: TrackersCommands) -> anyhow::Result<()> {
+pub async fn run_trackers(
+    config_path: Option<&str>,
+    command: TrackersCommands,
+) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
     let migrations_dir = tilde_cli::find_migrations_dir();
@@ -1020,32 +1206,43 @@ pub async fn run_trackers(config_path: Option<&str>, command: TrackersCommands) 
 
     match command {
         TrackersCommands::Log { collection, data } => {
-            let data_val: serde_json::Value = serde_json::from_str(&data)
-                .map_err(|e| anyhow::anyhow!("Invalid JSON: {}", e))?;
+            let data_val: serde_json::Value =
+                serde_json::from_str(&data).map_err(|e| anyhow::anyhow!("Invalid JSON: {}", e))?;
 
-            let (collection_id, schema_json): (String, String) = conn.query_row(
-                "SELECT id, schema_json FROM collections WHERE name = ?1",
-                [&collection],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            ).map_err(|_| anyhow::anyhow!("Collection '{}' not found", collection))?;
+            let (collection_id, schema_json): (String, String) = conn
+                .query_row(
+                    "SELECT id, schema_json FROM collections WHERE name = ?1",
+                    [&collection],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|_| anyhow::anyhow!("Collection '{}' not found", collection))?;
 
             let schema: serde_json::Value = serde_json::from_str(&schema_json)?;
             validate_json_schema(&data_val, &schema)?;
 
             let id = uuid::Uuid::new_v4().to_string();
-            let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            let now = jiff::Zoned::now()
+                .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string();
             conn.execute(
                 "INSERT INTO records (id, collection_id, data_json, created_at, updated_at, hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![id, collection_id, data, now, now, now],
             )?;
             println!("{}", id);
         }
-        TrackersCommands::Query { collection, since, format, limit } => {
-            let (collection_id,): (String,) = conn.query_row(
-                "SELECT id FROM collections WHERE name = ?1",
-                [&collection],
-                |row| Ok((row.get(0)?,)),
-            ).map_err(|_| anyhow::anyhow!("Collection '{}' not found", collection))?;
+        TrackersCommands::Query {
+            collection,
+            since,
+            format,
+            limit,
+        } => {
+            let (collection_id,): (String,) = conn
+                .query_row(
+                    "SELECT id FROM collections WHERE name = ?1",
+                    [&collection],
+                    |row| Ok((row.get(0)?,)),
+                )
+                .map_err(|_| anyhow::anyhow!("Collection '{}' not found", collection))?;
 
             let limit = limit.unwrap_or(50);
 
@@ -1053,33 +1250,41 @@ pub async fn run_trackers(config_path: Option<&str>, command: TrackersCommands) 
                 let mut stmt = conn.prepare(
                     "SELECT id, data_json, created_at FROM records WHERE collection_id = ?1 AND created_at >= ?2 ORDER BY created_at DESC LIMIT ?3"
                 )?;
-                stmt.query_map(rusqlite::params![collection_id, since_val, limit],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-                )?.filter_map(|r| r.ok()).collect()
+                stmt.query_map(rusqlite::params![collection_id, since_val, limit], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect()
             } else {
                 let mut stmt = conn.prepare(
                     "SELECT id, data_json, created_at FROM records WHERE collection_id = ?1 ORDER BY created_at DESC LIMIT ?2"
                 )?;
-                stmt.query_map(rusqlite::params![collection_id, limit],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-                )?.filter_map(|r| r.ok()).collect()
+                stmt.query_map(rusqlite::params![collection_id, limit], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect()
             };
 
             match format.as_str() {
                 "json" => {
-                    let records: Vec<serde_json::Value> = rows.iter().map(|(id, data, created)| {
-                        let mut record: serde_json::Value = serde_json::from_str(data).unwrap_or(serde_json::json!({}));
-                        if let Some(obj) = record.as_object_mut() {
-                            obj.insert("_id".to_string(), serde_json::json!(id));
-                            obj.insert("_created_at".to_string(), serde_json::json!(created));
-                        }
-                        record
-                    }).collect();
+                    let records: Vec<serde_json::Value> = rows
+                        .iter()
+                        .map(|(id, data, created)| {
+                            let mut record: serde_json::Value =
+                                serde_json::from_str(data).unwrap_or(serde_json::json!({}));
+                            if let Some(obj) = record.as_object_mut() {
+                                obj.insert("_id".to_string(), serde_json::json!(id));
+                                obj.insert("_created_at".to_string(), serde_json::json!(created));
+                            }
+                            record
+                        })
+                        .collect();
                     println!("{}", serde_json::to_string_pretty(&records)?);
                 }
                 _ => {
                     // Table format
-                    println!("{:<36} {:<40} {}", "ID", "Data", "Created");
+                    println!("{:<36} {:<40} Created", "ID", "Data");
                     println!("{}", "-".repeat(90));
                     for (id, data, created) in &rows {
                         println!("{:<36} {:<40} {}", id, data, created);
@@ -1091,7 +1296,10 @@ pub async fn run_trackers(config_path: Option<&str>, command: TrackersCommands) 
     Ok(())
 }
 
-pub async fn run_webhook(config_path: Option<&str>, command: WebhookCommands) -> anyhow::Result<()> {
+pub async fn run_webhook(
+    config_path: Option<&str>,
+    command: WebhookCommands,
+) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
 
@@ -1102,7 +1310,9 @@ pub async fn run_webhook(config_path: Option<&str>, command: WebhookCommands) ->
                 let token_hash = auth::hash_token(&token);
                 let prefix = &token[..std::cmp::min(17, token.len())];
                 let id = uuid::Uuid::new_v4().to_string();
-                let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+                let now = jiff::Zoned::now()
+                    .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                    .to_string();
 
                 conn.execute(
                     "INSERT INTO webhook_tokens (id, name, token_hash, token_prefix, scopes, created_at, revoked)
@@ -1132,16 +1342,25 @@ pub async fn run_webhook(config_path: Option<&str>, command: WebhookCommands) ->
                         row.get::<_, bool>(4)?,
                     ))
                 })?;
-                println!("{:<20} {:<20} {:<25} {:<10} {}", "Name", "Prefix", "Scopes", "Rate", "Status");
+                println!(
+                    "{:<20} {:<20} {:<25} {:<10} Status",
+                    "Name", "Prefix", "Scopes", "Rate"
+                );
                 println!("{}", "-".repeat(85));
                 for row in rows {
                     let (name, prefix, scopes, rate, revoked) = row?;
                     let status = if revoked { "revoked" } else { "active" };
-                    println!("{:<20} {:<20} {:<25} {:<10} {}", name, prefix, scopes, rate, status);
+                    println!(
+                        "{:<20} {:<20} {:<25} {:<10} {}",
+                        name, prefix, scopes, rate, status
+                    );
                 }
             }
             WebhookTokenCommands::Revoke { id } => {
-                conn.execute("UPDATE webhook_tokens SET revoked = 1 WHERE id = ?1 OR name = ?1", [&id])?;
+                conn.execute(
+                    "UPDATE webhook_tokens SET revoked = 1 WHERE id = ?1 OR name = ?1",
+                    [&id],
+                )?;
                 println!("Webhook token revoked");
             }
         },
@@ -1149,7 +1368,10 @@ pub async fn run_webhook(config_path: Option<&str>, command: WebhookCommands) ->
     Ok(())
 }
 
-pub async fn run_notifications(config_path: Option<&str>, command: NotificationCommands) -> anyhow::Result<()> {
+pub async fn run_notifications(
+    config_path: Option<&str>,
+    command: NotificationCommands,
+) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
     let migrations_dir = tilde_cli::find_migrations_dir();
@@ -1167,7 +1389,10 @@ pub async fn run_notifications(config_path: Option<&str>, command: NotificationC
                         message: "Test notification from tilde".to_string(),
                     };
                     tilde_notify::NotificationSink::send(&file_sink, &event)?;
-                    println!("Test notification sent to file sink: {}", data_dir.join("notifications.log").display());
+                    println!(
+                        "Test notification sent to file sink: {}",
+                        data_dir.join("notifications.log").display()
+                    );
                 }
                 _ => {
                     println!("Unknown sink: {}. Available: file", sink);
@@ -1187,21 +1412,31 @@ pub async fn run_notifications(config_path: Option<&str>, command: NotificationC
                     row.get::<_, String>(4)?,
                 ))
             })?;
-            println!("{:<20} {:<10} {:<40} {:<15} {}", "Type", "Priority", "Message", "Sinks", "Time");
+            println!(
+                "{:<20} {:<10} {:<40} {:<15} Time",
+                "Type", "Priority", "Message", "Sinks"
+            );
             println!("{}", "-".repeat(100));
             for row in rows {
                 let (event_type, priority, message, sinks, time) = row?;
-                let msg = if message.len() > 38 { format!("{}...", &message[..35]) } else { message };
-                println!("{:<20} {:<10} {:<40} {:<15} {}", event_type, priority, msg, sinks, time);
+                let msg = if message.len() > 38 {
+                    format!("{}...", &message[..35])
+                } else {
+                    message
+                };
+                println!(
+                    "{:<20} {:<10} {:<40} {:<15} {}",
+                    event_type, priority, msg, sinks, time
+                );
             }
         }
         NotificationCommands::Config => {
             println!("Notification Sinks:");
             println!("  file: enabled (logs all events to notifications.log)");
-            println!("  ntfy: {}", "not configured");
-            println!("  smtp: {}", "not configured");
-            println!("  matrix: {}", "not configured");
-            println!("  signal: {}", "not configured");
+            println!("  ntfy: not configured");
+            println!("  smtp: not configured");
+            println!("  matrix: not configured");
+            println!("  signal: not configured");
             println!();
             println!("Rate limiting: max 10 per event type per hour");
         }
@@ -1223,12 +1458,25 @@ pub async fn run_email(config_path: Option<&str>, command: EmailCommands) -> any
 
             match results {
                 Ok(results) if !results.is_empty() => {
-                    println!("{:<30} {:<30} {:<20} {}", "From", "Subject", "Date", "Snippet");
+                    println!("{:<30} {:<30} {:<20} Snippet", "From", "Subject", "Date");
                     println!("{}", "-".repeat(100));
                     for r in &results {
-                        let subj = if r.subject.len() > 28 { format!("{}...", &r.subject[..25]) } else { r.subject.clone() };
-                        let snip = r.snippet.as_deref().unwrap_or("").chars().take(30).collect::<String>();
-                        println!("{:<30} {:<30} {:<20} {}", r.from_address, subj, r.date, snip);
+                        let subj = if r.subject.len() > 28 {
+                            format!("{}...", &r.subject[..25])
+                        } else {
+                            r.subject.clone()
+                        };
+                        let snip = r
+                            .snippet
+                            .as_deref()
+                            .unwrap_or("")
+                            .chars()
+                            .take(30)
+                            .collect::<String>();
+                        println!(
+                            "{:<30} {:<30} {:<20} {}",
+                            r.from_address, subj, r.date, snip
+                        );
                     }
                     println!("{} result(s)", results.len());
                 }
@@ -1238,18 +1486,36 @@ pub async fn run_email(config_path: Option<&str>, command: EmailCommands) -> any
                         "SELECT message_id, from_address, subject, date, snippet FROM email_messages WHERE subject LIKE ?1 OR from_address LIKE ?1 ORDER BY date DESC LIMIT 20"
                     )?;
                     let pattern = format!("%{}%", query);
-                    let results: Vec<(String, String, String, String, Option<String>)> = s2.query_map([&pattern], |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
-                    })?.filter_map(|r| r.ok()).collect();
+                    let results: Vec<(String, String, String, String, Option<String>)> = s2
+                        .query_map([&pattern], |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        })?
+                        .filter_map(|r| r.ok())
+                        .collect();
 
                     if results.is_empty() {
                         println!("No emails found matching '{}'", query);
                     } else {
-                        println!("{:<30} {:<30} {:<20} {}", "From", "Subject", "Date", "Snippet");
+                        println!("{:<30} {:<30} {:<20} Snippet", "From", "Subject", "Date");
                         println!("{}", "-".repeat(100));
                         for (_, from, subject, date, snippet) in &results {
-                            let subj = if subject.len() > 28 { format!("{}...", &subject[..25]) } else { subject.clone() };
-                            let snip = snippet.as_deref().unwrap_or("").chars().take(30).collect::<String>();
+                            let subj = if subject.len() > 28 {
+                                format!("{}...", &subject[..25])
+                            } else {
+                                subject.clone()
+                            };
+                            let snip = snippet
+                                .as_deref()
+                                .unwrap_or("")
+                                .chars()
+                                .take(30)
+                                .collect::<String>();
                             println!("{:<30} {:<30} {:<20} {}", from, subj, date, snip);
                         }
                         println!("{} result(s)", results.len());
@@ -1278,10 +1544,11 @@ pub async fn run_email(config_path: Option<&str>, command: EmailCommands) -> any
                     println!("Subject: {}", subject);
                     println!("Date:    {}", date);
                     println!("Path:    {}", path);
-                    if let Some(t) = tags {
-                        if t != "null" && !t.is_empty() {
-                            println!("Tags:    {}", t);
-                        }
+                    if let Some(t) = tags
+                        && t != "null"
+                        && !t.is_empty()
+                    {
+                        println!("Tags:    {}", t);
                     }
                     if let Some(s) = snippet {
                         println!();
@@ -1291,55 +1558,53 @@ pub async fn run_email(config_path: Option<&str>, command: EmailCommands) -> any
                 Err(_) => println!("Message not found: {}", message_id),
             }
         }
-        EmailCommands::Thread { message_id } => {
-            match tilde_email::get_thread(&conn, &message_id) {
-                Ok(thread) if !thread.is_empty() => {
-                    println!("Thread ({} messages):", thread.len());
-                    println!("{}", "-".repeat(80));
-                    for msg in &thread {
-                        let from_display = msg.from_name.as_deref().unwrap_or(&msg.from_address);
-                        println!("  {} — {} — {}", msg.date, from_display, msg.subject);
-                        if let Some(ref s) = msg.snippet {
-                            let preview: String = s.chars().take(60).collect();
-                            println!("    {}", preview);
-                        }
-                        println!();
+        EmailCommands::Thread { message_id } => match tilde_email::get_thread(&conn, &message_id) {
+            Ok(thread) if !thread.is_empty() => {
+                println!("Thread ({} messages):", thread.len());
+                println!("{}", "-".repeat(80));
+                for msg in &thread {
+                    let from_display = msg.from_name.as_deref().unwrap_or(&msg.from_address);
+                    println!("  {} — {} — {}", msg.date, from_display, msg.subject);
+                    if let Some(ref s) = msg.snippet {
+                        let preview: String = s.chars().take(60).collect();
+                        println!("    {}", preview);
                     }
+                    println!();
                 }
-                Ok(_) => println!("No messages found in thread for: {}", message_id),
-                Err(e) => println!("Error fetching thread: {}", e),
             }
-        }
-        EmailCommands::Attachments { command: att_cmd } => {
-            match att_cmd {
-                AttachmentsCommands::Extract { message_id, to } => {
-                    let output_dir = std::path::PathBuf::from(&to);
-                    match tilde_email::extract_attachments(&conn, &mail_dir, &message_id, &output_dir) {
-                        Ok(files) if !files.is_empty() => {
-                            println!("Extracted {} attachment(s) to {}:", files.len(), to);
-                            for f in &files {
-                                println!("  - {}", f);
-                            }
+            Ok(_) => println!("No messages found in thread for: {}", message_id),
+            Err(e) => println!("Error fetching thread: {}", e),
+        },
+        EmailCommands::Attachments { command: att_cmd } => match att_cmd {
+            AttachmentsCommands::Extract { message_id, to } => {
+                let output_dir = std::path::PathBuf::from(&to);
+                match tilde_email::extract_attachments(&conn, &mail_dir, &message_id, &output_dir) {
+                    Ok(files) if !files.is_empty() => {
+                        println!("Extracted {} attachment(s) to {}:", files.len(), to);
+                        for f in &files {
+                            println!("  - {}", f);
                         }
-                        Ok(_) => println!("No attachments found for message: {}", message_id),
-                        Err(e) => println!("Error extracting attachments: {}", e),
                     }
+                    Ok(_) => println!("No attachments found for message: {}", message_id),
+                    Err(e) => println!("Error extracting attachments: {}", e),
                 }
             }
-        }
-        EmailCommands::Tag { message_id, operation, tag } => {
-            match operation.as_str() {
-                "add" => {
-                    tilde_email::add_tag(&conn, &message_id, &tag)?;
-                    println!("Tag '{}' added to message {}", tag, message_id);
-                }
-                "remove" => {
-                    tilde_email::remove_tag(&conn, &message_id, &tag)?;
-                    println!("Tag '{}' removed from message {}", tag, message_id);
-                }
-                _ => println!("Unknown operation '{}'. Use 'add' or 'remove'.", operation),
+        },
+        EmailCommands::Tag {
+            message_id,
+            operation,
+            tag,
+        } => match operation.as_str() {
+            "add" => {
+                tilde_email::add_tag(&conn, &message_id, &tag)?;
+                println!("Tag '{}' added to message {}", tag, message_id);
             }
-        }
+            "remove" => {
+                tilde_email::remove_tag(&conn, &message_id, &tag)?;
+                println!("Tag '{}' removed from message {}", tag, message_id);
+            }
+            _ => println!("Unknown operation '{}'. Use 'add' or 'remove'.", operation),
+        },
         EmailCommands::Reindex => {
             println!("Rebuilding email index from Maildir...");
             match tilde_email::reindex_from_maildir(&conn, &mail_dir) {
@@ -1348,11 +1613,16 @@ pub async fn run_email(config_path: Option<&str>, command: EmailCommands) -> any
             }
         }
         EmailCommands::Status => {
-            let count: i64 = conn.query_row("SELECT COUNT(*) FROM email_messages", [], |row| row.get(0)).unwrap_or(0);
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM email_messages", [], |row| row.get(0))
+                .unwrap_or(0);
 
             // Try to get per-account status
-            let mut stmt = conn.prepare("SELECT DISTINCT account FROM email_messages").unwrap();
-            let accounts: Vec<String> = stmt.query_map([], |row| row.get(0))
+            let mut stmt = conn
+                .prepare("SELECT DISTINCT account FROM email_messages")
+                .unwrap();
+            let accounts: Vec<String> = stmt
+                .query_map([], |row| row.get(0))
                 .unwrap()
                 .filter_map(|r| r.ok())
                 .collect();
@@ -1369,7 +1639,10 @@ pub async fn run_email(config_path: Option<&str>, command: EmailCommands) -> any
                     println!();
                     println!("Account: {}", status.account);
                     println!("  Messages: {}", status.message_count);
-                    println!("  Last sync: {}", status.last_sync.as_deref().unwrap_or("never"));
+                    println!(
+                        "  Last sync: {}",
+                        status.last_sync.as_deref().unwrap_or("never")
+                    );
                     println!("  Folders: {}", status.folders.join(", "));
                 }
             }
@@ -1389,7 +1662,7 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
     match command {
         PhotosCommands::List { tag, since, until } => {
             let mut sql = String::from(
-                "SELECT p.id, f.path, p.taken_at, p.camera_model, p.tags_json FROM photos p JOIN files f ON p.file_id = f.id WHERE 1=1"
+                "SELECT p.id, f.path, p.taken_at, p.camera_model, p.tags_json FROM photos p JOIN files f ON p.file_id = f.id WHERE 1=1",
             );
             if let Some(ref t) = tag {
                 sql.push_str(&format!(" AND p.tags_json LIKE '%{}%'", t));
@@ -1413,12 +1686,16 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                 ))
             })?;
 
-            println!("{:<36} {:<40} {:<20} {:<20} {}", "UUID", "Path", "Taken", "Camera", "Tags");
+            println!(
+                "{:<36} {:<40} {:<20} {:<20} Tags",
+                "UUID", "Path", "Taken", "Camera"
+            );
             println!("{}", "-".repeat(130));
             let mut count = 0;
             for row in rows {
                 let (uuid, path, taken, camera, tags) = row?;
-                println!("{:<36} {:<40} {:<20} {:<20} {}",
+                println!(
+                    "{:<36} {:<40} {:<20} {:<20} {}",
                     uuid,
                     path,
                     taken.unwrap_or_else(|| "-".to_string()),
@@ -1428,18 +1705,23 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                 count += 1;
             }
             if count == 0 {
-                println!("No photos found. Drop files in {} to index.", photos_dir.join("_inbox").display());
+                println!(
+                    "No photos found. Drop files in {} to index.",
+                    photos_dir.join("_inbox").display()
+                );
             }
         }
         PhotosCommands::Tag { uuid, command } => {
             use tilde_cli::TagCommands;
             let _photos_dir_path = photos_dir.clone();
             // Find the photo's file path from the database
-            let file_path: Option<String> = conn.query_row(
-                "SELECT f.path FROM photos p JOIN files f ON p.file_id = f.id WHERE p.id = ?1",
-                [&uuid],
-                |row| row.get(0),
-            ).ok();
+            let file_path: Option<String> = conn
+                .query_row(
+                    "SELECT f.path FROM photos p JOIN files f ON p.file_id = f.id WHERE p.id = ?1",
+                    [&uuid],
+                    |row| row.get(0),
+                )
+                .ok();
 
             match file_path {
                 Some(rel_path) => {
@@ -1478,22 +1760,27 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                                     if tilde_photos::exiftool::is_available() {
                                         println!("Failed to read metadata: {}", e);
                                     } else {
-                                        println!("ExifTool is not installed. Install it to manage photo tags.");
+                                        println!(
+                                            "ExifTool is not installed. Install it to manage photo tags."
+                                        );
                                     }
                                 }
                             }
                         }
                         TagCommands::Remove { tag } => {
-                            match tilde_photos::exiftool::remove_tags(&full_path, &[tag.clone()]) {
+                            match tilde_photos::exiftool::remove_tags(
+                                &full_path,
+                                std::slice::from_ref(&tag),
+                            ) {
                                 Ok(()) => {
                                     conn.execute(
                                         "DELETE FROM photo_tags WHERE photo_id = ?1 AND tag = ?2",
                                         rusqlite::params![uuid, tag],
                                     )?;
                                     // Update tags_json in photos table
-                                    let remaining: Vec<String> = conn.prepare(
-                                        "SELECT tag FROM photo_tags WHERE photo_id = ?1"
-                                    )?.query_map([&uuid], |row| row.get(0))?
+                                    let remaining: Vec<String> = conn
+                                        .prepare("SELECT tag FROM photo_tags WHERE photo_id = ?1")?
+                                        .query_map([&uuid], |row| row.get(0))?
                                         .filter_map(|r| r.ok())
                                         .collect();
                                     let tags_json = serde_json::to_string(&remaining)?;
@@ -1536,9 +1823,10 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                         condition
                     );
                     let mut stmt = conn.prepare(&sql)?;
-                    let photos: Vec<(String, String)> = stmt.query_map([], |row| {
-                        Ok((row.get(0)?, row.get(1)?))
-                    })?.filter_map(|r| r.ok()).collect();
+                    let photos: Vec<(String, String)> = stmt
+                        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                        .filter_map(|r| r.ok())
+                        .collect();
 
                     let total = photos.len();
                     println!("Generating thumbnails for {} photos...", total);
@@ -1552,14 +1840,20 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                             continue;
                         }
 
-                        let ext = full_path.extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("");
+                        let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
                         let result = if tilde_photos::is_photo_ext(ext) {
-                            tilde_photos::thumbnail::generate_thumbnails(&full_path, photo_id, &cache_dir, quality)
+                            tilde_photos::thumbnail::generate_thumbnails(
+                                &full_path, photo_id, &cache_dir, quality,
+                            )
                         } else if tilde_photos::is_video_ext(ext) {
-                            tilde_photos::thumbnail::generate_video_thumbnail(&full_path, photo_id, &cache_dir, quality, config.photos.ffmpeg_timeout_seconds)
+                            tilde_photos::thumbnail::generate_video_thumbnail(
+                                &full_path,
+                                photo_id,
+                                &cache_dir,
+                                quality,
+                                config.photos.ffmpeg_timeout_seconds,
+                            )
                         } else {
                             failed += 1;
                             continue;
@@ -1567,7 +1861,9 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
 
                         match result {
                             Ok(_) => {
-                                tilde_photos::thumbnail::mark_thumbnails_generated(&conn, photo_id, true, true)?;
+                                tilde_photos::thumbnail::mark_thumbnails_generated(
+                                    &conn, photo_id, true, true,
+                                )?;
                                 success += 1;
                             }
                             Err(e) => {
@@ -1589,7 +1885,11 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
     Ok(())
 }
 
-fn reindex_photos_from_dir(conn: &rusqlite::Connection, dir: &std::path::Path, base: &std::path::Path) -> anyhow::Result<usize> {
+fn reindex_photos_from_dir(
+    conn: &rusqlite::Connection,
+    dir: &std::path::Path,
+    base: &std::path::Path,
+) -> anyhow::Result<usize> {
     let mut count = 0;
 
     for entry in std::fs::read_dir(dir)? {
@@ -1606,7 +1906,8 @@ fn reindex_photos_from_dir(conn: &rusqlite::Connection, dir: &std::path::Path, b
             continue;
         }
 
-        let ext = path.extension()
+        let ext = path
+            .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
@@ -1615,16 +1916,19 @@ fn reindex_photos_from_dir(conn: &rusqlite::Connection, dir: &std::path::Path, b
             continue;
         }
 
-        let rel_path = path.strip_prefix(base)
+        let rel_path = path
+            .strip_prefix(base)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
         // Check if already indexed
-        let exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM files WHERE path = ?1",
-            [&format!("photos/{}", rel_path)],
-            |row| row.get::<_, i64>(0),
-        ).map(|c| c > 0)?;
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE path = ?1",
+                [&format!("photos/{}", rel_path)],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)?;
 
         if exists {
             continue;
@@ -1656,7 +1960,8 @@ pub async fn run_reindex(config_path: Option<&str>, index_type: &str) -> anyhow:
         "notes" | "all" => {
             print!("Rebuilding notes FTS index... ");
             index_notes_fts(&conn, &notes_dir)?;
-            let count: i64 = conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0))?;
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0))?;
             println!("done ({} notes indexed)", count);
         }
         _ => {}
@@ -1686,14 +1991,19 @@ pub async fn run_reindex(config_path: Option<&str>, index_type: &str) -> anyhow:
     Ok(())
 }
 
-fn parse_links_from_notes(conn: &rusqlite::Connection, dir: &std::path::Path, base: &std::path::Path) -> anyhow::Result<()> {
+fn parse_links_from_notes(
+    conn: &rusqlite::Connection,
+    dir: &std::path::Path,
+    base: &std::path::Path,
+) -> anyhow::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
             parse_links_from_notes(conn, &path, base)?;
         } else if path.extension().is_some_and(|e| e == "md") {
-            let rel_path = path.strip_prefix(base)
+            let rel_path = path
+                .strip_prefix(base)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
             let content = std::fs::read_to_string(&path).unwrap_or_default();
@@ -1702,7 +2012,10 @@ fn parse_links_from_notes(conn: &rusqlite::Connection, dir: &std::path::Path, ba
             for cap in content.match_indices("tilde://") {
                 let start = cap.0;
                 let rest = &content[start..];
-                let end = rest.find(|c: char| c.is_whitespace() || c == ')' || c == ']' || c == '>' || c == '"')
+                let end = rest
+                    .find(|c: char| {
+                        c.is_whitespace() || c == ')' || c == ']' || c == '>' || c == '"'
+                    })
                     .unwrap_or(rest.len());
                 let uri = &rest[..end];
 
@@ -1724,14 +2037,14 @@ fn parse_links_from_notes(conn: &rusqlite::Connection, dir: &std::path::Path, ba
                 if let Some(close) = content[abs_open + 2..].find("]]") {
                     let link_content = &content[abs_open + 2..abs_open + 2 + close];
                     if !link_content.is_empty() && link_content.len() < 200 {
-                        let target_uri = if link_content.starts_with("photo:") {
-                            format!("tilde://photo/{}", &link_content[6..])
-                        } else if link_content.starts_with('@') {
-                            format!("tilde://contact/{}", &link_content[1..])
-                        } else if link_content.starts_with('#') {
-                            format!("tilde://date/{}", &link_content[1..])
-                        } else if link_content.starts_with("email:") {
-                            format!("tilde://email/{}", &link_content[6..])
+                        let target_uri = if let Some(rest) = link_content.strip_prefix("photo:") {
+                            format!("tilde://photo/{}", rest)
+                        } else if let Some(rest) = link_content.strip_prefix('@') {
+                            format!("tilde://contact/{}", rest)
+                        } else if let Some(rest) = link_content.strip_prefix('#') {
+                            format!("tilde://date/{}", rest)
+                        } else if let Some(rest) = link_content.strip_prefix("email:") {
+                            format!("tilde://email/{}", rest)
                         } else {
                             format!("tilde://note/{}", link_content)
                         };
@@ -1752,11 +2065,13 @@ fn parse_links_from_notes(conn: &rusqlite::Connection, dir: &std::path::Path, ba
 }
 
 fn ensure_bookmarks_collection(conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    let exists: bool = conn.query_row(
-        "SELECT COUNT(*) FROM collections WHERE name = 'bookmarks'",
-        [],
-        |row| row.get::<_, i64>(0),
-    ).map(|c| c > 0)?;
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM collections WHERE name = 'bookmarks'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)?;
 
     if !exists {
         let id = uuid::Uuid::new_v4().to_string();
@@ -1771,7 +2086,9 @@ fn ensure_bookmarks_collection(conn: &rusqlite::Connection) -> anyhow::Result<()
                 "created_at": {"type": "string"}
             }
         });
-        let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        let now = jiff::Zoned::now()
+            .strftime("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string();
         conn.execute(
             "INSERT INTO collections (id, name, schema_json, created_at, updated_at) VALUES (?1, 'bookmarks', ?2, ?3, ?4)",
             rusqlite::params![id, serde_json::to_string(&schema)?, now, now],
@@ -1780,7 +2097,10 @@ fn ensure_bookmarks_collection(conn: &rusqlite::Connection) -> anyhow::Result<()
     Ok(())
 }
 
-pub async fn run_calendar(config_path: Option<&str>, command: CalendarCommands) -> anyhow::Result<()> {
+pub async fn run_calendar(
+    config_path: Option<&str>,
+    command: CalendarCommands,
+) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
     let migrations_dir = tilde_cli::find_migrations_dir();
@@ -1792,27 +2112,36 @@ pub async fn run_calendar(config_path: Option<&str>, command: CalendarCommands) 
             if calendars.is_empty() {
                 println!("No calendars found.");
             } else {
-                println!("{:<20} {:<30} {:<10} {}", "NAME", "DISPLAY NAME", "CTAG", "DESCRIPTION");
+                println!(
+                    "{:<20} {:<30} {:<10} DESCRIPTION",
+                    "NAME", "DISPLAY NAME", "CTAG"
+                );
                 println!("{}", "-".repeat(80));
                 for (name, display_name, ctag, desc) in &calendars {
-                    println!("{:<20} {:<30} {:<10} {}", name, display_name, ctag, desc.as_deref().unwrap_or(""));
+                    println!(
+                        "{:<20} {:<30} {:<10} {}",
+                        name,
+                        display_name,
+                        ctag,
+                        desc.as_deref().unwrap_or("")
+                    );
                 }
             }
         }
         CalendarCommands::Events { from, to, calendar } => {
-            let events = tilde_cal::list_events(
-                &conn,
-                calendar.as_deref(),
-                from.as_deref(),
-                to.as_deref(),
-            );
+            let events =
+                tilde_cal::list_events(&conn, calendar.as_deref(), from.as_deref(), to.as_deref());
             if events.is_empty() {
                 println!("No events found.");
             } else {
-                println!("{:<38} {:<8} {:<30} {:<22} {:<22} {}", "UID", "TYPE", "SUMMARY", "START", "END", "LOCATION");
+                println!(
+                    "{:<38} {:<8} {:<30} {:<22} {:<22} LOCATION",
+                    "UID", "TYPE", "SUMMARY", "START", "END"
+                );
                 println!("{}", "-".repeat(140));
                 for (uid, comp_type, summary, dtstart, dtend, location, _status) in &events {
-                    println!("{:<38} {:<8} {:<30} {:<22} {:<22} {}",
+                    println!(
+                        "{:<38} {:<8} {:<30} {:<22} {:<22} {}",
                         &uid[..std::cmp::min(36, uid.len())],
                         comp_type,
                         summary.as_deref().unwrap_or("(untitled)"),
@@ -1827,7 +2156,10 @@ pub async fn run_calendar(config_path: Option<&str>, command: CalendarCommands) 
     Ok(())
 }
 
-pub async fn run_contacts(config_path: Option<&str>, command: ContactsCommands) -> anyhow::Result<()> {
+pub async fn run_contacts(
+    config_path: Option<&str>,
+    command: ContactsCommands,
+) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
     let migrations_dir = tilde_cli::find_migrations_dir();
@@ -1839,10 +2171,14 @@ pub async fn run_contacts(config_path: Option<&str>, command: ContactsCommands) 
             if contacts.is_empty() {
                 println!("No contacts found.");
             } else {
-                println!("{:<38} {:<30} {:<30} {:<20} {}", "UID", "NAME", "EMAIL", "PHONE", "ORG");
+                println!(
+                    "{:<38} {:<30} {:<30} {:<20} ORG",
+                    "UID", "NAME", "EMAIL", "PHONE"
+                );
                 println!("{}", "-".repeat(140));
                 for (uid, name, email, phone, org) in &contacts {
-                    println!("{:<38} {:<30} {:<30} {:<20} {}",
+                    println!(
+                        "{:<38} {:<30} {:<30} {:<20} {}",
                         &uid[..std::cmp::min(36, uid.len())],
                         name.as_deref().unwrap_or("-"),
                         email.as_deref().unwrap_or("-"),
@@ -1857,10 +2193,14 @@ pub async fn run_contacts(config_path: Option<&str>, command: ContactsCommands) 
             if contacts.is_empty() {
                 println!("No contacts matching '{}'.", query);
             } else {
-                println!("{:<38} {:<30} {:<30} {:<20} {}", "UID", "NAME", "EMAIL", "PHONE", "ORG");
+                println!(
+                    "{:<38} {:<30} {:<30} {:<20} ORG",
+                    "UID", "NAME", "EMAIL", "PHONE"
+                );
                 println!("{}", "-".repeat(140));
                 for (uid, name, email, phone, org) in &contacts {
-                    println!("{:<38} {:<30} {:<30} {:<20} {}",
+                    println!(
+                        "{:<38} {:<30} {:<30} {:<20} {}",
                         &uid[..std::cmp::min(36, uid.len())],
                         name.as_deref().unwrap_or("-"),
                         email.as_deref().unwrap_or("-"),

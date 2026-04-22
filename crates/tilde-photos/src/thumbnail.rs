@@ -2,9 +2,9 @@
 //!
 //! Generates WebP thumbnails at 256px (square crop) and 1920px (longest edge).
 
-use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use image::imageops::FilterType;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
 /// Generate thumbnails for a photo, storing them in the cache directory.
@@ -24,8 +24,7 @@ pub fn generate_thumbnails(
 
     debug!(source = %source.display(), uuid = %photo_uuid, "Generating thumbnails");
 
-    let img = image::open(source)
-        .context("Failed to open image for thumbnail generation")?;
+    let img = image::open(source).context("Failed to open image for thumbnail generation")?;
 
     // 256px square crop
     let thumb_256 = img.resize_to_fill(256, 256, FilterType::Lanczos3);
@@ -79,7 +78,10 @@ pub fn generate_video_thumbnail(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("ffmpeg failed: {}", stderr.chars().take(500).collect::<String>());
+        bail!(
+            "ffmpeg failed: {}",
+            stderr.chars().take(500).collect::<String>()
+        );
     }
 
     // Generate thumbnails from the extracted frame
@@ -94,8 +96,7 @@ pub fn generate_video_thumbnail(
 /// Save an image as WebP
 fn save_webp(img: &image::DynamicImage, path: &Path, _quality: u8) -> Result<()> {
     // The image crate supports WebP encoding
-    img.save(path)
-        .context("Failed to save WebP thumbnail")?;
+    img.save(path).context("Failed to save WebP thumbnail")?;
     Ok(())
 }
 

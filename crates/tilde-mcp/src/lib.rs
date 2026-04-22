@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::{info, warn};
 
 /// MCP server state
@@ -57,13 +57,23 @@ pub struct JsonRpcError {
 
 impl JsonRpcResponse {
     fn success(id: Option<Value>, result: Value) -> Self {
-        Self { jsonrpc: "2.0".into(), id, result: Some(result), error: None }
+        Self {
+            jsonrpc: "2.0".into(),
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
     fn error(id: Option<Value>, code: i64, message: impl Into<String>) -> Self {
         Self {
-            jsonrpc: "2.0".into(), id,
+            jsonrpc: "2.0".into(),
+            id,
             result: None,
-            error: Some(JsonRpcError { code, message: message.into(), data: None }),
+            error: Some(JsonRpcError {
+                code,
+                message: message.into(),
+                data: None,
+            }),
         }
     }
 }
@@ -350,8 +360,14 @@ fn log_audit(
     source_ip: &str,
 ) {
     let params_str = serde_json::to_string(params).unwrap_or_default();
-    let truncated = if params_str.len() > 500 { &params_str[..500] } else { &params_str };
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let truncated = if params_str.len() > 500 {
+        &params_str[..500]
+    } else {
+        &params_str
+    };
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
     let _ = conn.execute(
         "INSERT INTO mcp_audit_log (token_name, tool_name, params_truncated, result_size_bytes, duration_ms, source_ip, created_at)
@@ -376,7 +392,9 @@ fn prune_old_audit_logs(conn: &Connection, retention_days: u32) {
 // ─── Tool implementations ────────────────────────────────────────────────
 
 fn exec_notes_search(conn: &Connection, notes_dir: &Path, params: &Value) -> Result<Value, String> {
-    let query = params.get("query").and_then(|v| v.as_str())
+    let query = params
+        .get("query")
+        .and_then(|v| v.as_str())
         .ok_or("query parameter required")?;
     let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
 
@@ -390,38 +408,43 @@ fn exec_notes_search(conn: &Connection, notes_dir: &Path, params: &Value) -> Res
         "SELECT path, title, snippet(notes_fts, 2, '[', ']', '...', 30) FROM notes_fts WHERE notes_fts MATCH ?1 ORDER BY rank LIMIT ?2"
     ).map_err(|e| e.to_string())?;
 
-    let results: Vec<Value> = stmt.query_map(rusqlite::params![query, limit], |row| {
-        let path: String = row.get(0)?;
-        let title: String = row.get(1)?;
-        let snippet: String = row.get(2)?;
-        // Get modified time from file
-        let full_path = notes_dir.join(&path);
-        let modified = full_path.metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .map(|t| {
-                let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-                jiff::Timestamp::from_second(d.as_secs() as i64)
-                    .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
-                    .strftime("%Y-%m-%dT%H:%M:%SZ")
-                    .to_string()
-            })
-            .unwrap_or_default();
-        Ok(json!({
-            "path": path,
-            "title": title,
-            "snippet": snippet,
-            "modified": modified,
-        }))
-    }).map_err(|e| e.to_string())?
-    .filter_map(|r| r.ok())
-    .collect();
+    let results: Vec<Value> = stmt
+        .query_map(rusqlite::params![query, limit], |row| {
+            let path: String = row.get(0)?;
+            let title: String = row.get(1)?;
+            let snippet: String = row.get(2)?;
+            // Get modified time from file
+            let full_path = notes_dir.join(&path);
+            let modified = full_path
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|t| {
+                    let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                    jiff::Timestamp::from_second(d.as_secs() as i64)
+                        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+                        .strftime("%Y-%m-%dT%H:%M:%SZ")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            Ok(json!({
+                "path": path,
+                "title": title,
+                "snippet": snippet,
+                "modified": modified,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
 
     Ok(json!(results))
 }
 
 fn exec_notes_read(notes_dir: &Path, params: &Value) -> Result<Value, String> {
-    let path = params.get("path").and_then(|v| v.as_str())
+    let path = params
+        .get("path")
+        .and_then(|v| v.as_str())
         .ok_or("path parameter required")?;
 
     let full_path = notes_dir.join(path);
@@ -431,19 +454,22 @@ fn exec_notes_read(notes_dir: &Path, params: &Value) -> Result<Value, String> {
         return Err("path traversal not allowed".into());
     }
 
-    let content = std::fs::read_to_string(&full_path)
-        .map_err(|_| format!("note not found: {}", path))?;
+    let content =
+        std::fs::read_to_string(&full_path).map_err(|_| format!("note not found: {}", path))?;
 
-    let title = content.lines()
+    let title = content
+        .lines()
         .find(|l| l.starts_with("# "))
         .map(|l| l.trim_start_matches("# ").to_string())
         .unwrap_or_else(|| {
-            full_path.file_stem()
+            full_path
+                .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default()
         });
 
-    let modified = full_path.metadata()
+    let modified = full_path
+        .metadata()
         .and_then(|m| m.modified())
         .ok()
         .map(|t| {
@@ -466,9 +492,13 @@ fn exec_notes_read(notes_dir: &Path, params: &Value) -> Result<Value, String> {
 }
 
 fn exec_notes_append(notes_dir: &Path, params: &Value) -> Result<Value, String> {
-    let path = params.get("path").and_then(|v| v.as_str())
+    let path = params
+        .get("path")
+        .and_then(|v| v.as_str())
         .ok_or("path parameter required")?;
-    let content = params.get("content").and_then(|v| v.as_str())
+    let content = params
+        .get("content")
+        .and_then(|v| v.as_str())
         .ok_or("content parameter required")?;
 
     let full_path = notes_dir.join(path);
@@ -487,16 +517,24 @@ fn exec_notes_append(notes_dir: &Path, params: &Value) -> Result<Value, String> 
         .map_err(|e| e.to_string())?;
 
     file.write_all(b"\n").map_err(|e| e.to_string())?;
-    file.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     Ok(json!({"success": true}))
 }
 
 fn exec_files_list(files_dir: &Path, params: &Value) -> Result<Value, String> {
     let rel_path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
-    let recursive = params.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+    let recursive = params
+        .get("recursive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
-    let target = if rel_path.is_empty() { files_dir.to_path_buf() } else { files_dir.join(rel_path) };
+    let target = if rel_path.is_empty() {
+        files_dir.to_path_buf()
+    } else {
+        files_dir.join(rel_path)
+    };
     if !target.starts_with(files_dir) {
         return Err("path traversal not allowed".into());
     }
@@ -510,22 +548,34 @@ fn exec_files_list(files_dir: &Path, params: &Value) -> Result<Value, String> {
     Ok(json!(entries))
 }
 
-fn list_dir_entries(dir: &Path, base: &Path, recursive: bool, entries: &mut Vec<Value>, depth: usize) {
-    if depth > 10 { return; } // prevent infinite recursion
+fn list_dir_entries(
+    dir: &Path,
+    base: &Path,
+    recursive: bool,
+    entries: &mut Vec<Value>,
+    depth: usize,
+) {
+    if depth > 10 {
+        return;
+    } // prevent infinite recursion
     if let Ok(read_dir) = std::fs::read_dir(dir) {
         for entry in read_dir.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') { continue; }
+            if name.starts_with('.') {
+                continue;
+            }
 
-            let rel = path.strip_prefix(base)
+            let rel = path
+                .strip_prefix(base)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
 
             let is_dir = path.is_dir();
             let meta = path.metadata().ok();
             let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            let modified = meta.and_then(|m| m.modified().ok())
+            let modified = meta
+                .and_then(|m| m.modified().ok())
                 .map(|t| {
                     let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
                     jiff::Timestamp::from_second(d.as_secs() as i64)
@@ -551,7 +601,9 @@ fn list_dir_entries(dir: &Path, base: &Path, recursive: bool, entries: &mut Vec<
 }
 
 fn exec_files_read(files_dir: &Path, params: &Value) -> Result<Value, String> {
-    let path = params.get("path").and_then(|v| v.as_str())
+    let path = params
+        .get("path")
+        .and_then(|v| v.as_str())
         .ok_or("path parameter required")?;
 
     let full_path = files_dir.join(path);
@@ -578,7 +630,9 @@ fn exec_files_read(files_dir: &Path, params: &Value) -> Result<Value, String> {
 
 fn exec_files_search(conn: &Connection, notes_dir: &Path, params: &Value) -> Result<Value, String> {
     // Reuse notes FTS for now — searches note content
-    let query = params.get("query").and_then(|v| v.as_str())
+    let query = params
+        .get("query")
+        .and_then(|v| v.as_str())
         .ok_or("query parameter required")?;
 
     let _ = conn.execute("DELETE FROM notes_fts", []);
@@ -590,29 +644,34 @@ fn exec_files_search(conn: &Connection, notes_dir: &Path, params: &Value) -> Res
         "SELECT path, snippet(notes_fts, 2, '[', ']', '...', 30) FROM notes_fts WHERE notes_fts MATCH ?1 ORDER BY rank LIMIT 20"
     ).map_err(|e| e.to_string())?;
 
-    let results: Vec<Value> = stmt.query_map([query], |row| {
-        Ok(json!({
-            "path": row.get::<_, String>(0)?,
-            "snippet": row.get::<_, String>(1)?,
-        }))
-    }).map_err(|e| e.to_string())?
-    .filter_map(|r| r.ok())
-    .collect();
+    let results: Vec<Value> = stmt
+        .query_map([query], |row| {
+            Ok(json!({
+                "path": row.get::<_, String>(0)?,
+                "snippet": row.get::<_, String>(1)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
 
     Ok(json!(results))
 }
 
 fn exec_trackers_log(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let collection_name = params.get("collection").and_then(|v| v.as_str())
+    let collection_name = params
+        .get("collection")
+        .and_then(|v| v.as_str())
         .ok_or("collection parameter required")?;
-    let data = params.get("data")
-        .ok_or("data parameter required")?;
+    let data = params.get("data").ok_or("data parameter required")?;
 
-    let (collection_id, schema_json): (String, String) = conn.query_row(
-        "SELECT id, schema_json FROM collections WHERE name = ?1",
-        [collection_name],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).map_err(|_| format!("collection '{}' not found", collection_name))?;
+    let (collection_id, schema_json): (String, String) = conn
+        .query_row(
+            "SELECT id, schema_json FROM collections WHERE name = ?1",
+            [collection_name],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| format!("collection '{}' not found", collection_name))?;
 
     // Basic schema validation
     if let Ok(schema) = serde_json::from_str::<Value>(&schema_json) {
@@ -621,7 +680,9 @@ fn exec_trackers_log(conn: &Connection, params: &Value) -> Result<Value, String>
 
     let id = uuid::Uuid::new_v4().to_string();
     let data_str = serde_json::to_string(data).map_err(|e| e.to_string())?;
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
     conn.execute(
         "INSERT INTO records (id, collection_id, data_json, created_at, updated_at, hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -632,16 +693,20 @@ fn exec_trackers_log(conn: &Connection, params: &Value) -> Result<Value, String>
 }
 
 fn exec_trackers_query(conn: &Connection, params: &Value) -> Result<Value, String> {
-    let collection_name = params.get("collection").and_then(|v| v.as_str())
+    let collection_name = params
+        .get("collection")
+        .and_then(|v| v.as_str())
         .ok_or("collection parameter required")?;
     let since = params.get("since").and_then(|v| v.as_str());
     let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(50);
 
-    let (collection_id,): (String,) = conn.query_row(
-        "SELECT id FROM collections WHERE name = ?1",
-        [collection_name],
-        |row| Ok((row.get(0)?,)),
-    ).map_err(|_| format!("collection '{}' not found", collection_name))?;
+    let (collection_id,): (String,) = conn
+        .query_row(
+            "SELECT id FROM collections WHERE name = ?1",
+            [collection_name],
+            |row| Ok((row.get(0)?,)),
+        )
+        .map_err(|_| format!("collection '{}' not found", collection_name))?;
 
     let results: Vec<Value> = if let Some(since_val) = since {
         let mut stmt = conn.prepare(
@@ -655,7 +720,8 @@ fn exec_trackers_query(conn: &Connection, params: &Value) -> Result<Value, Strin
                 "data": data,
                 "timestamp": row.get::<_, String>(2)?,
             }))
-        }).map_err(|e| e.to_string())?
+        })
+        .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect()
     } else {
@@ -670,7 +736,8 @@ fn exec_trackers_query(conn: &Connection, params: &Value) -> Result<Value, Strin
                 "data": data,
                 "timestamp": row.get::<_, String>(2)?,
             }))
-        }).map_err(|e| e.to_string())?
+        })
+        .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect()
     };
@@ -690,15 +757,19 @@ fn index_notes_fts_recursive(conn: &Connection, dir: &Path, base: &Path) {
         if path.is_dir() {
             index_notes_fts_recursive(conn, &path, base);
         } else if path.extension().is_some_and(|e| e == "md") {
-            let rel_path = path.strip_prefix(base)
+            let rel_path = path
+                .strip_prefix(base)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
             let content = std::fs::read_to_string(&path).unwrap_or_default();
-            let title = content.lines()
+            let title = content
+                .lines()
                 .find(|l| l.starts_with("# "))
                 .map(|l| l.trim_start_matches("# ").to_string())
                 .unwrap_or_else(|| {
-                    path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+                    path.file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
                 });
             let _ = conn.execute(
                 "INSERT INTO notes_fts (path, title, content) VALUES (?1, ?2, ?3)",
@@ -737,8 +808,9 @@ pub fn handle_mcp_request(
     audit_retention_days: u32,
 ) -> JsonRpcResponse {
     match request.method.as_str() {
-        "initialize" => {
-            JsonRpcResponse::success(request.id.clone(), json!({
+        "initialize" => JsonRpcResponse::success(
+            request.id.clone(),
+            json!({
                 "protocolVersion": "2025-03-26",
                 "capabilities": {
                     "tools": {}
@@ -747,8 +819,8 @@ pub fn handle_mcp_request(
                     "name": "tilde",
                     "version": env!("CARGO_PKG_VERSION")
                 }
-            }))
-        }
+            }),
+        ),
 
         "notifications/initialized" => {
             // Client notification, no response needed for notifications
@@ -763,24 +835,28 @@ pub fn handle_mcp_request(
 
         "tools/list" => {
             let tools = all_tools();
-            JsonRpcResponse::success(request.id.clone(), json!({
-                "tools": tools
-            }))
+            JsonRpcResponse::success(
+                request.id.clone(),
+                json!({
+                    "tools": tools
+                }),
+            )
         }
 
         "tools/call" => {
             // Rate limit check
             if !check_rate_limit(&state.rate_limits, token_name, rate_limit) {
-                return JsonRpcResponse::error(
-                    request.id.clone(), -32000,
-                    "rate limit exceeded",
-                );
+                return JsonRpcResponse::error(request.id.clone(), -32000, "rate limit exceeded");
             }
 
-            let tool_name = request.params.get("name")
+            let tool_name = request
+                .params
+                .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let arguments = request.params.get("arguments")
+            let arguments = request
+                .params
+                .get("arguments")
                 .cloned()
                 .unwrap_or(json!({}));
 
@@ -788,7 +864,8 @@ pub fn handle_mcp_request(
             let required_scope = tool_required_scope(tool_name);
             if !check_scope(token_scopes, required_scope) {
                 return JsonRpcResponse::error(
-                    request.id.clone(), -32600,
+                    request.id.clone(),
+                    -32600,
                     format!("insufficient scope: requires {}", required_scope),
                 );
             }
@@ -831,18 +908,34 @@ pub fn handle_mcp_request(
                     // Audit log
                     {
                         let conn = state.db.lock().unwrap();
-                        log_audit(&conn, token_name, tool_name, &arguments, result_size, duration_ms, source_ip);
+                        log_audit(
+                            &conn,
+                            token_name,
+                            tool_name,
+                            &arguments,
+                            result_size,
+                            duration_ms,
+                            source_ip,
+                        );
                         prune_old_audit_logs(&conn, audit_retention_days);
                     }
 
-                    info!(tool = tool_name, token = token_name, duration_ms, "MCP tool call");
+                    info!(
+                        tool = tool_name,
+                        token = token_name,
+                        duration_ms,
+                        "MCP tool call"
+                    );
 
-                    JsonRpcResponse::success(request.id.clone(), json!({
-                        "content": [{
-                            "type": "text",
-                            "text": result_str
-                        }]
-                    }))
+                    JsonRpcResponse::success(
+                        request.id.clone(),
+                        json!({
+                            "content": [{
+                                "type": "text",
+                                "text": result_str
+                            }]
+                        }),
+                    )
                 }
                 Err(e) => {
                     warn!(tool = tool_name, error = %e, "MCP tool call failed");
@@ -850,7 +943,15 @@ pub fn handle_mcp_request(
                     // Still audit failed calls
                     {
                         let conn = state.db.lock().unwrap();
-                        log_audit(&conn, token_name, tool_name, &arguments, 0, duration_ms, source_ip);
+                        log_audit(
+                            &conn,
+                            token_name,
+                            tool_name,
+                            &arguments,
+                            0,
+                            duration_ms,
+                            source_ip,
+                        );
                     }
 
                     JsonRpcResponse::error(request.id.clone(), -32603, e)
@@ -858,12 +959,11 @@ pub fn handle_mcp_request(
             }
         }
 
-        _ => {
-            JsonRpcResponse::error(
-                request.id.clone(), -32601,
-                format!("method not found: {}", request.method),
-            )
-        }
+        _ => JsonRpcResponse::error(
+            request.id.clone(),
+            -32601,
+            format!("method not found: {}", request.method),
+        ),
     }
 }
 
@@ -875,27 +975,41 @@ fn exec_calendar_list_events(conn: &Connection, args: &Value) -> Result<Value, S
     let to = args.get("to").and_then(|v| v.as_str());
 
     let events = tilde_cal::list_events(conn, calendar, from, to);
-    let results: Vec<Value> = events.iter().map(|(uid, comp_type, summary, dtstart, dtend, location, status)| {
-        json!({
-            "uid": uid,
-            "type": comp_type,
-            "summary": summary,
-            "start": dtstart,
-            "end": dtend,
-            "location": location,
-            "status": status,
-        })
-    }).collect();
+    let results: Vec<Value> = events
+        .iter()
+        .map(
+            |(uid, comp_type, summary, dtstart, dtend, location, status)| {
+                json!({
+                    "uid": uid,
+                    "type": comp_type,
+                    "summary": summary,
+                    "start": dtstart,
+                    "end": dtend,
+                    "location": location,
+                    "status": status,
+                })
+            },
+        )
+        .collect();
     Ok(json!(results))
 }
 
 fn exec_calendar_create_event(conn: &Connection, args: &Value) -> Result<Value, String> {
-    let calendar = args.get("calendar").and_then(|v| v.as_str()).unwrap_or("default");
-    let summary = args.get("summary").and_then(|v| v.as_str())
+    let calendar = args
+        .get("calendar")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default");
+    let summary = args
+        .get("summary")
+        .and_then(|v| v.as_str())
         .ok_or("summary is required")?;
-    let start = args.get("start").and_then(|v| v.as_str())
+    let start = args
+        .get("start")
+        .and_then(|v| v.as_str())
         .ok_or("start is required")?;
-    let end = args.get("end").and_then(|v| v.as_str())
+    let end = args
+        .get("end")
+        .and_then(|v| v.as_str())
         .ok_or("end is required")?;
     let location = args.get("location").and_then(|v| v.as_str());
     let description = args.get("description").and_then(|v| v.as_str());
@@ -908,18 +1022,23 @@ fn exec_calendar_create_event(conn: &Connection, args: &Value) -> Result<Value, 
 }
 
 fn exec_contacts_search(conn: &Connection, args: &Value) -> Result<Value, String> {
-    let query = args.get("query").and_then(|v| v.as_str())
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
         .ok_or("query is required")?;
     let contacts = tilde_card::search_contacts(conn, query);
-    let results: Vec<Value> = contacts.iter().map(|(uid, name, email, phone, org)| {
-        json!({
-            "uid": uid,
-            "name": name,
-            "email": email,
-            "phone": phone,
-            "org": org,
+    let results: Vec<Value> = contacts
+        .iter()
+        .map(|(uid, name, email, phone, org)| {
+            json!({
+                "uid": uid,
+                "name": name,
+                "email": email,
+                "phone": phone,
+                "org": org,
+            })
         })
-    }).collect();
+        .collect();
     Ok(json!(results))
 }
 
@@ -928,23 +1047,31 @@ fn exec_tasks_list(conn: &Connection, args: &Value) -> Result<Value, String> {
     let status = args.get("status").and_then(|v| v.as_str());
 
     let tasks = tilde_cal::list_tasks(conn, calendar, status);
-    let results: Vec<Value> = tasks.iter().map(|(uid, summary, due, priority, status)| {
-        json!({
-            "uid": uid,
-            "summary": summary,
-            "due": due,
-            "priority": priority,
-            "status": status,
+    let results: Vec<Value> = tasks
+        .iter()
+        .map(|(uid, summary, due, priority, status)| {
+            json!({
+                "uid": uid,
+                "summary": summary,
+                "due": due,
+                "priority": priority,
+                "status": status,
+            })
         })
-    }).collect();
+        .collect();
     Ok(json!(results))
 }
 
 fn exec_tasks_add(conn: &Connection, args: &Value) -> Result<Value, String> {
-    let summary = args.get("summary").and_then(|v| v.as_str())
+    let summary = args
+        .get("summary")
+        .and_then(|v| v.as_str())
         .ok_or("summary is required")?;
     let due = args.get("due").and_then(|v| v.as_str());
-    let priority = args.get("priority").and_then(|v| v.as_i64()).map(|p| p as i32);
+    let priority = args
+        .get("priority")
+        .and_then(|v| v.as_i64())
+        .map(|p| p as i32);
     let calendar = args.get("calendar").and_then(|v| v.as_str());
 
     match tilde_cal::create_task(conn, calendar, summary, due, priority) {
@@ -954,51 +1081,67 @@ fn exec_tasks_add(conn: &Connection, args: &Value) -> Result<Value, String> {
 }
 
 fn exec_email_search(conn: &Connection, args: &Value) -> Result<Value, String> {
-    let query = args.get("query").and_then(|v| v.as_str())
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
         .ok_or("query is required")?;
     let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(20) as u32;
 
     // Try FTS5 search first, fall back to LIKE
-    let mut stmt = conn.prepare(
-        "SELECT message_id, from_address, subject, date, snippet FROM email_messages
+    let mut stmt = conn
+        .prepare(
+            "SELECT message_id, from_address, subject, date, snippet FROM email_messages
          WHERE subject LIKE ?1 OR from_address LIKE ?1 OR from_name LIKE ?1
-         ORDER BY date DESC LIMIT ?2"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY date DESC LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
 
     let pattern = format!("%{}%", query);
-    let results: Vec<Value> = stmt.query_map(rusqlite::params![pattern, limit], |row| {
-        Ok(json!({
-            "message_id": row.get::<_, String>(0)?,
-            "from": row.get::<_, String>(1)?,
-            "subject": row.get::<_, String>(2)?,
-            "date": row.get::<_, String>(3)?,
-            "snippet": row.get::<_, Option<String>>(4)?,
-        }))
-    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let results: Vec<Value> = stmt
+        .query_map(rusqlite::params![pattern, limit], |row| {
+            Ok(json!({
+                "message_id": row.get::<_, String>(0)?,
+                "from": row.get::<_, String>(1)?,
+                "subject": row.get::<_, String>(2)?,
+                "date": row.get::<_, String>(3)?,
+                "snippet": row.get::<_, Option<String>>(4)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
 
     Ok(json!(results))
 }
 
 fn exec_email_thread(conn: &Connection, args: &Value) -> Result<Value, String> {
-    let message_id = args.get("message_id").and_then(|v| v.as_str())
+    let message_id = args
+        .get("message_id")
+        .and_then(|v| v.as_str())
         .ok_or("message_id is required")?;
 
-    let mut stmt = conn.prepare(
-        "SELECT message_id, from_address, to_addresses, subject, date, snippet
+    let mut stmt = conn
+        .prepare(
+            "SELECT message_id, from_address, to_addresses, subject, date, snippet
          FROM email_messages WHERE message_id = ?1 OR in_reply_to = ?1
-         ORDER BY date"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY date",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let results: Vec<Value> = stmt.query_map([message_id], |row| {
-        Ok(json!({
-            "message_id": row.get::<_, String>(0)?,
-            "from": row.get::<_, String>(1)?,
-            "to": row.get::<_, String>(2)?,
-            "subject": row.get::<_, String>(3)?,
-            "date": row.get::<_, String>(4)?,
-            "body_snippet": row.get::<_, Option<String>>(5)?,
-        }))
-    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let results: Vec<Value> = stmt
+        .query_map([message_id], |row| {
+            Ok(json!({
+                "message_id": row.get::<_, String>(0)?,
+                "from": row.get::<_, String>(1)?,
+                "to": row.get::<_, String>(2)?,
+                "subject": row.get::<_, String>(3)?,
+                "date": row.get::<_, String>(4)?,
+                "body_snippet": row.get::<_, Option<String>>(5)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
 
     Ok(json!(results))
 }
@@ -1020,15 +1163,19 @@ fn exec_email_recent(conn: &Connection, args: &Value) -> Result<Value, String> {
 
     let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
     let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let results: Vec<Value> = stmt.query_map(refs.as_slice(), |row| {
-        Ok(json!({
-            "message_id": row.get::<_, String>(0)?,
-            "from": row.get::<_, String>(1)?,
-            "subject": row.get::<_, String>(2)?,
-            "date": row.get::<_, String>(3)?,
-            "snippet": row.get::<_, Option<String>>(4)?,
-        }))
-    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let results: Vec<Value> = stmt
+        .query_map(refs.as_slice(), |row| {
+            Ok(json!({
+                "message_id": row.get::<_, String>(0)?,
+                "from": row.get::<_, String>(1)?,
+                "subject": row.get::<_, String>(2)?,
+                "date": row.get::<_, String>(3)?,
+                "snippet": row.get::<_, Option<String>>(4)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
 
     Ok(json!(results))
 }

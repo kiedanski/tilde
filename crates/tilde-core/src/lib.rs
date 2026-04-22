@@ -1,8 +1,8 @@
 //! tilde-core: config, auth, database, migrations, error types
 
+pub mod auth;
 pub mod config;
 pub mod db;
-pub mod auth;
 pub mod error;
 
 pub use error::Error;

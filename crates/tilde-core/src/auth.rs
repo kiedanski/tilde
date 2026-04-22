@@ -1,10 +1,10 @@
 //! Authentication: Argon2id password hashing, session tokens, app-passwords
 
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use argon2::password_hash::SaltString;
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use rand::rngs::OsRng;
 use rusqlite::Connection;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tracing::info;
 use uuid::Uuid;
@@ -42,7 +42,8 @@ pub fn generate_session_token() -> String {
 pub fn generate_mcp_token() -> String {
     let mut bytes = [0u8; 30];
     rand::RngCore::fill_bytes(&mut OsRng, &mut bytes);
-    let token_body: String = bytes.iter()
+    let token_body: String = bytes
+        .iter()
         .map(|b| {
             let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
             chars[(*b as usize) % chars.len()] as char
@@ -55,7 +56,8 @@ pub fn generate_mcp_token() -> String {
 pub fn generate_app_password() -> String {
     let mut bytes = [0u8; 24];
     rand::RngCore::fill_bytes(&mut OsRng, &mut bytes);
-    let body: String = bytes.iter()
+    let body: String = bytes
+        .iter()
         .map(|b| {
             let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
             chars[(*b as usize) % chars.len()] as char
@@ -82,7 +84,9 @@ pub fn constant_time_compare(a: &[u8], b: &[u8]) -> bool {
 /// Store the admin password hash in the kv_meta table
 pub fn store_admin_password(conn: &Connection, password: &str) -> anyhow::Result<()> {
     let hash = hash_password(password)?;
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
     conn.execute(
         "INSERT OR REPLACE INTO kv_meta (key, value, updated_at) VALUES ('admin_password_hash', ?1, ?2)",
         rusqlite::params![hash, now],
@@ -165,7 +169,8 @@ pub fn validate_session(conn: &Connection, token: &str, ttl_hours: u32) -> anyho
                 return Ok(false);
             }
             // Sliding TTL: extend expires_at from now
-            let new_expires = now.checked_add(jiff::SignedDuration::from_hours(ttl_hours as i64))?;
+            let new_expires =
+                now.checked_add(jiff::SignedDuration::from_hours(ttl_hours as i64))?;
             let new_expires_str = new_expires.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
             conn.execute(
                 "UPDATE auth_sessions SET last_used_at = ?1, expires_at = ?2 WHERE id = ?3",
@@ -187,7 +192,9 @@ pub fn create_app_password(
     let password = generate_app_password();
     let hash = hash_password(&password)?;
     let id = Uuid::new_v4().to_string();
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
     conn.execute(
         "INSERT INTO app_passwords (id, name, password_hash, scope_prefix, created_at, revoked)
@@ -200,10 +207,13 @@ pub fn create_app_password(
 }
 
 /// Verify an app password and check scope
-pub fn verify_app_password(conn: &Connection, password: &str, request_path: &str) -> anyhow::Result<bool> {
-    let mut stmt = conn.prepare(
-        "SELECT password_hash, scope_prefix FROM app_passwords WHERE revoked = 0"
-    )?;
+pub fn verify_app_password(
+    conn: &Connection,
+    password: &str,
+    request_path: &str,
+) -> anyhow::Result<bool> {
+    let mut stmt =
+        conn.prepare("SELECT password_hash, scope_prefix FROM app_passwords WHERE revoked = 0")?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -233,7 +243,9 @@ pub fn create_mcp_token(
     let token_hash = hash_token(&token);
     let prefix = &token[..std::cmp::min(17, token.len())]; // "mcp_prod_" + 8 chars
     let id = Uuid::new_v4().to_string();
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
     conn.execute(
         "INSERT INTO mcp_tokens (id, name, token_hash, token_prefix, scopes, rate_limit, created_at, revoked)
@@ -246,14 +258,21 @@ pub fn create_mcp_token(
 }
 
 /// Validate an MCP token, returns (token_name, scopes) if valid
-pub fn validate_mcp_token(conn: &Connection, token: &str) -> anyhow::Result<Option<(String, String)>> {
+pub fn validate_mcp_token(
+    conn: &Connection,
+    token: &str,
+) -> anyhow::Result<Option<(String, String)>> {
     let token_hash = hash_token(token);
 
     let result = conn.query_row(
         "SELECT name, scopes, revoked FROM mcp_tokens WHERE token_hash = ?1",
         [&token_hash],
         |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
         },
     );
 
@@ -263,7 +282,9 @@ pub fn validate_mcp_token(conn: &Connection, token: &str) -> anyhow::Result<Opti
                 return Ok(None);
             }
             // Update last_used_at
-            let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            let now = jiff::Zoned::now()
+                .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string();
             conn.execute(
                 "UPDATE mcp_tokens SET last_used_at = ?1 WHERE token_hash = ?2",
                 rusqlite::params![now, token_hash],
@@ -319,7 +340,11 @@ mod tests {
         use crate::db;
         let conn = db::init_db(":memory:").unwrap();
         let migrations_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap().parent().unwrap().join("migrations");
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("migrations");
         db::run_migrations(&conn, &migrations_dir).unwrap();
 
         store_admin_password(&conn, "testpass123").unwrap();

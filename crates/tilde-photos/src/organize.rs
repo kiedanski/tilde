@@ -25,7 +25,9 @@ pub fn compute_destination(
     let (year, month, day) = parse_date_components(date_str)?;
 
     // Find trip tag
-    let trip = metadata.tags.iter()
+    let trip = metadata
+        .tags
+        .iter()
         .find(|t| t.starts_with("trip:"))
         .map(|t| t[5..].to_string());
 
@@ -64,7 +66,7 @@ fn parse_date_components(date_str: &str) -> Option<(i32, u32, u32)> {
         let year: i32 = parts[0].parse().ok()?;
         let month: u32 = parts[1].parse().ok()?;
         let day: u32 = parts[2].parse().ok()?;
-        if month >= 1 && month <= 12 && day >= 1 && day <= 31 {
+        if (1..=12).contains(&month) && (1..=31).contains(&day) {
             return Some((year, month, day));
         }
     }

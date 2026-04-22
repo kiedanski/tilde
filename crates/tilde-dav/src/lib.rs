@@ -6,12 +6,12 @@ use axum::{
     Router,
     body::Body,
     extract::{Path, State},
-    http::{HeaderMap, Method, StatusCode, header, HeaderValue},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
     routing::any,
 };
 use rusqlite::Connection;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
@@ -77,9 +77,13 @@ async fn handle_options() -> Response {
         StatusCode::OK,
         [
             ("DAV", "1"),
-            ("Allow", "OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, MOVE, COPY, PROPFIND, PROPPATCH"),
+            (
+                "Allow",
+                "OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, MOVE, COPY, PROPFIND, PROPPATCH",
+            ),
         ],
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// GET / HEAD — download a file
@@ -103,10 +107,17 @@ async fn handle_get(state: &SharedDavState, rel_path: &str, head_only: bool) -> 
     let etag = get_etag_for_file(state, rel_path);
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_str(&content_type).unwrap_or(HeaderValue::from_static("application/octet-stream")));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&content_type)
+            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+    );
     headers.insert(header::CONTENT_LENGTH, HeaderValue::from(metadata.len()));
     if let Some(etag) = etag {
-        headers.insert(header::ETAG, HeaderValue::from_str(&format!("\"{}\"", etag)).unwrap());
+        headers.insert(
+            header::ETAG,
+            HeaderValue::from_str(&format!("\"{}\"", etag)).unwrap(),
+        );
     }
 
     if head_only {
@@ -120,24 +131,29 @@ async fn handle_get(state: &SharedDavState, rel_path: &str, head_only: bool) -> 
 }
 
 /// PUT — upload a file atomically
-async fn handle_put(state: &SharedDavState, rel_path: &str, headers: &HeaderMap, body: Body) -> Response {
+async fn handle_put(
+    state: &SharedDavState,
+    rel_path: &str,
+    headers: &HeaderMap,
+    body: Body,
+) -> Response {
     // Check If-Match precondition
     if let Some(if_match) = headers.get("if-match").and_then(|v| v.to_str().ok()) {
         let expected_etag = if_match.trim_matches('"');
-        if let Some(current_etag) = get_etag_for_file(state, rel_path) {
-            if current_etag != expected_etag {
-                return StatusCode::PRECONDITION_FAILED.into_response();
-            }
+        if let Some(current_etag) = get_etag_for_file(state, rel_path)
+            && current_etag != expected_etag
+        {
+            return StatusCode::PRECONDITION_FAILED.into_response();
         }
     }
 
     let disk_path = state.files_root.join(rel_path);
 
     // Ensure parent directory exists
-    if let Some(parent) = disk_path.parent() {
-        if !parent.exists() {
-            return (StatusCode::CONFLICT, "Parent collection does not exist").into_response();
-        }
+    if let Some(parent) = disk_path.parent()
+        && !parent.exists()
+    {
+        return (StatusCode::CONFLICT, "Parent collection does not exist").into_response();
     }
 
     let exists = disk_path.exists();
@@ -168,7 +184,9 @@ async fn handle_put(state: &SharedDavState, rel_path: &str, headers: &HeaderMap,
     let etag = sha256[..16].to_string();
 
     let content_type = mime_from_path(rel_path);
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
 
     // Upsert into files table
     {
@@ -182,11 +200,11 @@ async fn handle_put(state: &SharedDavState, rel_path: &str, headers: &HeaderMap,
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let existing_id: Option<String> = db.query_row(
-            "SELECT id FROM files WHERE path = ?1",
-            [rel_path],
-            |row| row.get(0),
-        ).ok();
+        let existing_id: Option<String> = db
+            .query_row("SELECT id FROM files WHERE path = ?1", [rel_path], |row| {
+                row.get(0)
+            })
+            .ok();
 
         let id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
@@ -204,14 +222,23 @@ async fn handle_put(state: &SharedDavState, rel_path: &str, headers: &HeaderMap,
         ).ok();
     }
 
-    let status = if exists { StatusCode::NO_CONTENT } else { StatusCode::CREATED };
+    let status = if exists {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::CREATED
+    };
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert(header::ETAG, HeaderValue::from_str(&format!("\"{}\"", etag)).unwrap());
-    resp_headers.insert(header::CONTENT_TYPE, HeaderValue::from_str(&content_type).unwrap_or(HeaderValue::from_static("application/octet-stream")));
-    if !exists {
-        if let Ok(loc) = HeaderValue::from_str(&format!("/dav/files/{}", rel_path)) {
-            resp_headers.insert(header::LOCATION, loc);
-        }
+    resp_headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&format!("\"{}\"", etag)).unwrap(),
+    );
+    resp_headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&content_type)
+            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+    );
+    if !exists && let Ok(loc) = HeaderValue::from_str(&format!("/dav/files/{}", rel_path)) {
+        resp_headers.insert(header::LOCATION, loc);
     }
 
     info!(path = rel_path, size = content.len(), "WebDAV PUT");
@@ -234,14 +261,19 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
         // Remove from DB recursively
         let db = state.db.lock().unwrap();
         let pattern = format!("{}%", rel_path);
-        db.execute("DELETE FROM files WHERE path = ?1 OR path LIKE ?2", rusqlite::params![rel_path, pattern]).ok();
+        db.execute(
+            "DELETE FROM files WHERE path = ?1 OR path LIKE ?2",
+            rusqlite::params![rel_path, pattern],
+        )
+        .ok();
     } else {
         if let Err(e) = tokio::fs::remove_file(&disk_path).await {
             warn!(error = %e, "Failed to remove file");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
         let db = state.db.lock().unwrap();
-        db.execute("DELETE FROM files WHERE path = ?1", [rel_path]).ok();
+        db.execute("DELETE FROM files WHERE path = ?1", [rel_path])
+            .ok();
     }
 
     info!(path = rel_path, "WebDAV DELETE");
@@ -257,10 +289,10 @@ async fn handle_mkcol(state: &SharedDavState, rel_path: &str) -> Response {
     }
 
     // Check parent exists
-    if let Some(parent) = disk_path.parent() {
-        if !parent.exists() {
-            return StatusCode::CONFLICT.into_response();
-        }
+    if let Some(parent) = disk_path.parent()
+        && !parent.exists()
+    {
+        return StatusCode::CONFLICT.into_response();
     }
 
     if let Err(e) = tokio::fs::create_dir(&disk_path).await {
@@ -269,7 +301,9 @@ async fn handle_mkcol(state: &SharedDavState, rel_path: &str) -> Response {
     }
 
     // Record in DB
-    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
     let id = Uuid::new_v4().to_string();
     let name = std::path::Path::new(rel_path)
         .file_name()
@@ -308,10 +342,10 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
     }
 
     // Ensure destination parent exists
-    if let Some(parent) = dst_disk.parent() {
-        if !parent.exists() {
-            return StatusCode::CONFLICT.into_response();
-        }
+    if let Some(parent) = dst_disk.parent()
+        && !parent.exists()
+    {
+        return StatusCode::CONFLICT.into_response();
     }
 
     let overwrite = dst_disk.exists();
@@ -332,7 +366,9 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        let now = jiff::Zoned::now()
+            .strftime("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string();
 
         db.execute(
             "UPDATE files SET path = ?1, parent_path = ?2, name = ?3, modified_at = ?4 WHERE path = ?5",
@@ -343,10 +379,16 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
         if dst_disk.is_dir() {
             let old_prefix = format!("{}/", rel_path);
             let new_prefix = format!("{}/", dest);
-            let mut stmt = db.prepare("SELECT id, path FROM files WHERE path LIKE ?1").unwrap();
-            let children: Vec<(String, String)> = stmt.query_map([format!("{}%", old_prefix)], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            }).unwrap().filter_map(|r| r.ok()).collect();
+            let mut stmt = db
+                .prepare("SELECT id, path FROM files WHERE path LIKE ?1")
+                .unwrap();
+            let children: Vec<(String, String)> = stmt
+                .query_map([format!("{}%", old_prefix)], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
 
             for (child_id, child_path) in children {
                 let new_path = child_path.replacen(&old_prefix, &new_prefix, 1);
@@ -361,13 +403,19 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
                 db.execute(
                     "UPDATE files SET path = ?1, parent_path = ?2, name = ?3 WHERE id = ?4",
                     rusqlite::params![new_path, new_parent, new_name, child_id],
-                ).ok();
+                )
+                .ok();
             }
         }
     }
 
     info!(from = rel_path, to = %dest, "WebDAV MOVE");
-    if overwrite { StatusCode::NO_CONTENT } else { StatusCode::CREATED }.into_response()
+    if overwrite {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::CREATED
+    }
+    .into_response()
 }
 
 /// COPY — copy a resource
@@ -388,11 +436,9 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
 
     if src_disk.is_dir() {
         copy_dir_recursive(&src_disk, &dst_disk).await.ok();
-    } else {
-        if let Err(e) = tokio::fs::copy(&src_disk, &dst_disk).await {
-            warn!(error = %e, "Failed to copy");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
+    } else if let Err(e) = tokio::fs::copy(&src_disk, &dst_disk).await {
+        warn!(error = %e, "Failed to copy");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     // Create new DB record with new UUID
@@ -404,7 +450,9 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
             let sha256 = format!("{:x}", hasher.finalize());
             let etag = sha256[..16].to_string();
             let content_type = mime_from_path(&dest);
-            let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            let now = jiff::Zoned::now()
+                .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string();
             let id = Uuid::new_v4().to_string();
             let name = std::path::Path::new(&dest)
                 .file_name()
@@ -424,7 +472,12 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
     }
 
     info!(from = rel_path, to = %dest, "WebDAV COPY");
-    if overwrite { StatusCode::NO_CONTENT } else { StatusCode::CREATED }.into_response()
+    if overwrite {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::CREATED
+    }
+    .into_response()
 }
 
 /// PROPFIND — return properties for a resource
@@ -435,7 +488,8 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let depth = headers.get("depth")
+    let depth = headers
+        .get("depth")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("0");
 
@@ -451,7 +505,11 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
 
     // If Depth: 1 and it's a directory, add children
     if depth == "1" && (disk_path.is_dir() || rel_path.is_empty()) {
-        let target = if rel_path.is_empty() { &state.files_root } else { &disk_path };
+        let target = if rel_path.is_empty() {
+            &state.files_root
+        } else {
+            &disk_path
+        };
         if let Ok(mut entries) = tokio::fs::read_dir(target).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let child_name = entry.file_name().to_string_lossy().to_string();
@@ -473,11 +531,10 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
 
     (
         StatusCode::MULTI_STATUS,
-        [
-            (header::CONTENT_TYPE, "application/xml; charset=utf-8"),
-        ],
+        [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
         xml,
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// PROPPATCH — set/remove custom properties
@@ -508,7 +565,11 @@ async fn handle_proppatch(state: &SharedDavState, rel_path: &str, body: Body) ->
         let db = state.db.lock().unwrap();
         for op in &ops {
             match op {
-                PropPatchOp::Set { namespace, name, value } => {
+                PropPatchOp::Set {
+                    namespace,
+                    name,
+                    value,
+                } => {
                     db.execute(
                         "INSERT INTO file_properties (file_path, namespace, name, value) VALUES (?1, ?2, ?3, ?4)
                          ON CONFLICT(file_path, namespace, name) DO UPDATE SET value = excluded.value",
@@ -528,27 +589,36 @@ async fn handle_proppatch(state: &SharedDavState, rel_path: &str, body: Body) ->
     }
 
     // Build response XML
-    let mut xml = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+    let mut xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:">
   <d:response>
     <d:href>{}</d:href>
     <d:propstat>
       <d:prop>
-"#, escape_xml(&href));
+"#,
+        escape_xml(&href)
+    );
 
     for (ns, name, _) in &prop_results {
         if ns == "DAV:" {
             xml.push_str(&format!("        <d:{}/>\n", escape_xml(name)));
         } else {
-            xml.push_str(&format!("        <x:{} xmlns:x=\"{}\"/>\n", escape_xml(name), escape_xml(ns)));
+            xml.push_str(&format!(
+                "        <x:{} xmlns:x=\"{}\"/>\n",
+                escape_xml(name),
+                escape_xml(ns)
+            ));
         }
     }
 
-    xml.push_str(r#"      </d:prop>
+    xml.push_str(
+        r#"      </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
   </d:response>
-</d:multistatus>"#);
+</d:multistatus>"#,
+    );
 
     info!(path = rel_path, ops = ops.len(), "WebDAV PROPPATCH");
 
@@ -556,13 +626,21 @@ async fn handle_proppatch(state: &SharedDavState, rel_path: &str, body: Body) ->
         StatusCode::MULTI_STATUS,
         [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
         xml,
-    ).into_response()
+    )
+        .into_response()
 }
 
 #[derive(Debug)]
 enum PropPatchOp {
-    Set { namespace: String, name: String, value: String },
-    Remove { namespace: String, name: String },
+    Set {
+        namespace: String,
+        name: String,
+        value: String,
+    },
+    Remove {
+        namespace: String,
+        name: String,
+    },
 }
 
 /// Simple XML parser for PROPPATCH requests
@@ -600,24 +678,37 @@ fn parse_proppatch_xml(xml: &str) -> Vec<PropPatchOp> {
                 }
 
                 match local_name.as_str() {
-                    "set" => { in_set = true; in_remove = false; }
-                    "remove" => { in_remove = true; in_set = false; }
-                    "prop" => { in_prop = true; }
+                    "set" => {
+                        in_set = true;
+                        in_remove = false;
+                    }
+                    "remove" => {
+                        in_remove = true;
+                        in_set = false;
+                    }
+                    "prop" => {
+                        in_prop = true;
+                    }
                     _ if in_prop && (in_set || in_remove) => {
-                        let prefix = e.name().prefix()
+                        let prefix = e
+                            .name()
+                            .prefix()
                             .map(|p| String::from_utf8_lossy(p.as_ref()).to_string());
 
-                        current_ns = prefix
-                            .and_then(|p| ns_map.get(&p).cloned())
-                            .unwrap_or_else(|| {
-                                for attr in e.attributes().flatten() {
-                                    let attr_key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                                    if attr_key == "xmlns" {
-                                        return String::from_utf8_lossy(&attr.value).to_string();
+                        current_ns =
+                            prefix
+                                .and_then(|p| ns_map.get(&p).cloned())
+                                .unwrap_or_else(|| {
+                                    for attr in e.attributes().flatten() {
+                                        let attr_key =
+                                            String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                                        if attr_key == "xmlns" {
+                                            return String::from_utf8_lossy(&attr.value)
+                                                .to_string();
+                                        }
                                     }
-                                }
-                                "custom:".to_string()
-                            });
+                                    "custom:".to_string()
+                                });
                         current_name = local_name.clone();
                         current_value.clear();
                         in_value = true;
@@ -637,15 +728,23 @@ fn parse_proppatch_xml(xml: &str) -> Vec<PropPatchOp> {
                     }
                 }
 
-                if in_prop && (in_set || in_remove) && local_name != "prop" && local_name != "set" && local_name != "remove" {
-                    let prefix = e.name().prefix()
+                if in_prop
+                    && (in_set || in_remove)
+                    && local_name != "prop"
+                    && local_name != "set"
+                    && local_name != "remove"
+                {
+                    let prefix = e
+                        .name()
+                        .prefix()
                         .map(|p| String::from_utf8_lossy(p.as_ref()).to_string());
 
                     let ns = prefix
                         .and_then(|p| ns_map.get(&p).cloned())
                         .unwrap_or_else(|| {
                             for attr in e.attributes().flatten() {
-                                let attr_key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                                let attr_key =
+                                    String::from_utf8_lossy(attr.key.as_ref()).to_string();
                                 if attr_key == "xmlns" {
                                     return String::from_utf8_lossy(&attr.value).to_string();
                                 }
@@ -668,18 +767,22 @@ fn parse_proppatch_xml(xml: &str) -> Vec<PropPatchOp> {
                 }
             }
             Ok(quick_xml::events::Event::Text(ref e)) => {
-                if in_value {
-                    if let Ok(text) = e.unescape() {
-                        current_value.push_str(&text);
-                    }
+                if in_value && let Ok(text) = e.unescape() {
+                    current_value.push_str(&text);
                 }
             }
             Ok(quick_xml::events::Event::End(ref e)) => {
                 let local_name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 match local_name.as_str() {
-                    "set" => { in_set = false; }
-                    "remove" => { in_remove = false; }
-                    "prop" => { in_prop = false; }
+                    "set" => {
+                        in_set = false;
+                    }
+                    "remove" => {
+                        in_remove = false;
+                    }
+                    "prop" => {
+                        in_prop = false;
+                    }
                     _ if in_value && local_name == current_name => {
                         in_value = false;
                         if in_set {
@@ -733,16 +836,17 @@ async fn uploads_handler(
             let session_id = parts[1];
 
             // Check disk space if OC-Total-Length header is present
-            if let Some(total_len) = headers.get("oc-total-length")
+            if let Some(total_len) = headers
+                .get("oc-total-length")
                 .or_else(|| headers.get("OC-Total-Length"))
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
+                && let Ok(stats) = fs2::available_space(&state.uploads_root)
+                && stats < total_len + 1024 * 1024
             {
-                if let Ok(stats) = fs2::available_space(&state.uploads_root) {
-                    if stats < total_len + 1024 * 1024 { // 1MB buffer
-                        return (StatusCode::INSUFFICIENT_STORAGE, "Insufficient disk space").into_response();
-                    }
-                }
+                // 1MB buffer
+                return (StatusCode::INSUFFICIENT_STORAGE, "Insufficient disk space")
+                    .into_response();
             }
 
             let staging_dir = state.uploads_root.join(session_id);
@@ -754,11 +858,13 @@ async fn uploads_handler(
             // Record in DB
             let now = jiff::Zoned::now();
             let now_str = now.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
-            let expires = now.checked_add(jiff::SignedDuration::from_hours(24))
+            let expires = now
+                .checked_add(jiff::SignedDuration::from_hours(24))
                 .map(|e| e.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string())
                 .unwrap_or_else(|_| now_str.clone());
 
-            let total_size: Option<i64> = headers.get("oc-total-length")
+            let total_size: Option<i64> = headers
+                .get("oc-total-length")
                 .or_else(|| headers.get("OC-Total-Length"))
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse().ok());
@@ -811,7 +917,12 @@ async fn uploads_handler(
                 ).ok();
             }
 
-            info!(session = session_id, chunk = chunk_name, size = chunk_size, "Chunk uploaded");
+            info!(
+                session = session_id,
+                chunk = chunk_name,
+                size = chunk_size,
+                "Chunk uploaded"
+            );
             StatusCode::CREATED.into_response()
         }
         "MOVE" => {
@@ -827,12 +938,12 @@ async fn uploads_handler(
             }
 
             // Get destination from headers
-            let dest = match headers.get("destination")
-                .and_then(|v| v.to_str().ok())
-            {
+            let dest = match headers.get("destination").and_then(|v| v.to_str().ok()) {
                 Some(d) => {
                     if let Some(idx) = d.find("/dav/files/") {
-                        d[idx + "/dav/files/".len()..].trim_end_matches('/').to_string()
+                        d[idx + "/dav/files/".len()..]
+                            .trim_end_matches('/')
+                            .to_string()
                     } else {
                         d.trim_start_matches('/').trim_end_matches('/').to_string()
                     }
@@ -909,7 +1020,9 @@ async fn uploads_handler(
             let sha256 = format!("{:x}", hasher.finalize());
             let etag = sha256[..16].to_string();
             let content_type = mime_from_path(&dest);
-            let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            let now = jiff::Zoned::now()
+                .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string();
 
             // Record in files table
             {
@@ -923,9 +1036,11 @@ async fn uploads_handler(
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
 
-                let existing_id: Option<String> = db.query_row(
-                    "SELECT id FROM files WHERE path = ?1", [&dest], |row| row.get(0),
-                ).ok();
+                let existing_id: Option<String> = db
+                    .query_row("SELECT id FROM files WHERE path = ?1", [&dest], |row| {
+                        row.get(0)
+                    })
+                    .ok();
                 let id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
                 db.execute(
@@ -942,7 +1057,11 @@ async fn uploads_handler(
                 ).ok();
 
                 // Clean up upload session
-                db.execute("DELETE FROM chunked_uploads WHERE session_id = ?1", [session_id]).ok();
+                db.execute(
+                    "DELETE FROM chunked_uploads WHERE session_id = ?1",
+                    [session_id],
+                )
+                .ok();
             }
 
             // Remove staging directory
@@ -951,7 +1070,10 @@ async fn uploads_handler(
             info!(session = session_id, dest = %dest, size = total_size, "Chunked upload finalized");
 
             let mut resp_headers = HeaderMap::new();
-            resp_headers.insert(header::ETAG, HeaderValue::from_str(&format!("\"{}\"", etag)).unwrap());
+            resp_headers.insert(
+                header::ETAG,
+                HeaderValue::from_str(&format!("\"{}\"", etag)).unwrap(),
+            );
 
             (StatusCode::CREATED, resp_headers).into_response()
         }
@@ -967,18 +1089,24 @@ fn get_etag_for_file(state: &SharedDavState, rel_path: &str) -> Option<String> {
         "SELECT etag FROM files WHERE path = ?1",
         [rel_path],
         |row| row.get(0),
-    ).ok()
+    )
+    .ok()
 }
 
 fn get_destination(headers: &HeaderMap) -> Option<String> {
-    headers.get("destination")
+    headers
+        .get("destination")
         .and_then(|v| v.to_str().ok())
         .map(|dest| {
             // Extract relative path from full URL or path
             if let Some(idx) = dest.find("/dav/files/") {
-                dest[idx + "/dav/files/".len()..].trim_end_matches('/').to_string()
+                dest[idx + "/dav/files/".len()..]
+                    .trim_end_matches('/')
+                    .to_string()
             } else {
-                dest.trim_start_matches('/').trim_end_matches('/').to_string()
+                dest.trim_start_matches('/')
+                    .trim_end_matches('/')
+                    .to_string()
             }
         })
 }
@@ -1008,7 +1136,8 @@ fn mime_from_path(path: &str) -> String {
         "yaml" | "yml" => "text/yaml",
         "heic" | "heif" => "image/heic",
         _ => "application/octet-stream",
-    }.to_string()
+    }
+    .to_string()
 }
 
 struct PropfindResponse {
@@ -1029,11 +1158,13 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
     let metadata = disk_path.metadata().ok();
     let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
-    let modified = metadata.as_ref()
+    let modified = metadata
+        .as_ref()
         .and_then(|m| m.modified().ok())
         .map(|t| {
             let duration = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-            let ts = jiff::Timestamp::from_second(duration.as_secs() as i64).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+            let ts = jiff::Timestamp::from_second(duration.as_secs() as i64)
+                .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
             ts.strftime("%a, %d %b %Y %H:%M:%S GMT").to_string()
         })
         .unwrap_or_else(|| "Thu, 01 Jan 1970 00:00:00 GMT".to_string());
@@ -1045,27 +1176,28 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
             "SELECT id, etag FROM files WHERE path = ?1",
             [rel_path],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        ).unwrap_or_else(|_| (Uuid::new_v4().to_string(), format!("{:x}", size)))
+        )
+        .unwrap_or_else(|_| (Uuid::new_v4().to_string(), format!("{:x}", size)))
     };
 
     // Load custom properties
     let custom_properties = {
         let db = state.db.lock().unwrap();
-        let mut stmt = db.prepare(
-            "SELECT namespace, name, value FROM file_properties WHERE file_path = ?1"
-        ).ok();
+        let mut stmt = db
+            .prepare("SELECT namespace, name, value FROM file_properties WHERE file_path = ?1")
+            .ok();
         match stmt.as_mut() {
-            Some(stmt) => {
-                stmt.query_map([rel_path], |row| {
+            Some(stmt) => stmt
+                .query_map([rel_path], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                     ))
-                }).ok()
+                })
+                .ok()
                 .map(|rows| rows.filter_map(|r| r.ok()).collect())
-                .unwrap_or_default()
-            }
+                .unwrap_or_default(),
             None => Vec::new(),
         }
     };
@@ -1074,7 +1206,11 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
         href: href.to_string(),
         is_dir,
         size,
-        content_type: if is_dir { "httpd/unix-directory".to_string() } else { mime_from_path(rel_path) },
+        content_type: if is_dir {
+            "httpd/unix-directory".to_string()
+        } else {
+            mime_from_path(rel_path)
+        },
         etag,
         modified,
         oc_id,
@@ -1083,13 +1219,18 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
 }
 
 fn build_multistatus_xml(responses: &[PropfindResponse]) -> String {
-    let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
-"#);
+"#,
+    );
 
     for resp in responses {
         xml.push_str("  <d:response>\n");
-        xml.push_str(&format!("    <d:href>{}</d:href>\n", escape_xml(&resp.href)));
+        xml.push_str(&format!(
+            "    <d:href>{}</d:href>\n",
+            escape_xml(&resp.href)
+        ));
         xml.push_str("    <d:propstat>\n");
         xml.push_str("      <d:prop>\n");
 
@@ -1097,25 +1238,52 @@ fn build_multistatus_xml(responses: &[PropfindResponse]) -> String {
             xml.push_str("        <d:resourcetype><d:collection/></d:resourcetype>\n");
         } else {
             xml.push_str("        <d:resourcetype/>\n");
-            xml.push_str(&format!("        <d:getcontentlength>{}</d:getcontentlength>\n", resp.size));
-            xml.push_str(&format!("        <d:getcontenttype>{}</d:getcontenttype>\n", escape_xml(&resp.content_type)));
+            xml.push_str(&format!(
+                "        <d:getcontentlength>{}</d:getcontentlength>\n",
+                resp.size
+            ));
+            xml.push_str(&format!(
+                "        <d:getcontenttype>{}</d:getcontenttype>\n",
+                escape_xml(&resp.content_type)
+            ));
         }
 
-        xml.push_str(&format!("        <d:getetag>\"{}\"</d:getetag>\n", escape_xml(&resp.etag)));
-        xml.push_str(&format!("        <d:getlastmodified>{}</d:getlastmodified>\n", escape_xml(&resp.modified)));
-        xml.push_str(&format!("        <oc:id>{}</oc:id>\n", escape_xml(&resp.oc_id)));
-        xml.push_str(&format!("        <oc:fileid>{}</oc:fileid>\n", escape_xml(&resp.oc_id)));
+        xml.push_str(&format!(
+            "        <d:getetag>\"{}\"</d:getetag>\n",
+            escape_xml(&resp.etag)
+        ));
+        xml.push_str(&format!(
+            "        <d:getlastmodified>{}</d:getlastmodified>\n",
+            escape_xml(&resp.modified)
+        ));
+        xml.push_str(&format!(
+            "        <oc:id>{}</oc:id>\n",
+            escape_xml(&resp.oc_id)
+        ));
+        xml.push_str(&format!(
+            "        <oc:fileid>{}</oc:fileid>\n",
+            escape_xml(&resp.oc_id)
+        ));
         xml.push_str("        <oc:permissions>RDNVCK</oc:permissions>\n");
         xml.push_str(&format!("        <oc:size>{}</oc:size>\n", resp.size));
 
         // Custom properties
         for (ns, name, value) in &resp.custom_properties {
             if ns == "DAV:" {
-                xml.push_str(&format!("        <d:{}>{}</d:{}>\n",
-                    escape_xml(name), escape_xml(value), escape_xml(name)));
+                xml.push_str(&format!(
+                    "        <d:{}>{}</d:{}>\n",
+                    escape_xml(name),
+                    escape_xml(value),
+                    escape_xml(name)
+                ));
             } else {
-                xml.push_str(&format!("        <x:{} xmlns:x=\"{}\">{}</x:{}>\n",
-                    escape_xml(name), escape_xml(ns), escape_xml(value), escape_xml(name)));
+                xml.push_str(&format!(
+                    "        <x:{} xmlns:x=\"{}\">{}</x:{}>\n",
+                    escape_xml(name),
+                    escape_xml(ns),
+                    escape_xml(value),
+                    escape_xml(name)
+                ));
             }
         }
 
@@ -1131,10 +1299,10 @@ fn build_multistatus_xml(responses: &[PropfindResponse]) -> String {
 
 fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
-     .replace('<', "&lt;")
-     .replace('>', "&gt;")
-     .replace('"', "&quot;")
-     .replace('\'', "&apos;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {

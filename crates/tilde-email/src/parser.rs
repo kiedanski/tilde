@@ -31,14 +31,15 @@ pub struct Attachment {
 impl ParsedEmail {
     /// Parse raw RFC822 email bytes into structured data.
     pub fn parse(raw: &[u8]) -> Result<Self> {
-        let parsed = mailparse::parse_mail(raw)
-            .context("Failed to parse email")?;
+        let parsed = mailparse::parse_mail(raw).context("Failed to parse email")?;
 
         let headers = &parsed.headers;
 
         let message_id = get_header(headers, "Message-ID")
             .unwrap_or_else(|| format!("<generated-{}>", uuid::Uuid::new_v4()));
-        let message_id = message_id.trim_matches(|c| c == '<' || c == '>').to_string();
+        let message_id = message_id
+            .trim_matches(|c| c == '<' || c == '>')
+            .to_string();
 
         let from_raw = get_header(headers, "From").unwrap_or_default();
         let (from_name, from_address) = parse_address(&from_raw);
@@ -102,7 +103,8 @@ impl ParsedEmail {
 }
 
 fn get_header(headers: &[mailparse::MailHeader<'_>], name: &str) -> Option<String> {
-    headers.iter()
+    headers
+        .iter()
         .find(|h| h.get_key().eq_ignore_ascii_case(name))
         .map(|h| h.get_value())
 }
@@ -111,7 +113,10 @@ fn parse_address(raw: &str) -> (Option<String>, String) {
     let raw = raw.trim();
     if let Some(start) = raw.rfind('<') {
         let name = raw[..start].trim().trim_matches('"').to_string();
-        let addr = raw[start..].trim_matches(|c| c == '<' || c == '>').trim().to_string();
+        let addr = raw[start..]
+            .trim_matches(|c| c == '<' || c == '>')
+            .trim()
+            .to_string();
         let name = if name.is_empty() { None } else { Some(name) };
         (name, addr)
     } else {
@@ -124,7 +129,10 @@ fn parse_address_list(raw: &str) -> Vec<String> {
         .map(|s| {
             let s = s.trim();
             if let Some(start) = s.rfind('<') {
-                s[start..].trim_matches(|c| c == '<' || c == '>').trim().to_string()
+                s[start..]
+                    .trim_matches(|c| c == '<' || c == '>')
+                    .trim()
+                    .to_string()
             } else {
                 s.to_string()
             }
@@ -154,7 +162,9 @@ fn extract_parts(
 
     // Check if this is an attachment
     if disposition.disposition == mailparse::DispositionType::Attachment {
-        let filename = disposition.params.get("filename")
+        let filename = disposition
+            .params
+            .get("filename")
             .cloned()
             .unwrap_or_else(|| format!("attachment_{}", attachments.len()));
         if let Ok(data) = part.get_body_raw() {
