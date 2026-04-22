@@ -1,0 +1,1831 @@
+<project_specification>
+  <project_name>tilde — Personal Cloud Server</project_name>
+
+  <overview>
+    A monolithic Rust binary serving open protocols (WebDAV, CalDAV, CardDAV, MCP, IMAP-as-client)
+    that reuse existing mature client ecosystems rather than inventing new ones. Deployable on a
+    cheap VPS (Hetzner, EC2) or behind a reverse proxy (Pangolin/Caddy) at home. Files are the
+    source of truth, SQLite is a rebuildable cache, originals are immutable except for in-file
+    metadata edits. CLI-first configuration, systemd-integrated installation, export-first
+    architecture. Single-user. No web UI beyond a minimal Nextcloud Login Flow v2 page.
+
+    Target user: a Linux-proficient individual who wants professional infrastructure they control
+    and can migrate off of at any time. Target footprint: 1 vCPU, 256–512MB RAM, 15–30MB static
+    musl binary. License: AGPL-3.0.
+  </overview>
+
+  <technology_stack>
+    <language>Rust (stable toolchain, 2024 edition)</language>
+    <binary>Single static musl binary named "tilde"</binary>
+
+    <core_crates>
+      <http>axum 0.8+ (HTTP framework) with tower middleware</http>
+      <async>tokio (multi-threaded runtime)</async>
+      <tls>rustls + rustls-acme (TLS-ALPN-01 ACME certificate provisioning)</tls>
+      <database>rusqlite (SQLite with WAL mode, FTS5, JSON1) — NOT sqlx, NOT sea-orm</database>
+      <caldav_cardav>rustical (RustiCal — Cargo dependency, AGPL-3.0, Stalwart-backed CalDAV/CardDAV)</caldav_cardav>
+      <mcp>rmcp 1.5.x (Model Context Protocol, Streamable HTTP transport)</mcp>
+      <markdown>comrak (CommonMark + GFM rendering)</markdown>
+      <ical_vcard>calcard (Stalwart's iCal/vCard parser)</ical_vcard>
+      <xml>quick-xml (event/streaming API — NOT serde mode, broken for DAV namespaces)</xml>
+      <cli>clap 4 (CLI argument parsing with derive macros)</cli>
+      <config>figment (layered configuration: file + env + CLI)</config>
+      <dates>jiff (timezone-aware datetime library)</dates>
+      <paths>directories (XDG Base Directory compliance)</paths>
+      <i18n>fluent-rs (Fluent localization, English-only default)</i18n>
+      <auth_password>argon2 (Argon2id password hashing)</auth_password>
+      <auth_token>jsonwebtoken (JWT — used only for Nextcloud Login Flow v2 app tokens, NOT sessions)</auth_token>
+      <auth_webauthn>webauthn-rs (optional WebAuthn second factor)</auth_webauthn>
+      <backup>rustic-rs (embedded restic-compatible backup library)</backup>
+      <email_parse>mail-parser (RFC5322 email parsing)</email_parse>
+      <email_fetch>async-imap (IMAP client with IDLE support)</email_fetch>
+      <file_watch>notify-rs (cross-platform filesystem watcher)</file_watch>
+      <crypto>subtle (constant-time comparisons for token validation)</crypto>
+      <image>image + fast_image_resize (SIMD thumbnail generation)</image>
+      <heic>libheif-rs (HEIC/HEIF decoding via libheif)</heic>
+      <embed>rust-embed (embed static assets in binary)</embed>
+      <logging>tracing + tracing-subscriber (structured JSON logging to journald)</logging>
+      <systemd>sd-notify (systemd Type=notify integration)</systemd>
+      <signatures>minisign (update manifest signature verification)</signatures>
+    </core_crates>
+
+    <system_dependencies>
+      <exiftool>ExifTool (Perl) — in-file XMP/IPTC metadata read/write for photos</exiftool>
+      <libheif>libheif (C library) — HEIC decoding, linked via libheif-rs</libheif>
+      <ffmpeg>ffmpeg (binary) — video thumbnail extraction via subprocess</ffmpeg>
+    </system_dependencies>
+
+    <rejected_alternatives>
+      - sled (abandoned by maintainer)
+      - sea-orm (too heavy for single-binary SQLite use case)
+      - Rocket, actix-web (axum has better tower middleware ecosystem)
+      - quick-xml serde mode (broken for DAV XML namespace handling)
+      - Pure-Rust HEIC decoder (only 73% pixel-exact vs libheif)
+      - Syncthing BEP protocol (no Rust implementation, wrong sync model)
+      - sqlx (compile-time query checking not needed for embedded SQLite)
+    </rejected_alternatives>
+
+    <infrastructure>
+      <target>Single Linux server: Hetzner CAX11 (€3.79/mo, ARM, 20TB bandwidth) or EC2 t4g.small or home server behind Pangolin/Caddy</target>
+      <init>systemd (Type=notify with watchdog)</init>
+      <tls>rustls-acme TLS-ALPN-01 (direct) or upstream TLS via reverse proxy</tls>
+      <port>443 (HTTPS, single listener, path-based dispatch)</port>
+    </infrastructure>
+
+    <credentials>
+      <!-- All secrets via environment variables or file references, NEVER in config.toml -->
+      <tilde_admin_password>TILDE_ADMIN_PASSWORD — primary admin password, Argon2id hashed on first use</tilde_admin_password>
+      <tilde_hostname>TILDE_HOSTNAME — public hostname for ACME and URL generation (e.g., cloud.example.com)</tilde_hostname>
+      <tilde_acme_email>TILDE_ACME_EMAIL — email for Let's Encrypt ACME registration</tilde_acme_email>
+      <tilde_email_imap_host>TILDE_EMAIL_IMAP_HOST — IMAP server hostname (e.g., imap.purelymail.com)</tilde_email_imap_host>
+      <tilde_email_imap_port>TILDE_EMAIL_IMAP_PORT — IMAP port, default 993</tilde_email_imap_port>
+      <tilde_email_username>TILDE_EMAIL_USERNAME — IMAP login username</tilde_email_username>
+      <tilde_email_password>TILDE_EMAIL_PASSWORD — IMAP login password</tilde_email_password>
+      <tilde_smtp_host>TILDE_SMTP_HOST — SMTP server for outbound notifications (optional)</tilde_smtp_host>
+      <tilde_smtp_port>TILDE_SMTP_PORT — SMTP port, default 587</tilde_smtp_port>
+      <tilde_smtp_username>TILDE_SMTP_USERNAME — SMTP login username (optional)</tilde_smtp_username>
+      <tilde_smtp_password>TILDE_SMTP_PASSWORD — SMTP login password (optional)</tilde_smtp_password>
+      <tilde_ntfy_topic>TILDE_NTFY_TOPIC — ntfy.sh topic URL for push notifications (optional)</tilde_ntfy_topic>
+      <tilde_ntfy_token>TILDE_NTFY_TOKEN — ntfy.sh auth token (optional)</tilde_ntfy_token>
+      <tilde_backup_b2_key_id>TILDE_BACKUP_B2_KEY_ID — Backblaze B2 application key ID (optional)</tilde_backup_b2_key_id>
+      <tilde_backup_b2_key>TILDE_BACKUP_B2_KEY — Backblaze B2 application key (optional)</tilde_backup_b2_key>
+      <tilde_backup_b2_bucket>TILDE_BACKUP_B2_BUCKET — Backblaze B2 bucket name (optional)</tilde_backup_b2_bucket>
+      <tilde_backup_password>TILDE_BACKUP_PASSWORD — encryption password for backup repository</tilde_backup_password>
+      <tilde_matrix_homeserver>TILDE_MATRIX_HOMESERVER — Matrix homeserver URL for notifications (optional)</tilde_matrix_homeserver>
+      <tilde_matrix_token>TILDE_MATRIX_TOKEN — Matrix access token (optional)</tilde_matrix_token>
+      <tilde_matrix_room>TILDE_MATRIX_ROOM — Matrix room ID for notifications (optional)</tilde_matrix_room>
+      <tilde_signal_api_url>TILDE_SIGNAL_API_URL — signal-cli REST API URL (optional)</tilde_signal_api_url>
+      <tilde_signal_recipient>TILDE_SIGNAL_RECIPIENT — Signal recipient phone number (optional)</tilde_signal_recipient>
+    </credentials>
+  </technology_stack>
+
+  <prerequisites>
+    <build_environment>
+      - Rust stable toolchain (rustup)
+      - musl target: rustup target add x86_64-unknown-linux-musl (or aarch64)
+      - System packages: libheif-dev, exiftool, ffmpeg
+      - For development: SQLite 3.35+ with FTS5 enabled
+    </build_environment>
+    <runtime_environment>
+      - Linux with systemd (primary target)
+      - exiftool, libheif, ffmpeg installed
+      - Port 443 available (or reverse proxy forwarding)
+      - Sufficient disk for photo/file storage
+    </runtime_environment>
+  </prerequisites>
+
+  <architecture>
+    <overview>
+      Monolithic axum + tokio binary. Single HTTPS listener on port 443 with path-based dispatch
+      to per-protocol handlers. Cargo workspace with one crate per feature area.
+
+      Request flow:
+        Client → rustls TLS → axum Router → tower middleware (auth, logging, rate-limit)
+          → path dispatch:
+            /dav/*           → WebDAV handler (files, notes)
+            /caldav/*        → RustiCal CalDAV handler
+            /carddav/*       → RustiCal CardDAV handler
+            /.well-known/*   → RFC 6764 well-known redirects
+            /mcp/*           → rmcp Streamable HTTP handler
+            /ocs/*           → Nextcloud OCS capabilities stub
+            /login/v2/*      → Nextcloud Login Flow v2
+            /remote.php/*    → Nextcloud compat aliases (redirect to /dav/*)
+            /status.php      → Nextcloud status stub
+            /metrics         → Prometheus metrics (localhost-only)
+            /health          → Health check endpoint
+    </overview>
+
+    <cargo_workspace>
+      tilde/
+      ├── Cargo.toml              (workspace root)
+      ├── crates/
+      │   ├── tilde-core/         (config, auth, database, migrations, error types)
+      │   ├── tilde-dav/          (WebDAV Class 1, chunked upload, file sync)
+      │   ├── tilde-cal/          (CalDAV via RustiCal integration)
+      │   ├── tilde-card/         (CardDAV via RustiCal integration)
+      │   ├── tilde-photos/       (photo ingestion, metadata, thumbnails, organization)
+      │   ├── tilde-notes/        (markdown notes over WebDAV)
+      │   ├── tilde-collections/  (generic trackers, bookmarks, structured data)
+      │   ├── tilde-email/        (IMAP fetcher, Maildir storage, FTS index)
+      │   ├── tilde-mcp/          (MCP tools, bearer token auth, audit log)
+      │   ├── tilde-backup/       (rustic-rs integration, scheduling)
+      │   ├── tilde-notify/       (notification sinks: ntfy, SMTP, Matrix, Signal, webhook)
+      │   ├── tilde-cli/          (clap CLI, all subcommands)
+      │   └── tilde-server/       (axum app assembly, main binary entry point)
+      ├── migrations/             (SQL migration files)
+      ├── locales/                (Fluent .ftl files)
+      └── assets/                 (login page HTML, embedded via rust-embed)
+    </cargo_workspace>
+
+    <sqlite_configuration>
+      - WAL mode (journal_mode=WAL)
+      - synchronous=NORMAL
+      - busy_timeout=5000ms
+      - mmap_size capped at 32MB (128MB on 512MB+ systems)
+      - FTS5 enabled for full-text search (notes, email)
+      - JSON1 extension enabled for collection schemas
+      - Foreign keys enforced (PRAGMA foreign_keys=ON)
+      - Single database file at $STATE_DIR/tilde.db
+      - Migrations table tracks applied migrations by version number
+      - Database is a rebuildable cache: can be reconstructed from files on disk
+    </sqlite_configuration>
+
+    <file_storage_layout>
+      $STATE_DIR/
+      ├── tilde.db                    (SQLite database)
+      ├── tilde.db-wal                (WAL file)
+      ├── blobs/
+      │   └── by-id/
+      │       └── <uuid>.<ext>        (content-addressed photo/file blobs)
+      ├── files/                      (WebDAV file tree, user-visible)
+      │   ├── documents/
+      │   ├── notes/                  (markdown notes)
+      │   └── ...
+      ├── photos/
+      │   ├── _inbox/                 (drop zone, server auto-organizes)
+      │   ├── _library-drop/          (preserve user structure, bypass classifier)
+      │   ├── _untriaged/             (missing essential metadata)
+      │   ├── _errors/                (decode failures, corrupt files)
+      │   └── {year}/{month:02}{-trip}/ (organized photos)
+      ├── calendars/                  (RustiCal calendar storage)
+      ├── contacts/                   (RustiCal addressbook storage)
+      ├── mail/                       (Maildir format)
+      │   └── <account>/
+      │       └── <folder>/
+      │           ├── cur/
+      │           ├── new/
+      │           └── tmp/
+      ├── collections/                (JSON collection data, optional file backing)
+      ├── uploads/                    (chunked upload staging, 24h session expiry)
+      │   └── <session-id>/
+      └── backup/                     (local backup snapshots)
+
+      $CACHE_DIR/
+      ├── thumbnails/
+      │   └── <uuid>/
+      │       ├── 256.webp            (256px thumbnail)
+      │       └── 1920.webp           (1920px preview)
+      └── fts/                        (FTS rebuild cache)
+    </file_storage_layout>
+
+    <sync_model>
+      Last-writer-wins with Hybrid Logical Clocks (HLC) for metadata. ~500 LOC, no library dep.
+
+      Per data type:
+      - Calendars/contacts: ETag If-Match + RFC 6578 sync-token (handled by RustiCal)
+      - Files (bytes): ETag If-Match; 412 Precondition Failed → client writes
+        filename.sync-conflict-<date>-<device>.ext (Syncthing naming convention)
+      - Photo metadata: LWW-per-column with HLC
+      - Notes: file-level sync + conflict files on 412
+      - Tracker rows: LWW + HLC + event log + Merkle tree for divergence detection
+
+      No CRDTs in v1. Upgrade path to loro if collaborative editing becomes concrete need.
+    </sync_model>
+
+    <process_isolation>
+      ExifTool, libheif decode, and ffmpeg run as subprocesses with:
+      - Configurable timeout (default 30s for ExifTool, 60s for ffmpeg)
+      - Memory limits via cgroup (where available)
+      - Single-slot semaphore for thumbnail generation (prevents OOM on large HEIC)
+      - Crashed subprocess cannot take down the server process
+      - Errors logged and file moved to _errors/ directory
+    </process_isolation>
+  </architecture>
+
+  <configuration>
+    <format>TOML</format>
+    <xdg_compliance>
+      User mode (non-systemd):
+        Config:  $XDG_CONFIG_HOME/tilde/config.toml  (default ~/.config/tilde/config.toml)
+        Data:    $XDG_DATA_HOME/tilde/               (default ~/.local/share/tilde/)
+        Cache:   $XDG_CACHE_HOME/tilde/              (default ~/.cache/tilde/)
+        Runtime: $XDG_RUNTIME_DIR/tilde/             (default /run/user/$UID/tilde/)
+        Logs:    stderr (user captures as desired)
+
+      Systemd mode (detected via STATE_DIRECTORY env var):
+        Config:  /etc/tilde/config.toml
+        Data:    /var/lib/tilde/
+        Cache:   /var/cache/tilde/
+        Runtime: /run/tilde/
+        Logs:    journald (structured JSON via tracing-subscriber)
+
+      Detection: runtime check for systemd StateDirectory env var.
+      Override:  $TILDE_CONFIG env var → --config flag → XDG path → /etc/tilde/ → defaults.
+    </xdg_compliance>
+
+    <config_toml_reference>
+      # /etc/tilde/config.toml (or ~/.config/tilde/config.toml)
+      # All fields shown with defaults. Secrets NEVER in this file.
+
+      [server]
+      hostname = ""                      # REQUIRED — public hostname (e.g., "cloud.example.com")
+      listen_addr = "0.0.0.0"            # bind address
+      listen_port = 443                  # listen port
+      trusted_proxies = []               # IP list to trust X-Forwarded-* from (e.g., ["10.0.0.1/32"])
+
+      [tls]
+      mode = "acme"                      # "acme" | "manual" | "upstream"
+      # acme mode: rustls-acme TLS-ALPN-01 auto-provisioning
+      acme_email = ""                    # set via TILDE_ACME_EMAIL env var
+      acme_directory = "https://acme-v01.api.letsencrypt.org/directory"
+      acme_cache_dir = ""                # defaults to $STATE_DIR/acme/
+      # manual mode: provide cert + key paths
+      cert_path = ""
+      key_path = ""
+      # upstream mode: reverse proxy handles TLS, server speaks plain HTTP
+
+      [auth]
+      session_ttl_hours = 24             # sliding session TTL
+      max_login_attempts = 5             # per-IP per 15-minute window
+      lockout_duration_minutes = 15      # lockout after max attempts exceeded
+      webauthn_enabled = false           # optional WebAuthn second factor
+      webauthn_rp_id = ""                # defaults to server.hostname
+
+      [files]
+      max_upload_size_mb = 10240         # 10GB default max
+      chunked_upload_session_ttl_hours = 24
+      watched_paths = ["photos/_inbox", "photos/_library-drop"]
+
+      [photos]
+      enabled = true
+      organization_pattern = "{year}/{month:02}"   # supports {year}, {month:02}, {day:02}, {-trip}
+      thumbnail_sizes = [256, 1920]                # px, generate WebP thumbnails
+      thumbnail_quality = 80                       # WebP quality 1-100
+      exiftool_timeout_seconds = 30
+      ffmpeg_timeout_seconds = 60
+      watch_debounce_seconds = 5                   # debounce file watcher events
+
+      [notes]
+      root_path = "notes"               # WebDAV collection name for notes
+
+      [calendar]
+      enabled = true
+      # RustiCal handles most CalDAV configuration internally
+
+      [contacts]
+      enabled = true
+      # RustiCal handles most CardDAV configuration internally
+
+      [collections]
+      enabled = true
+
+      [email]
+      enabled = false                    # opt-in
+      [[email.accounts]]
+      name = "personal"
+      imap_host = ""                     # set via TILDE_EMAIL_IMAP_HOST
+      imap_port = 993
+      username_env = "TILDE_EMAIL_USERNAME"
+      password_env = "TILDE_EMAIL_PASSWORD"
+      use_ssl = true
+      idle_enabled = true                # IMAP IDLE for near-real-time
+      folders_include = []               # empty = all folders
+      folders_exclude = ["Trash", "Spam"]
+      retention_days = 0                 # 0 = keep forever
+      poll_interval_seconds = 300        # fallback if IDLE not supported
+
+      [mcp]
+      enabled = true
+      tool_allowlist = ["*"]             # or explicit: ["notes.search", "calendar.list_events"]
+      default_rate_limit = 60            # requests per minute per token
+      audit_log_retention_days = 90
+
+      [backup]
+      enabled = false                    # opt-in
+      local_retention = { hourly = 24, daily = 7, weekly = 4, monthly = 12 }
+      [[backup.offsite]]
+      name = "b2"
+      type = "s3"                        # "s3" | "sftp" | "local"
+      endpoint = ""                      # S3-compatible endpoint
+      bucket_env = "TILDE_BACKUP_B2_BUCKET"
+      key_id_env = "TILDE_BACKUP_B2_KEY_ID"
+      key_env = "TILDE_BACKUP_B2_KEY"
+      schedule = "hourly"
+
+      [notifications]
+      [[notifications.sinks]]
+      type = "ntfy"                      # "ntfy" | "smtp" | "matrix" | "signal" | "webhook" | "file"
+      topic_env = "TILDE_NTFY_TOPIC"
+      token_env = "TILDE_NTFY_TOKEN"
+      min_priority = "medium"            # "low" | "medium" | "high" | "critical"
+
+      [[notifications.sinks]]
+      type = "file"
+      path = ""                          # defaults to $STATE_DIR/notifications.log
+      min_priority = "low"
+
+      [updates]
+      check_enabled = true
+      check_interval_hours = 24
+      manifest_url = ""                  # defaults to official tilde releases
+      manifest_mirror = ""               # self-hosted mirror URL (optional)
+
+      [logging]
+      level = "info"                     # "trace" | "debug" | "info" | "warn" | "error"
+      format = "json"                    # "json" | "pretty"
+
+      # Hot-reload via SIGHUP: logging.level, mcp.tool_allowlist, mcp.default_rate_limit,
+      #   notifications, backup schedule. Restart required for: server.*, tls.*, auth.*,
+      #   database path changes.
+    </config_toml_reference>
+  </configuration>
+
+  <core_features>
+
+    <webdav_file_sync>
+      <protocol>WebDAV Class 1 (RFC 4918) — NO Class 2 LOCK/UNLOCK</protocol>
+      <description>
+        Full WebDAV file serving with Nextcloud-compatible chunked upload support.
+        Files stored on disk are the source of truth. SQLite indexes metadata for fast lookups.
+      </description>
+
+      <methods_supported>
+        - OPTIONS (returns DAV: 1 header, supported methods)
+        - GET (file download, supports Range headers)
+        - PUT (file upload, atomic: write to tmp → fsync → rename → fsync parent dir)
+        - DELETE (file/collection deletion)
+        - MKCOL (create collection/directory)
+        - MOVE (rename/move file or collection, updates oc:id mapping)
+        - COPY (copy file or collection)
+        - PROPFIND (Depth: 0 or 1, returns DAV properties)
+        - PROPPATCH (set/remove custom properties)
+        - HEAD (metadata without body)
+      </methods_supported>
+
+      <nextcloud_compatibility>
+        - Chunked upload v2 protocol:
+          1. Client creates upload session: MKCOL /dav/uploads/<user>/<session-id>/
+          2. Client uploads chunks: PUT .../1, PUT .../2, etc.
+          3. Client finalizes: MOVE session dir to destination path
+          4. Server assembles chunks, validates size, returns final ETag
+          5. Per-session size tracking, 24h session expiry, disk-space pre-check
+          6. Streaming writes — never buffer full file in memory (supports 10GB+ videos)
+        - Stable oc:id per file (server-assigned UUID surviving moves/renames)
+        - oc:fileid, oc:permissions, oc:size custom properties
+        - Login Flow v2 (POST /login/v2, POST /login/v2/poll — see auth section)
+        - OCS capabilities stub at /ocs/v2.php/cloud/capabilities (returns minimal
+          JSON declaring WebDAV chunked upload support)
+        - /status.php returns {"installed":true,"version":"28.0.0",...} stub
+        - /remote.php/dav/* aliases redirect to /dav/*
+
+        These unlock: Nextcloud desktop sync clients (all platforms, with virtual-filesystem mode),
+        Nextcloud Android/iOS apps, rclone, Joplin WebDAV, QOwnNotes, DAVx5.
+      </nextcloud_compatibility>
+
+      <conflict_handling>
+        - All PUT/MOVE operations support If-Match ETag precondition
+        - 412 Precondition Failed on ETag mismatch
+        - Client expected to write conflict file: filename.sync-conflict-<YYYYMMDD-HHMMSS>-<device>.ext
+        - Server never silently overwrites — always returns 412 if ETag doesn't match
+      </conflict_handling>
+
+      <finder_compat>
+        - macOS Finder sends LOCK requests; respond with 200 OK (FakeLs pattern)
+        - Finder is "works for casual browsing, not daily driver" — document this
+        - Recommended mount methods: rclone (Linux), Mountain Duck (macOS), RaiDrive (Windows)
+        - Nextcloud desktop sync client recommended as default for most users
+      </finder_compat>
+    </webdav_file_sync>
+
+    <caldav>
+      <protocol>CalDAV (RFC 4791) via RustiCal dependency</protocol>
+      <description>
+        Full CalDAV support provided by RustiCal as a Cargo dependency. tilde integrates
+        RustiCal's axum handlers into its router and provides RustiCal with a SQLite storage
+        backend. RustiCal handles protocol compliance, property handling, and client quirks.
+      </description>
+
+      <features_from_rustical>
+        - Calendar creation, modification, deletion
+        - Event CRUD (VEVENT)
+        - Task CRUD (VTODO) — lights up Apple Reminders and jtx Board
+        - REPORT: calendar-query, calendar-multiget, free-busy-query
+        - sync-collection REPORT (RFC 6578) with sync-token
+        - getctag (Apple extension)
+        - WebDAV-Push notifications
+        - Apple .mobileconfig profile generation
+        - Soft-deletion with configurable retention
+        - current-user-principal (RFC 5397)
+        - well-known redirects (RFC 6764): /.well-known/caldav → /caldav/
+      </features_from_rustical>
+
+      <explicitly_skipped>
+        - CalDAV scheduling (RFC 6638) — delegated to email clients
+        - RFC 3744 ACL beyond static "always allow" (single-user system)
+      </explicitly_skipped>
+
+      <tested_clients>
+        iOS Calendar, DAVx5, Thunderbird, Evolution, Apple Calendar, GNOME Calendar,
+        jtx Board (for VTODO tasks)
+      </tested_clients>
+    </caldav>
+
+    <carddav>
+      <protocol>CardDAV (RFC 6352) via RustiCal dependency</protocol>
+      <description>
+        Full CardDAV support provided by RustiCal. Same integration pattern as CalDAV.
+      </description>
+
+      <features_from_rustical>
+        - Addressbook creation, modification, deletion
+        - Contact CRUD (VCARD)
+        - addressbook-multiget REPORT
+        - sync-collection REPORT (RFC 6578) with sync-token
+        - getctag
+        - current-user-principal (RFC 5397)
+        - well-known redirects: /.well-known/carddav → /carddav/
+      </features_from_rustical>
+
+      <tested_clients>
+        iOS Contacts, DAVx5, Thunderbird, Evolution, GNOME Contacts
+      </tested_clients>
+    </carddav>
+
+    <photos>
+      <scope>~500 new photos/year + 30–50GB historical library import</scope>
+
+      <storage_model>
+        Content-addressed by UUID, not by hash (metadata mutability requires stable IDs even
+        when file bytes change). Each photo record stores:
+        - uuid: server-assigned, immutable, survives moves/renames
+        - original_sha256: SHA-256 of original file at import (forensic dedup)
+        - current_sha256: SHA-256 of current file (integrity verification, changes on metadata edits)
+        - Blob path: blobs/by-id/<uuid>.<ext> with two-level directory sharding (first 2 + next 2 chars of UUID)
+      </storage_model>
+
+      <metadata_tagging>
+        In-file metadata via XMP dc:Subject + IPTC Keywords, written by ExifTool subprocess.
+        Rejected: XMP sidecar files (can separate from originals during export/move).
+
+        Tradeoffs accepted:
+        - SHA changes on every metadata edit (current_sha256 tracks this, original_sha256 is immutable)
+        - Backup churn on tag edits
+        - ~150ms per HEIC metadata write via ExifTool
+        - ExifTool as system dependency
+
+        Tag convention: soft prefix classifier recognizes:
+        - trip:<name>      (e.g., trip:jamaica)
+        - event:<name>     (e.g., event:wedding-anna)
+        - person:<name>    (e.g., person:kids)
+        - favorite         (no prefix)
+        - Otherwise: plain XMP string, readable by Lightroom/digiKam/etc.
+      </metadata_tagging>
+
+      <organization>
+        Configurable pattern (default: "{year}/{month:02}").
+        Supported variables: {year}, {month:02}, {day:02}, {-trip} (from trip: tag).
+        Example result: photos/2025/01-jamaica/IMG_1234.heic
+
+        When metadata changes trigger a new organization path, server performs a WebDAV MOVE
+        (not DELETE+PUT) to preserve oc:id and client sync state.
+
+        manually_placed flag: if user moves a file manually (via WebDAV MOVE), set this flag
+        to disable auto-organization for that file. Server won't re-sort it.
+      </organization>
+
+      <ingestion>
+        No bulk-import CLI tool. Users process photos externally (ExifTool, Darktable, digiKam,
+        custom scripts) then drop into the appropriate folder via WebDAV or local filesystem.
+
+        Watched folder pipeline (notify-rs):
+        1. File appears in _inbox/ or _library-drop/
+        2. Debounce 5 seconds, verify file size is stable (not still being written)
+        3. Validate file type (magic bytes, not just extension)
+        4. Read metadata via ExifTool subprocess
+        5. For _inbox/: apply organization pattern, move to final location
+           For _library-drop/: preserve user's directory structure, bypass classifier
+        6. Compute SHA-256 (original and current)
+        7. Generate UUID, insert SQLite record
+        8. Enqueue thumbnail generation (async, non-blocking)
+        9. On any error: move file to _errors/ with error description sidecar .txt file
+
+        _untriaged/ folder: photos with insufficient metadata for organization are moved here.
+        User fixes metadata externally and re-drops into _inbox/.
+
+        Encrypted file handling: Magic-byte detection (GPG, age, VeraCrypt, encrypted PDFs).
+        Set content_readable = false, serve as opaque blob, skip thumbnail/indexing.
+      </ingestion>
+
+      <thumbnails>
+        Two WebP thumbnails per photo:
+        - 256px (square crop, for grid views)
+        - 1920px (longest edge, for preview)
+        Quality: configurable, default 80.
+
+        Pipeline:
+        - image crate + fast_image_resize (SIMD) for JPEG/PNG/WebP
+        - libheif-rs for HEIC/HEIF decoding
+        - ffmpeg subprocess for video thumbnails (first frame or configurable timestamp)
+        - Blurhash string computed inline, stored in SQLite (for placeholder display)
+
+        Storage: $CACHE_DIR/thumbnails/<uuid>/256.webp and 1920.webp
+        Thumbnails are excluded from backup (regenerable from originals).
+        Single-slot semaphore for concurrent thumbnail generation (prevents OOM on 48MP HEIC).
+      </thumbnails>
+
+      <mobile_sync>
+        No Immich fork. Use existing WebDAV-speaking apps:
+        - PhotoSync ($5, iOS/Android) — best option, WebDAV target, drops to _inbox/
+        - FolderSync (Android, free) — WebDAV sync
+        - Nextcloud mobile app — with "always available offline" on photos folder
+
+        Offline browsing: Full library mirror on phone is feasible at this volume.
+        Pattern: Nextcloud mobile app with offline-available + local gallery app
+        (Aves Gallery on Android, Files app on iOS). Delete operations local; sync on reconnect.
+        No special server code needed.
+      </mobile_sync>
+
+      <explicitly_not_supported>
+        - Transcoding originals
+        - AI (face recognition, CLIP, OCR) — never, permanently out of scope
+        - Live Photo pairing (deferred, complexity not justified at volume)
+        - Server-side ML of any kind
+      </explicitly_not_supported>
+    </photos>
+
+    <notes>
+      <description>
+        Plain .md files served via WebDAV. Every good notes client speaks WebDAV:
+        Joplin (WebDAV backend), Obsidian (via Remotely Save plugin), iA Writer (native WebDAV),
+        Logseq, QOwnNotes.
+      </description>
+
+      <storage>
+        Files at $STATE_DIR/files/notes/ (or configured notes.root_path).
+        Standard .md files, no custom format. YAML frontmatter optional (user's choice).
+      </storage>
+
+      <sync>
+        ETag + If-Match on PUT. 412 → sibling conflict file:
+        filename.sync-conflict-<YYYYMMDD-HHMMSS>-<device>.md
+      </sync>
+
+      <search>
+        SQLite FTS5 index over note content. Rebuilt on demand from files on disk.
+        Exposed via MCP notes.search tool and CLI `tilde notes search`.
+      </search>
+
+      <cross_references>
+        Inline URI scheme: tilde://note/<uuid>, shorthand: [[note:abc-123]], [[@person]], [[#2024-06-15]].
+        Server does NOT resolve these for clients (no mainstream client supports custom schemes).
+        Value is server-side: MCP queries follow references, grep finds connections, future custom UI.
+        UUIDs stable across export/import.
+      </cross_references>
+
+      <not_supported>
+        - Apple Notes (closed ecosystem, no open sync protocol)
+        - Recommended substitute: iA Writer ($50, macOS + iOS, first-class WebDAV)
+        - One-way AppleScript import from Notes.app as documented migration path
+        - Obsidian-livesync CouchDB protocol (never)
+      </not_supported>
+    </notes>
+
+    <structured_collections>
+      <description>
+        Generic pattern for user-defined structured data. Covers exercise logs, weight tracking,
+        habits, bookmarks, and any custom schema the user defines.
+      </description>
+
+      <data_model>
+        Two tables:
+        - collections: defines the schema (name, JSON Schema, display config)
+        - records: individual data entries linked to a collection
+
+        SQLite JSON column + generated columns for indexed fields.
+        User-defined schemas via JSON Schema validation.
+      </description>
+
+      <bookmarks>
+        Trivial collection instance: schema with url (string, required), title (string),
+        tags (array of strings), description (string, optional), created_at (datetime).
+        No link previews, no page archival (SSRF concerns — deferred permanently).
+      </bookmarks>
+
+      <cli_interface>
+        tilde collection create <name> --schema <path-to-json-schema>
+        tilde collection list
+        tilde collection <name> add --data '{"key": "value"}'
+        tilde collection <name> list [--filter "key=value"] [--sort "field"] [--limit N]
+        tilde collection <name> get <id>
+        tilde collection <name> update <id> --data '{"key": "value"}'
+        tilde collection <name> delete <id>
+        tilde collection <name> export [--format json|csv]
+
+        Shorthand aliases:
+        tilde bookmarks add --url "..." --title "..." --tags "a,b"
+        tilde trackers log weight '{"value": 72.5}'
+        tilde trackers query weight --since 2025-01-01 --format json
+      </cli_interface>
+    </structured_collections>
+
+    <email_archive>
+      <scope>
+        Personal email archive via IMAP client. NOT an email server. Purelymail (or any IMAP
+        provider) remains authoritative for send/receive. This is a searchable read-only mirror.
+      </scope>
+
+      <protocol>IMAP with SSL + IDLE for near-real-time push (~100ms per fetch)</protocol>
+
+      <storage>
+        Maildir format (one file per message, append-safe, never corrupts). Compatible with
+        mutt, neomutt, Thunderbird, grep -r. Full RFC822 source including attachments stored
+        as-is. NOT a custom format.
+
+        Path: $STATE_DIR/mail/<account-name>/<folder>/{cur,new,tmp}/
+      </storage>
+
+      <index>
+        SQLite table with metadata + FTS5 virtual table for full-text search.
+        Database is cache — regeneratable by reparsing Maildir via `tilde email reindex`.
+
+        Indexed fields: from, to, cc, subject, date, message_id, in_reply_to (for threading),
+        folder, flags, snippet (first 200 chars of body), has_attachment, size_bytes.
+        FTS5 covers: subject, from, to, body_text (HTML stripped).
+      </index>
+
+      <ingestion_pipeline>
+        1. Connect via async-imap with SSL
+        2. IDLE for push notifications on new mail
+        3. Fetch new messages (IMAP UID-based tracking, only fetch unseen UIDs)
+        4. Parse with mail-parser
+        5. Deduplicate by Message-ID header
+        6. Atomic Maildir write (tmp/ → cur/)
+        7. SQLite insert with FTS indexing
+        8. Background initial sync: fetch all history on first run (--since flag available for scoping)
+      </ingestion_pipeline>
+
+      <multi_account>
+        Supported from day one in config schema. Each account has independent IMAP credentials
+        (referenced via env vars), folder filters, and Maildir tree.
+      </multi_account>
+
+      <cli>
+        tilde email search "query"                              # FTS5 full-text search
+        tilde email search --from "name" --since 2025-01-01 --subject "keyword" --has-attachment
+        tilde email thread <message-id>                         # show full thread
+        tilde email show <message-id>                           # show single message
+        tilde email attachments extract <message-id> --to /path # extract attachments
+        tilde email tag <message-id> add <tag>                  # local tags (not synced to IMAP)
+        tilde email reindex                                     # rebuild SQLite from Maildir
+        tilde email status                                      # show sync status per account
+      </cli>
+
+      <explicitly_not>
+        - Sending mail (Purelymail does that)
+        - Receiving mail (IMAP fetch only)
+        - Webmail interface
+        - Filter/rules engine
+        - Spam classifier
+        - Replying or any interactive operation
+        - JMAP (experimental, no Purelymail support)
+      </explicitly_not>
+    </email_archive>
+
+    <mcp>
+      <transport>Streamable HTTP only, via rmcp 1.5.x</transport>
+      <endpoint>POST /mcp/ (single endpoint, Streamable HTTP spec)</endpoint>
+
+      <auth>
+        CLI-issued long-lived bearer tokens.
+        Format: mcp_prod_<30 random alphanumeric bytes> (prefix for secret scanner detection).
+        Storage: SHA-256 hash of token in SQLite (never store plaintext).
+        Token creation: `tilde mcp token create --name "claude-desktop" --scopes "notes:read,calendar:read"`
+
+        Scopes:
+        - notes:read, notes:write
+        - calendar:read, calendar:write
+        - contacts:read, contacts:write
+        - files:read, files:write
+        - photos:read, photos:write
+        - email:read
+        - tasks:read, tasks:write
+        - trackers:read, trackers:write
+        - *:read (wildcard read)
+        - Write scopes must always be listed explicitly (no *:write wildcard)
+
+        Per-token rate limits (configurable, default 60 req/min).
+        Token management: create, list, revoke, rotate.
+      </auth>
+
+      <oauth_stub>
+        Server advertises OAuth via Protected Resource Metadata (RFC 9728) stub.
+        Directs clients to use bearer tokens (no full OAuth 2.1 flow in v1).
+        Skipped: PKCE, dynamic client registration, refresh tokens, consent UI, JWKS.
+      </oauth_stub>
+
+      <audit_log>
+        Every MCP tool call logged to SQLite:
+        - token_name, tool_name, truncated parameters (max 500 chars), result_size_bytes,
+          duration_ms, timestamp, source_ip
+        - 90-day retention (configurable), auto-pruned
+        - CLI: `tilde mcp audit [--since] [--tool] [--token]`
+      </audit_log>
+
+      <tools>
+        ~15 tools, narrow and read-oriented by default:
+
+        notes.search(query: string, limit?: int) → [{path, title, snippet, modified}]
+        notes.read(path: string) → {content: string, metadata: object}
+        notes.append(path: string, content: string) → {success: bool}  # write scope
+
+        calendar.list_events(from?: date, to?: date, calendar?: string) → [{summary, start, end, location}]
+        calendar.create_event(calendar: string, summary: string, start: datetime, end: datetime,
+          location?: string, description?: string) → {uid: string}  # write scope
+
+        contacts.search(query: string, limit?: int) → [{name, email, phone, org}]
+
+        files.list(path?: string, recursive?: bool) → [{name, path, size, modified, type}]
+        files.read(path: string) → {content: string}  # text files only, max 1MB
+        files.search(query: string, path?: string) → [{path, snippet}]  # FTS5 search
+
+        tasks.list(calendar?: string, status?: string) → [{summary, due, priority, status}]
+        tasks.add(summary: string, due?: date, priority?: int, calendar?: string) → {uid}  # write scope
+
+        trackers.log(collection: string, data: object) → {id: string}  # write scope
+        trackers.query(collection: string, filter?: object, since?: date, limit?: int) → [{id, data, timestamp}]
+
+        email.search(query: string, limit?: int) → [{message_id, from, subject, date, snippet}]
+        email.thread(message_id: string) → [{message_id, from, to, subject, date, body_snippet}]
+        email.recent(count?: int, folder?: string) → [{message_id, from, subject, date, snippet}]
+
+        Security constraints:
+        - No free-form-URL tools (no fetch-from-URL capability)
+        - Explicit allowlist in config beyond token scopes (defense in depth)
+        - Tool allowlist hot-reloadable via SIGHUP
+      </tools>
+    </mcp>
+
+    <authentication>
+      <primary_password>
+        Argon2id hashed. Set during `tilde init` or via TILDE_ADMIN_PASSWORD env var (hashed on first use).
+        No password recovery flow — recovery = SSH + `tilde auth reset-password`.
+      </primary_password>
+
+      <app_passwords>
+        Scoped app-passwords from v1. Each app-password is restricted to a URL prefix
+        (e.g., /dav/*, /caldav/*, /mcp/*). Stored as Argon2id hashes.
+        CLI: `tilde auth app-password create --name "phone-dav" --scope "/dav/*"`
+      </app_passwords>
+
+      <sessions>
+        Opaque session tokens (NOT JWT) with 24h sliding TTL.
+        Stored in SQLite with last_used_at, created_at, user_agent, source_ip.
+        Token format: tilde_session_<32 random bytes>.
+        Constant-time comparison via subtle crate.
+      </sessions>
+
+      <webauthn>
+        Optional second factor for admin operations (token creation, password changes, export).
+        Via webauthn-rs. Not required by default; enabled in config.
+      </webauthn>
+
+      <nextcloud_login_flow_v2>
+        Required for Nextcloud official mobile/desktop clients to obtain app tokens.
+        Tiny embedded HTML login page (~100 lines, via rust-embed). NOT a web UI.
+
+        Flow:
+        1. Client POST /login/v2 → server returns {poll: {token, endpoint}, login: url}
+        2. User opens login URL in browser → sees minimal branded login form
+        3. User enters password → server validates, generates app-password
+        4. Client polls endpoint with token → receives {server, loginName, appPassword}
+        5. Client uses appPassword for all subsequent WebDAV requests via Basic Auth
+      </nextcloud_login_flow_v2>
+
+      <rate_limiting>
+        Token bucket per-IP and per-account on auth endpoints.
+        Configurable: max_login_attempts (default 5) per lockout_duration_minutes (default 15).
+        Failed auth attempts logged with source IP for monitoring.
+      </rate_limiting>
+    </authentication>
+
+    <backup>
+      <implementation>rustic-rs embedded library (Rust restic port)</implementation>
+
+      <strategy>
+        Content-addressed storage makes incremental backups natural.
+        SQLite WAL shipping piggybacks on file backup.
+        Local snapshots always on when backup enabled. Offsite is additive config blocks.
+        Backup failures never block user requests.
+      </strategy>
+
+      <security>
+        Paranoid mode default:
+        - Server holds only the public key; private key stays offline
+        - Append-only destination enforcement (B2 Object Lock, S3 Object Lock)
+        - Printed-paper recovery code generated during `tilde init`
+      </security>
+
+      <cli>
+        tilde backup status                            # show last backup, next scheduled, repo stats
+        tilde backup now [--offsite <name>]             # trigger immediate backup
+        tilde backup list [--offsite <name>]            # list snapshots
+        tilde backup verify [--offsite <name>]          # verify backup integrity
+        tilde backup pin <snapshot-id> --reason "text"  # prevent pruning of specific snapshot
+        tilde restore --from <name> --at <snapshot> --to /path  # restore to path
+      </cli>
+    </backup>
+
+    <notifications>
+      <sinks>
+        Multi-sink priority-routed system:
+        - ntfy.sh (default recommended) — push notifications to phone/desktop
+        - SMTP — email to configured address (e.g., via Purelymail)
+        - Matrix — message to configured room
+        - Signal — via signal-cli REST API
+        - Webhook — POST JSON to configured URL
+        - File — append-only log file (logs everything, always active)
+      </sinks>
+
+      <events>
+        - backup_failed (critical)
+        - disk_usage_high (high, at 80% and 90% thresholds)
+        - auth_failed_repeated (high, after 3+ failures from same IP)
+        - cert_expiring_soon (high, 14 days before expiry)
+        - sync_conflict_detected (medium)
+        - update_available (low)
+        - email_sync_error (medium)
+        - thumbnail_generation_failed (low)
+      </events>
+
+      <routing>
+        Priority floors per sink:
+        - file: low (logs everything)
+        - ntfy: medium
+        - push (Signal/Matrix): high
+        - SMTP: high
+        Rate limiting prevents notification storms (max 10 per event type per hour).
+      </routing>
+
+      <cli>
+        tilde notifications test <sink>   # send test notification to verify config
+        tilde notifications list          # show recent notifications
+        tilde notifications config        # show active sink configuration
+      </cli>
+    </notifications>
+
+    <webhooks_inbound>
+      <description>
+        Accept inbound webhooks for programmatic data entry (e.g., iOS Shortcuts,
+        Zapier, IFTTT, custom scripts).
+      </description>
+
+      <auth>
+        Scope-restricted tokens (same design as MCP but narrower).
+        Scopes: tracker:<name>:write, calendar:<cal>:write, note:append:<path>.
+        Rate-limited (configurable, default 30 req/min per token).
+        Optional HMAC replay protection (X-Tilde-Signature header).
+      </auth>
+
+      <endpoint>POST /api/webhook/<token-prefix></endpoint>
+    </webhooks_inbound>
+
+    <cross_references>
+      <uri_scheme>
+        tilde://photo/<uuid>
+        tilde://note/<path>
+        tilde://email/<message-id>
+        tilde://event/<uid>
+        tilde://contact/<uid>
+        tilde://collection/<name>/<id>
+      </uri_scheme>
+
+      <shorthand_in_notes>
+        [[photo:abc-123]]
+        [[@person-name]]
+        [[#2024-06-15]]      (date reference)
+        [[email:message-id]]
+      </shorthand_in_notes>
+
+      <storage>
+        Denormalized links table in SQLite as rebuildable cache.
+        Parsed from content on ingest, rebuilt on demand via `tilde reindex`.
+      </storage>
+
+      <honest_limitation>
+        No mainstream client resolves tilde:// URIs. Value is server-side:
+        MCP queries follow references, grep finds connections, export preserves as text.
+        UUIDs must be stable across export/import.
+      </honest_limitation>
+    </cross_references>
+
+    <data_export>
+      <format>
+        Standards-based directory tree:
+        export/
+        ├── calendars/
+        │   └── <name>.ics              (one ICS per calendar, all events included)
+        ├── contacts/
+        │   └── <name>.vcf              (one VCF per addressbook)
+        ├── notes/
+        │   └── **/*.md                 (markdown files with in-file metadata)
+        ├── photos/
+        │   └── **/*.<ext>              (originals with in-file XMP tags)
+        ├── mail/
+        │   └── <account>/             (Maildir format)
+        ├── collections/
+        │   └── <name>.json            (JSON array of records with schema)
+        ├── manifest.json               (UUID mapping for cross-reference stability)
+        └── links.json                  (cross-reference index)
+      </format>
+
+      <cli>
+        tilde export /path/to/export                   # full export
+        tilde export /path --only photos,notes          # selective
+        tilde export /path --format tar.zst             # compressed archive
+        tilde export /path --encrypt --recipient <age-public-key>  # encrypted
+        tilde export verify /path                       # verify export completeness
+        tilde import /path --verify-first               # import with pre-check
+        tilde import /path --dry-run                    # show what would be imported
+      </cli>
+
+      <release_testing>
+        Release test matrix includes: export from vN → import to vN+1 → verify data roundtrips.
+      </release_testing>
+    </data_export>
+
+    <update_check>
+      <mechanism>
+        Daily check against signed manifest (minisign). No auto-update.
+        Surfaces via `tilde status` and notifications.
+        User runs `tilde update download` manually, then restarts service.
+        Self-hosted manifest mirror supported (for air-gapped environments).
+      </mechanism>
+    </update_check>
+
+  </core_features>
+
+  <database_schema>
+    <tables>
+      <migrations>
+        - version (INTEGER PRIMARY KEY) — migration number
+        - name (TEXT NOT NULL) — human-readable migration name
+        - applied_at (TEXT NOT NULL) — ISO 8601 timestamp
+        - checksum (TEXT NOT NULL) — SHA-256 of migration SQL
+      </migrations>
+
+      <auth_sessions>
+        - id (TEXT PRIMARY KEY) — opaque session token hash (SHA-256)
+        - token_prefix (TEXT NOT NULL) — first 8 chars for identification in lists
+        - created_at (TEXT NOT NULL) — ISO 8601
+        - last_used_at (TEXT NOT NULL) — ISO 8601, updated on each use
+        - expires_at (TEXT NOT NULL) — ISO 8601, sliding window
+        - user_agent (TEXT) — nullable
+        - source_ip (TEXT) — nullable
+        - revoked (INTEGER NOT NULL DEFAULT 0) — boolean
+      </auth_sessions>
+
+      <app_passwords>
+        - id (TEXT PRIMARY KEY) — UUID
+        - name (TEXT NOT NULL) — human label (e.g., "phone-dav")
+        - password_hash (TEXT NOT NULL) — Argon2id hash
+        - scope_prefix (TEXT NOT NULL) — URL prefix this password authorizes (e.g., "/dav/*")
+        - created_at (TEXT NOT NULL) — ISO 8601
+        - last_used_at (TEXT) — nullable, ISO 8601
+        - revoked (INTEGER NOT NULL DEFAULT 0)
+      </app_passwords>
+
+      <mcp_tokens>
+        - id (TEXT PRIMARY KEY) — UUID
+        - name (TEXT NOT NULL) — human label
+        - token_hash (TEXT NOT NULL) — SHA-256 of full token
+        - token_prefix (TEXT NOT NULL) — "mcp_prod_" + first 8 random chars
+        - scopes (TEXT NOT NULL) — comma-separated scope list
+        - rate_limit (INTEGER NOT NULL DEFAULT 60) — requests per minute
+        - created_at (TEXT NOT NULL) — ISO 8601
+        - last_used_at (TEXT) — nullable
+        - revoked (INTEGER NOT NULL DEFAULT 0)
+      </mcp_tokens>
+
+      <mcp_audit_log>
+        - id (INTEGER PRIMARY KEY AUTOINCREMENT)
+        - token_name (TEXT NOT NULL)
+        - tool_name (TEXT NOT NULL)
+        - params_truncated (TEXT) — first 500 chars of JSON params, nullable
+        - result_size_bytes (INTEGER)
+        - duration_ms (INTEGER NOT NULL)
+        - source_ip (TEXT)
+        - created_at (TEXT NOT NULL) — ISO 8601
+      </mcp_audit_log>
+
+      <files>
+        - id (TEXT PRIMARY KEY) — UUID (oc:id, stable across moves/renames)
+        - path (TEXT NOT NULL UNIQUE) — relative path from WebDAV root
+        - parent_path (TEXT NOT NULL) — parent directory path (indexed)
+        - name (TEXT NOT NULL) — filename
+        - size_bytes (INTEGER NOT NULL)
+        - content_type (TEXT NOT NULL) — MIME type
+        - etag (TEXT NOT NULL) — strong ETag (content hash + metadata version)
+        - sha256 (TEXT) — current SHA-256, nullable for directories
+        - is_directory (INTEGER NOT NULL DEFAULT 0) — boolean
+        - created_at (TEXT NOT NULL) — ISO 8601
+        - modified_at (TEXT NOT NULL) — ISO 8601
+        - hlc (TEXT NOT NULL) — Hybrid Logical Clock value
+      </files>
+
+      <photos>
+        - id (TEXT PRIMARY KEY) — UUID (same as files.id for photo files)
+        - file_id (TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE)
+        - original_sha256 (TEXT NOT NULL) — SHA-256 at import time (immutable)
+        - current_sha256 (TEXT NOT NULL) — SHA-256 of current file (changes on metadata edits)
+        - width (INTEGER) — pixels, nullable
+        - height (INTEGER) — pixels, nullable
+        - taken_at (TEXT) — EXIF DateTimeOriginal, ISO 8601, nullable
+        - camera_make (TEXT) — nullable
+        - camera_model (TEXT) — nullable
+        - lens (TEXT) — nullable
+        - focal_length_mm (REAL) — nullable
+        - aperture (REAL) — f-number, nullable
+        - iso (INTEGER) — nullable
+        - exposure_time (TEXT) — e.g., "1/250", nullable
+        - gps_latitude (REAL) — nullable
+        - gps_longitude (REAL) — nullable
+        - gps_altitude (REAL) — meters, nullable
+        - orientation (INTEGER) — EXIF orientation 1-8, nullable
+        - content_readable (INTEGER NOT NULL DEFAULT 1) — false for encrypted files
+        - manually_placed (INTEGER NOT NULL DEFAULT 0) — user moved, don't auto-organize
+        - blurhash (TEXT) — blurhash string for placeholder, nullable
+        - thumbnail_256_generated (INTEGER NOT NULL DEFAULT 0)
+        - thumbnail_1920_generated (INTEGER NOT NULL DEFAULT 0)
+        - tags_json (TEXT) — JSON array of tag strings (cache of in-file XMP), nullable
+        - created_at (TEXT NOT NULL) — ISO 8601
+        - updated_at (TEXT NOT NULL) — ISO 8601
+        - hlc (TEXT NOT NULL) — Hybrid Logical Clock
+      </photos>
+
+      <photo_tags>
+        - photo_id (TEXT NOT NULL REFERENCES photos(id) ON DELETE CASCADE)
+        - tag (TEXT NOT NULL) — normalized tag string
+        - prefix (TEXT) — classifier prefix (trip, event, person) or NULL
+        - PRIMARY KEY (photo_id, tag)
+        - INDEX idx_photo_tags_tag ON photo_tags(tag)
+      </photo_tags>
+
+      <notes_fts>
+        - FTS5 virtual table: CREATE VIRTUAL TABLE notes_fts USING fts5(path, title, content, content_rowid=rowid)
+        - Rebuilt from files on disk via `tilde reindex`
+      </notes_fts>
+
+      <collections>
+        - id (TEXT PRIMARY KEY) — UUID
+        - name (TEXT NOT NULL UNIQUE) — collection name (e.g., "bookmarks", "weight")
+        - schema_json (TEXT NOT NULL) — JSON Schema for record validation
+        - display_config (TEXT) — JSON display preferences, nullable
+        - created_at (TEXT NOT NULL) — ISO 8601
+        - updated_at (TEXT NOT NULL) — ISO 8601
+      </collections>
+
+      <records>
+        - id (TEXT PRIMARY KEY) — UUID
+        - collection_id (TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE)
+        - data_json (TEXT NOT NULL) — JSON record data, validated against collection schema
+        - created_at (TEXT NOT NULL) — ISO 8601
+        - updated_at (TEXT NOT NULL) — ISO 8601
+        - hlc (TEXT NOT NULL) — Hybrid Logical Clock
+        - INDEX idx_records_collection ON records(collection_id, created_at)
+      </records>
+
+      <email_messages>
+        - id (INTEGER PRIMARY KEY AUTOINCREMENT)
+        - account (TEXT NOT NULL) — account name from config
+        - message_id (TEXT NOT NULL) — RFC822 Message-ID header (unique with account)
+        - folder (TEXT NOT NULL) — IMAP folder name
+        - uid (INTEGER NOT NULL) — IMAP UID
+        - from_address (TEXT NOT NULL)
+        - from_name (TEXT) — nullable
+        - to_addresses (TEXT NOT NULL) — JSON array
+        - cc_addresses (TEXT) — JSON array, nullable
+        - subject (TEXT NOT NULL)
+        - date (TEXT NOT NULL) — ISO 8601
+        - in_reply_to (TEXT) — Message-ID of parent, nullable (for threading)
+        - references_list (TEXT) — JSON array of Message-IDs, nullable
+        - snippet (TEXT) — first 200 chars of body text, nullable
+        - has_attachment (INTEGER NOT NULL DEFAULT 0)
+        - size_bytes (INTEGER NOT NULL)
+        - flags (TEXT) — JSON array of IMAP flags
+        - maildir_path (TEXT NOT NULL) — relative path within Maildir
+        - tags_json (TEXT) — JSON array of local tags, nullable
+        - created_at (TEXT NOT NULL) — ISO 8601 (when indexed)
+        - UNIQUE(account, message_id)
+        - INDEX idx_email_date ON email_messages(account, date DESC)
+        - INDEX idx_email_folder ON email_messages(account, folder)
+        - INDEX idx_email_thread ON email_messages(in_reply_to)
+      </email_messages>
+
+      <email_fts>
+        - FTS5 virtual table: CREATE VIRTUAL TABLE email_fts USING fts5(subject, from_address, from_name, body_text, content=email_messages, content_rowid=id)
+      </email_fts>
+
+      <chunked_uploads>
+        - session_id (TEXT PRIMARY KEY) — UUID
+        - destination_path (TEXT NOT NULL) — final WebDAV path
+        - total_size (INTEGER) — expected size, nullable until known
+        - bytes_received (INTEGER NOT NULL DEFAULT 0)
+        - chunk_count (INTEGER NOT NULL DEFAULT 0)
+        - created_at (TEXT NOT NULL) — ISO 8601
+        - expires_at (TEXT NOT NULL) — 24h from creation
+        - staging_dir (TEXT NOT NULL) — path to staging directory
+      </chunked_uploads>
+
+      <links>
+        - id (INTEGER PRIMARY KEY AUTOINCREMENT)
+        - source_type (TEXT NOT NULL) — "note", "photo", "email", "event", "collection"
+        - source_id (TEXT NOT NULL) — UUID or message-id
+        - target_uri (TEXT NOT NULL) — tilde:// URI
+        - context (TEXT) — surrounding text snippet, nullable
+        - INDEX idx_links_source ON links(source_type, source_id)
+        - INDEX idx_links_target ON links(target_uri)
+      </links>
+
+      <jobs>
+        - id (INTEGER PRIMARY KEY AUTOINCREMENT)
+        - job_type (TEXT NOT NULL) — "thumbnail", "email_fetch", "backup", "reindex", "organize"
+        - payload_json (TEXT NOT NULL) — JSON job parameters
+        - status (TEXT NOT NULL DEFAULT 'pending') — "pending", "running", "completed", "failed"
+        - attempts (INTEGER NOT NULL DEFAULT 0)
+        - max_attempts (INTEGER NOT NULL DEFAULT 3)
+        - error_message (TEXT) — nullable, last error
+        - created_at (TEXT NOT NULL) — ISO 8601
+        - started_at (TEXT) — nullable
+        - completed_at (TEXT) — nullable
+        - INDEX idx_jobs_status ON jobs(status, created_at)
+      </jobs>
+
+      <notification_log>
+        - id (INTEGER PRIMARY KEY AUTOINCREMENT)
+        - event_type (TEXT NOT NULL) — e.g., "backup_failed"
+        - priority (TEXT NOT NULL) — "low", "medium", "high", "critical"
+        - message (TEXT NOT NULL)
+        - sinks_notified (TEXT NOT NULL) — JSON array of sink names
+        - created_at (TEXT NOT NULL) — ISO 8601
+      </notification_log>
+
+      <webauthn_credentials>
+        - id (TEXT PRIMARY KEY) — credential ID
+        - public_key (BLOB NOT NULL)
+        - counter (INTEGER NOT NULL DEFAULT 0)
+        - name (TEXT NOT NULL) — human label
+        - created_at (TEXT NOT NULL) — ISO 8601
+        - last_used_at (TEXT) — nullable
+      </webauthn_credentials>
+
+      <webhook_tokens>
+        - id (TEXT PRIMARY KEY) — UUID
+        - name (TEXT NOT NULL)
+        - token_hash (TEXT NOT NULL) — SHA-256
+        - token_prefix (TEXT NOT NULL) — first 12 chars for URL routing
+        - scopes (TEXT NOT NULL) — comma-separated
+        - rate_limit (INTEGER NOT NULL DEFAULT 30)
+        - hmac_secret (TEXT) — nullable, for HMAC replay protection
+        - created_at (TEXT NOT NULL)
+        - last_used_at (TEXT) — nullable
+        - revoked (INTEGER NOT NULL DEFAULT 0)
+      </webhook_tokens>
+
+      <kv_meta>
+        - key (TEXT PRIMARY KEY) — e.g., "sync_token:calendar:default", "imap:personal:last_uid"
+        - value (TEXT NOT NULL)
+        - updated_at (TEXT NOT NULL) — ISO 8601
+      </kv_meta>
+    </tables>
+  </database_schema>
+
+  <url_structure>
+    <well_known>
+      - GET  /.well-known/caldav                → 301 redirect to /caldav/
+      - GET  /.well-known/carddav               → 301 redirect to /carddav/
+    </well_known>
+
+    <nextcloud_compat>
+      - GET  /status.php                         → Nextcloud status JSON stub
+      - GET  /ocs/v2.php/cloud/capabilities      → OCS capabilities JSON (declares chunked upload, WebDAV)
+      - POST /login/v2                           → Nextcloud Login Flow v2: initiate
+      - POST /login/v2/poll                      → Nextcloud Login Flow v2: poll for credentials
+      - GET  /login/v2/auth                      → Embedded HTML login page (password form)
+      - POST /login/v2/auth                      → Process login, grant app-password
+      - *    /remote.php/dav/*                   → Redirect to /dav/*
+      - *    /remote.php/webdav/*                → Redirect to /dav/files/
+    </nextcloud_compat>
+
+    <webdav>
+      - *    /dav/files/*                        → WebDAV file operations (all methods)
+      - *    /dav/uploads/<user>/<session>/*      → Chunked upload staging
+      - *    /dav/photos/*                       → WebDAV access to photo library
+      - *    /dav/notes/*                        → WebDAV access to notes
+    </webdav>
+
+    <caldav_routes>
+      <!-- Handled by RustiCal, mounted at /caldav/ -->
+      - *    /caldav/                            → CalDAV root (RustiCal)
+      - *    /caldav/<principal>/                → User principal
+      - *    /caldav/<principal>/<calendar>/      → Calendar collection
+      - *    /caldav/<principal>/<calendar>/<uid>.ics → Individual event/task
+    </caldav_routes>
+
+    <carddav_routes>
+      <!-- Handled by RustiCal, mounted at /carddav/ -->
+      - *    /carddav/                           → CardDAV root (RustiCal)
+      - *    /carddav/<principal>/               → User principal
+      - *    /carddav/<principal>/<addressbook>/  → Addressbook collection
+      - *    /carddav/<principal>/<addressbook>/<uid>.vcf → Individual contact
+    </carddav_routes>
+
+    <principals>
+      - PROPFIND /principals/<user>/             → current-user-principal (RFC 5397)
+    </principals>
+
+    <mcp_route>
+      - POST /mcp/                               → MCP Streamable HTTP endpoint (rmcp)
+    </mcp_route>
+
+    <webhook_route>
+      - POST /api/webhook/<token-prefix>          → Inbound webhook handler
+    </webhook_route>
+
+    <operational>
+      - GET  /health                             → Health check (200 OK + JSON status)
+      - GET  /metrics                            → Prometheus metrics (localhost-only by default)
+    </operational>
+  </url_structure>
+
+  <cli_structure>
+    <binary_name>tilde</binary_name>
+
+    <commands>
+      <!-- Server lifecycle -->
+      tilde init                                   # Interactive setup wizard: create config, set password, generate backup key
+      tilde serve                                  # Start server (foreground, for systemd)
+      tilde status                                 # Rich text: server state, disk usage, last backup, sync status, cert expiry
+      tilde diagnose                               # Self-check: config validation, connectivity, cert, disk, dependencies
+
+      <!-- Auth -->
+      tilde auth reset-password                    # Reset admin password (requires SSH access)
+      tilde auth app-password create --name <n> --scope <prefix>
+      tilde auth app-password list
+      tilde auth app-password revoke <id>
+      tilde auth session list
+      tilde auth session revoke <id>
+
+      <!-- MCP tokens -->
+      tilde mcp token create --name <n> --scopes <s>
+      tilde mcp token list
+      tilde mcp token revoke <id>
+      tilde mcp token rotate <id>                  # Revoke old, create new with same name/scopes
+      tilde mcp audit [--since <date>] [--tool <name>] [--token <name>]
+
+      <!-- Notes -->
+      tilde notes search <query>                   # FTS5 search
+      tilde notes list [--path <subdir>]
+
+      <!-- Photos -->
+      tilde photos list [--tag <tag>] [--since <date>] [--until <date>]
+      tilde photos tag <uuid> add <tag>
+      tilde photos tag <uuid> remove <tag>
+      tilde photos reindex                         # Rebuild SQLite from files on disk
+      tilde photos thumbnail regenerate [--all | --missing]
+
+      <!-- Calendar/Contacts (thin wrappers, RustiCal handles storage) -->
+      tilde calendar list
+      tilde calendar events [--from <date>] [--to <date>] [--calendar <name>]
+      tilde contacts list
+      tilde contacts search <query>
+
+      <!-- Collections -->
+      tilde collection create <name> --schema <path>
+      tilde collection list
+      tilde collection <name> add --data '<json>'
+      tilde collection <name> list [--filter <expr>] [--sort <field>] [--limit <n>]
+      tilde collection <name> get <id>
+      tilde collection <name> update <id> --data '<json>'
+      tilde collection <name> delete <id>
+      tilde collection <name> export [--format json|csv]
+      # Shorthand aliases:
+      tilde bookmarks add --url <url> --title <t> --tags <a,b>
+      tilde trackers log <collection> '<json>'
+      tilde trackers query <collection> [--since <date>] [--format json|table]
+
+      <!-- Email -->
+      tilde email search <query>
+      tilde email search --from <addr> --since <date> --subject <kw> --has-attachment
+      tilde email thread <message-id>
+      tilde email show <message-id>
+      tilde email attachments extract <message-id> --to <path>
+      tilde email tag <message-id> add <tag>
+      tilde email reindex
+      tilde email status
+
+      <!-- Backup -->
+      tilde backup status
+      tilde backup now [--offsite <name>]
+      tilde backup list [--offsite <name>]
+      tilde backup verify [--offsite <name>]
+      tilde backup pin <snapshot-id> --reason <text>
+      tilde restore --from <name> --at <snapshot> --to <path>
+
+      <!-- Export/Import -->
+      tilde export <path> [--only <types>] [--format tar.zst] [--encrypt --recipient <key>]
+      tilde export verify <path>
+      tilde import <path> [--verify-first] [--dry-run]
+
+      <!-- Notifications -->
+      tilde notifications test <sink>
+      tilde notifications list
+      tilde notifications config
+
+      <!-- Webhooks -->
+      tilde webhook token create --name <n> --scopes <s>
+      tilde webhook token list
+      tilde webhook token revoke <id>
+
+      <!-- Maintenance -->
+      tilde reindex [--type <notes|photos|email|links|all>]
+      tilde update check
+      tilde update download
+
+      <!-- Global flags -->
+      --config <path>                              # Override config file path
+      --json                                       # JSON output for scripting
+      --dry-run                                    # Show what would happen (on mutating commands)
+      --verbose / -v                               # Increase log verbosity
+    </commands>
+
+    <shell_completions>
+      Generated via clap 4 for bash, zsh, and fish.
+      Installed during `tilde init` or via `tilde completions <shell>`.
+    </shell_completions>
+  </cli_structure>
+
+  <installation>
+    <distribution>
+      Native packages, NOT curl-pipe-sh:
+      - .deb via cargo-deb
+      - .rpm via cargo-generate-rpm
+      - Homebrew formula with launchd plist (macOS, for development only)
+      - AUR PKGBUILD
+      - NixOS module
+      - Docker image (for containerized deployments)
+      - cargo-dist orchestrates cross-platform release builds
+
+      Self-install fallback: `sudo tilde install` writes systemd unit to /etc/systemd/system/
+      (not /lib/). Idempotent. Detects existing package installs.
+    </distribution>
+
+    <systemd_unit>
+      [Unit]
+      Description=tilde Personal Cloud Server
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=notify
+      ExecStart=/usr/bin/tilde serve
+      User=tilde
+      Group=tilde
+      StateDirectory=tilde
+      CacheDirectory=tilde
+      ConfigurationDirectory=tilde
+      RuntimeDirectory=tilde
+      LogsDirectory=tilde
+
+      # Watchdog
+      WatchdogSec=30s
+
+      # Resource limits
+      MemoryHigh=256M
+      MemoryMax=512M
+
+      # Bind to privileged port
+      AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+      # Full hardening stanza
+      ProtectSystem=strict
+      ProtectHome=yes
+      PrivateTmp=yes
+      PrivateDevices=yes
+      ProtectKernelTunables=yes
+      ProtectKernelModules=yes
+      ProtectControlGroups=yes
+      NoNewPrivileges=yes
+      RestrictSUIDSGID=yes
+      RestrictNamespaces=yes
+      RestrictRealtime=yes
+      LockPersonality=yes
+      SystemCallFilter=@system-service
+      SystemCallErrorNumber=EPERM
+      ReadWritePaths=/var/lib/tilde /var/cache/tilde
+
+      # Target: systemd-analyze security score < 2.0
+      [Install]
+      WantedBy=multi-user.target
+    </systemd_unit>
+
+    <init_wizard>
+      `tilde init` interactive wizard:
+      1. Detect mode (user vs systemd) based on environment
+      2. Create config directory and default config.toml
+      3. Prompt for hostname (required)
+      4. Set admin password (Argon2id hash stored)
+      5. Configure TLS mode (ACME vs manual vs upstream)
+      6. Generate backup encryption keypair, print recovery code to terminal
+      7. Create data directories
+      8. Run initial SQLite migrations
+      9. Print next steps: `systemctl enable --now tilde`
+      10. Does NOT auto-enable/start — user explicitly runs systemctl
+    </init_wizard>
+
+    <user_customization>
+      `systemctl edit tilde` creates drop-in overrides.
+      Package upgrades never touch drop-in files.
+    </user_customization>
+  </installation>
+
+  <deployment>
+    <direct_vps>
+      Recommended: Hetzner CAX11 (€3.79/mo, 2 vCPU ARM, 4GB RAM, 40GB disk, 20TB bandwidth).
+      Alternative: EC2 t4g.small (ARM).
+
+      EC2 specifics:
+      - IMDSv2 required
+      - Security groups: 443/0.0.0.0 (HTTPS), 22/your-IP (SSH) or SSM
+      - EBS encryption default-on
+      - rustls-acme TLS-ALPN-01 direct
+
+      Setup: install package → `tilde init` → `systemctl enable --now tilde`
+    </direct_vps>
+
+    <reverse_proxy>
+      Pangolin, Caddy, nginx, or Traefik in front:
+      - config.toml: tls.mode = "upstream", server.listen_port = 8080
+      - server.trusted_proxies = ["10.0.0.1/32"]
+      - Server speaks plain HTTP locally, proxy handles TLS
+      - Admin paths optionally behind proxy SSO; API endpoints use app-passwords
+
+      Critical reverse proxy settings (documented in README):
+      - Raise client_max_body_size (nginx) or equivalent to match files.max_upload_size_mb
+      - Extend proxy timeouts for large uploads (300s+)
+      - Forward X-Forwarded-For, X-Forwarded-Proto headers
+      - WebSocket upgrade not needed (no WebSocket in v1)
+    </reverse_proxy>
+  </deployment>
+
+  <security>
+    <attack_surface>
+      - Strict CSP on login page HTML: default-src 'self'
+      - HSTS with preload header on all responses
+      - Host header allowlist (reject requests for unknown hosts)
+      - Rate limiting on auth endpoints (token bucket per-IP and per-account)
+      - cargo audit in CI pipeline
+      - CAA DNS records recommended in docs
+      - Certificate expiry monitoring as first-class health check
+      - No web UI = no XSS/CSRF/session-management attack surface (except Login Flow v2 page)
+      - CSRF token on Login Flow v2 form
+    </attack_surface>
+
+    <exif_privacy>
+      Store EXIF internally for organization and search.
+      Strip EXIF by default on any hypothetical public URL (single-user, but defense in depth).
+      No full file hashes in URLs — use opaque UUIDs only.
+    </exif_privacy>
+
+    <process_isolation>
+      ExifTool, libheif, ffmpeg subprocesses:
+      - Configurable timeout per tool
+      - Resource limits via cgroup where available
+      - Crashed decoder cannot crash server
+      - Input validation: file type checked by magic bytes before passing to decoder
+    </process_isolation>
+
+    <mcp_security>
+      - Narrow tools, no URL-fetching capability
+      - Scope-restricted tokens + tool allowlist in config (defense in depth)
+      - Audit log every call with 90-day retention
+      - Constant-time token comparison (subtle crate)
+    </mcp_security>
+
+    <backup_security>
+      - Server holds only public encryption key; private key stays offline
+      - Append-only destination enforcement (B2 Object Lock, S3 Object Lock)
+      - Printed-paper recovery code during init
+    </backup_security>
+  </security>
+
+  <timezone_discipline>
+    Every timestamp has a zone. jiff crate throughout.
+    Three views available: local-to-event, local-to-viewer, UTC.
+    API responses always include UTC offset.
+    CLI respects $TZ environment variable.
+    CI tests run with multiple TZ values including DST edge cases.
+    SQLite stores ISO 8601 with offset (e.g., "2025-06-15T14:30:00-03:00").
+  </timezone_discipline>
+
+  <crash_safety>
+    - SQLite WAL mode ensures database consistency
+    - File writes: atomic tmp → fsync → rename → fsync parent directory
+    - Startup scan for orphaned _tmp files in staging directories (clean up)
+    - Durable SQLite-backed jobs queue (jobs table) resumes after crashes
+    - Chunked upload sessions have expiry; orphaned staging dirs cleaned on startup
+  </crash_safety>
+
+  <implementation_steps>
+    <step number="0">
+      <title>Foundation (2–4 weeks)</title>
+      <tasks>
+        - Initialize Cargo workspace with crate structure (tilde-core, tilde-server, tilde-cli, etc.)
+        - axum HTTP server scaffolding with tower middleware (logging, request-id, compression)
+        - rustls + rustls-acme TLS-ALPN-01 certificate provisioning
+        - figment config loading (TOML + env vars + CLI flags)
+        - XDG path resolution via directories crate, systemd detection
+        - SQLite database initialization: WAL mode, FTS5, JSON1, foreign keys, migrations table
+        - Migration runner (embedded SQL files, version tracking, checksum verification)
+        - Argon2id password auth + opaque session tokens
+        - Scoped app-passwords (create, list, revoke via CLI)
+        - tracing + tracing-subscriber structured JSON logging
+        - sd-notify systemd integration with watchdog
+        - /health endpoint (JSON: db status, disk usage, uptime)
+        - /metrics Prometheus endpoint (localhost-bound)
+        - Static musl binary build (cross-compile for x86_64 and aarch64)
+        - systemd unit file generation (`tilde install`)
+        - `tilde init` wizard (config creation, password setup, directory creation, migration run)
+        - `tilde status` rich text output
+        - `tilde diagnose` self-check (config, connectivity, disk, dependencies)
+        - Shell completion generation (bash, zsh, fish)
+        - Rate limiting middleware on auth endpoints
+        - SIGHUP handler for hot-reload of supported config values
+      </tasks>
+    </step>
+
+    <step number="1">
+      <title>CalDAV + CardDAV via RustiCal (4–8 weeks)</title>
+      <tasks>
+        - Integrate RustiCal as Cargo dependency
+        - Implement SQLite storage backend adapter for RustiCal
+        - Mount RustiCal CalDAV handlers at /caldav/*
+        - Mount RustiCal CardDAV handlers at /carddav/*
+        - Wire RustiCal auth to tilde's auth system (app-passwords, sessions)
+        - /.well-known/caldav and /.well-known/carddav redirects (RFC 6764)
+        - current-user-principal (RFC 5397)
+        - Run CalDAVTester suite, fix compliance issues
+        - Run litmus WebDAV compliance suite
+        - Test against real clients: DAVx5, iOS Calendar, iOS Contacts, Thunderbird, Evolution
+        - CLI: tilde calendar list, tilde calendar events, tilde contacts list, tilde contacts search
+        - VTODO support validation with Apple Reminders and jtx Board
+      </tasks>
+    </step>
+
+    <step number="2">
+      <title>WebDAV + File Sync + Notes (4–6 weeks)</title>
+      <tasks>
+        - WebDAV Class 1 handler: OPTIONS, GET, PUT, DELETE, MKCOL, MOVE, COPY, PROPFIND, PROPPATCH, HEAD
+        - Atomic file writes (tmp → fsync → rename → fsync parent)
+        - ETag generation and If-Match precondition handling (412 on conflict)
+        - files table: UUID-based oc:id, path tracking, metadata caching
+        - Nextcloud chunked upload v2: MKCOL session, chunk PUT, MOVE finalize
+        - Streaming writes (never buffer full file in memory)
+        - Disk-space pre-check before accepting uploads
+        - 24h session expiry, orphan cleanup on startup
+        - Nextcloud OCS capabilities stub (/ocs/v2.php/cloud/capabilities)
+        - /status.php Nextcloud version stub
+        - /remote.php/* redirects to /dav/*
+        - Nextcloud Login Flow v2 (POST /login/v2, poll, embedded HTML login page)
+        - macOS Finder LOCK request handling (FakeLs — respond 200 OK)
+        - Notes as markdown files over WebDAV at /dav/notes/*
+        - FTS5 index for notes content (notes_fts virtual table)
+        - CLI: tilde notes search, tilde notes list
+        - Range header support on GET for partial downloads
+        - Test with: Nextcloud desktop client, Nextcloud mobile, rclone, Joplin, QOwnNotes
+      </tasks>
+    </step>
+
+    <step number="3">
+      <title>Photo Management (4–8 weeks)</title>
+      <tasks>
+        - Content-addressed blob store at blobs/by-id/<uuid>.<ext> with directory sharding
+        - notify-rs file watcher on _inbox/ and _library-drop/ directories
+        - Debounce (5s) + file-size-stable check before processing
+        - File type validation via magic bytes
+        - ExifTool subprocess integration: read metadata, write XMP tags
+        - Process isolation: configurable timeout, error handling, _errors/ directory
+        - Photo SQLite record creation (photos table, photo_tags table)
+        - Organization pattern engine: parse {year}/{month:02}/{-trip}/, compute destination path
+        - WebDAV MOVE for organization (preserve oc:id)
+        - manually_placed flag on user-initiated MOVE operations
+        - _inbox/ → organize → final path flow
+        - _library-drop/ → preserve structure flow
+        - _untriaged/ routing for insufficient metadata
+        - Encrypted file detection (magic bytes for GPG, age, etc.) → content_readable = false
+        - Thumbnail pipeline: image + fast_image_resize for JPEG/PNG/WebP
+        - libheif-rs for HEIC decoding
+        - ffmpeg subprocess for video thumbnails
+        - Single-slot semaphore for thumbnail generation
+        - Blurhash computation and storage
+        - WebP thumbnail generation at 256px and 1920px
+        - Thumbnail storage at $CACHE_DIR/thumbnails/<uuid>/
+        - SHA-256 computation (original and current)
+        - Tag CRUD via ExifTool (write XMP dc:Subject + IPTC Keywords)
+        - Tag prefix classifier (trip:, event:, person:, plain)
+        - CLI: tilde photos list, tag, reindex, thumbnail regenerate
+        - Background job queue for thumbnail generation (jobs table)
+      </tasks>
+    </step>
+
+    <step number="4">
+      <title>Collections + MCP (2–4 weeks)</title>
+      <tasks>
+        - collections and records tables with JSON Schema validation
+        - Generic CRUD for collections via CLI
+        - Generated columns for indexed fields
+        - Bookmarks shorthand (tilde bookmarks add ...)
+        - Trackers shorthand (tilde trackers log/query ...)
+        - rmcp Streamable HTTP endpoint at /mcp/
+        - Bearer token auth for MCP (mcp_tokens table)
+        - Token CRUD CLI: create, list, revoke, rotate
+        - Scope enforcement per tool call
+        - Rate limiting per token
+        - Audit logging (mcp_audit_log table)
+        - Implement ~15 MCP tools: notes.{search,read,append}, calendar.{list_events,create_event},
+          contacts.search, files.{list,read,search}, tasks.{list,add}, trackers.{log,query},
+          email.{search,thread,recent}
+        - Tool allowlist in config, hot-reloadable via SIGHUP
+        - OAuth Protected Resource Metadata stub (directs to bearer tokens)
+        - Cross-reference URI parsing and links table population
+        - CLI: tilde reindex --type links
+      </tasks>
+    </step>
+
+    <step number="4.5">
+      <title>Email Archive (2–3 weeks)</title>
+      <tasks>
+        - async-imap client with SSL connection
+        - IMAP IDLE for near-real-time push
+        - UID-based tracking (kv_meta table stores last seen UID per folder)
+        - Maildir storage: atomic write (tmp/ → cur/)
+        - mail-parser for RFC822 parsing
+        - Message-ID deduplication
+        - email_messages table population
+        - email_fts FTS5 index (subject, from, body_text)
+        - Threading via In-Reply-To and References headers
+        - Multi-account support (config schema supports multiple [[email.accounts]])
+        - Folder include/exclude filtering
+        - Background initial sync (all history or --since scoped)
+        - CLI: search, thread, show, attachments extract, tag, reindex, status
+        - MCP tools: email.search, email.thread, email.recent
+        - Error handling: connection retry with exponential backoff
+        - Notification on sync errors
+      </tasks>
+    </step>
+
+    <step number="5">
+      <title>Notifications, Backup, Export, Packaging (2–3 weeks)</title>
+      <tasks>
+        - Notification sink implementations: ntfy.sh, SMTP, Matrix, Signal, webhook, file
+        - Priority routing and rate limiting
+        - Event definitions: backup_failed, disk_usage_high, auth_failed_repeated,
+          cert_expiring_soon, sync_conflict_detected, update_available
+        - CLI: tilde notifications test/list/config
+        - rustic-rs backup integration
+        - Backup scheduling (cron-style via internal scheduler)
+        - Local retention policies (hourly/daily/weekly/monthly)
+        - Offsite backup configuration (S3/SFTP)
+        - CLI: backup status/now/list/verify/pin, restore
+        - Export: standards-based directory tree (ICS, VCF, MD, Maildir, JSON)
+        - manifest.json for UUID stability
+        - Import with --verify-first and --dry-run
+        - tar.zst and age encryption options
+        - Update check: signed manifest, minisign verification
+        - CLI: update check/download
+        - Inbound webhook handler (POST /api/webhook/<token-prefix>)
+        - Webhook token CRUD
+        - Package builds: .deb (cargo-deb), .rpm (cargo-generate-rpm)
+        - AUR PKGBUILD
+        - NixOS module
+        - Docker image (multi-arch: amd64/arm64)
+        - Homebrew formula
+        - cargo-dist release pipeline
+        - GitHub Actions CI: test, clippy -D warnings, fmt --check, cargo audit
+      </tasks>
+    </step>
+  </implementation_steps>
+
+  <success_criteria>
+    <functionality>
+      - CalDAV works with iOS Calendar, DAVx5, Thunderbird, and Evolution
+      - CardDAV works with iOS Contacts, DAVx5, and Thunderbird
+      - Nextcloud desktop sync client connects, syncs files, uses virtual filesystem mode
+      - Nextcloud mobile app connects via Login Flow v2
+      - Photos dropped in _inbox/ are auto-organized within 10 seconds
+      - Thumbnails generated for JPEG, PNG, WebP, HEIC, and video files
+      - ExifTool writes XMP tags that Lightroom and digiKam can read
+      - Notes sync via Joplin, Obsidian (Remotely Save), or iA Writer over WebDAV
+      - FTS5 search returns relevant results for notes and email
+      - Email archive syncs via IMAP IDLE within seconds of new mail
+      - MCP tools work with Claude Desktop and other MCP clients
+      - Backup creates and verifies restic-compatible snapshots
+      - Export produces standards-compliant ICS, VCF, Maildir, and markdown
+      - Import from export roundtrips without data loss (tested in CI)
+    </functionality>
+
+    <operational>
+      - Binary starts and serves HTTPS with auto-provisioned TLS certificate
+      - systemd unit scores < 2.0 on systemd-analyze security
+      - Server recovers cleanly from crashes (no orphaned state)
+      - Watchdog restarts server if unresponsive for 30s
+      - `tilde status` shows complete system health
+      - `tilde diagnose` catches common misconfigurations
+      - Notifications fire on backup failures and disk space warnings
+      - Memory usage stays under 256MB for normal workloads (no photos processing)
+      - Memory usage stays under 512MB during photo thumbnail generation
+    </operational>
+
+    <security>
+      - No secrets in config.toml or any non-env-var storage
+      - Argon2id for all password hashing
+      - Constant-time token comparison everywhere
+      - Rate limiting prevents brute-force attacks
+      - Process isolation prevents decoder crashes from affecting server
+      - All file writes are atomic (no partial/corrupt files on crash)
+      - HSTS, CSP headers on all responses
+      - cargo audit clean in CI
+    </security>
+  </success_criteria>
+
+  <testing_strategy>
+    <unit_tests>Rust #[test] for core logic: HLC, ETag generation, organization patterns, config parsing, tag classification</unit_tests>
+    <integration_tests>SQLite-backed tests for database operations, job queue, auth flows</integration_tests>
+    <protocol_compliance>CalDAVTester, litmus (WebDAV), custom test harness for Nextcloud chunked upload</protocol_compliance>
+    <client_testing>Manual verification against iOS, DAVx5, Thunderbird, Evolution, Nextcloud desktop/mobile, rclone, Joplin</client_testing>
+    <ci_pipeline>
+      - cargo test (all crates)
+      - cargo clippy -D warnings
+      - cargo fmt --check
+      - cargo audit
+      - Cross-compile check (x86_64-musl, aarch64-musl)
+      - Export/import roundtrip test
+      - Multi-timezone test run (UTC, America/New_York, Asia/Tokyo, Pacific/Auckland with DST edges)
+    </ci_pipeline>
+  </testing_strategy>
+
+  <explicitly_deferred>
+    <!-- Might build later, but NOT in initial implementation -->
+    - Chat history archival (fits generic collection pattern)
+    - Link preview / page archival for bookmarks (SSRF concerns)
+    - Full OAuth 2.1 for MCP (add when external clients require it)
+    - Collaborative editing via loro CRDT (add when concrete workload demands it)
+    - Live Photo pairing (complexity vs benefit at this photo volume)
+    - Immich mobile fork (only if iOS offline UX becomes critical)
+    - Obsidian wiki-link resolution server-side
+    - RSS aggregator (separate product)
+    - Password manager (separate product)
+  </explicitly_deferred>
+
+  <permanently_out_of_scope>
+    - AI features (face recognition, CLIP, OCR) — never
+    - Transcoding originals — never
+    - Multi-user / sharing / publishing — never
+    - Email sending/receiving (Purelymail stays authoritative) — never
+    - Full Nextcloud OCS API beyond capabilities stub and Login Flow v2 — never
+    - Obsidian-livesync CouchDB protocol — never
+    - Syncthing BEP interop — never
+    - Custom sync protocols — never
+    - Web UI beyond Login Flow v2 page — never
+  </permanently_out_of_scope>
+
+</project_specification>
