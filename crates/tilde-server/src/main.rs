@@ -35,6 +35,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Reindex { r#type }) => commands::run_reindex(config_path.as_deref(), &r#type).await,
         Some(Commands::Photos { command }) => commands::run_photos(config_path.as_deref(), command).await,
         Some(Commands::Email { command }) => commands::run_email(config_path.as_deref(), command).await,
+        Some(Commands::Calendar { command }) => commands::run_calendar(config_path.as_deref(), command).await,
+        Some(Commands::Contacts { command }) => commands::run_contacts(config_path.as_deref(), command).await,
         None => {
             println!("tilde — Personal Cloud Server");
             println!("Run `tilde --help` for usage information.");

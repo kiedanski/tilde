@@ -174,6 +174,105 @@ fn all_tools() -> Vec<ToolDef> {
                 "required": ["collection"]
             }),
         },
+        ToolDef {
+            name: "calendar.list_events".into(),
+            description: "List calendar events with optional date range filter.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string", "description": "Start date (ISO 8601 or CalDAV format)"},
+                    "to": {"type": "string", "description": "End date"},
+                    "calendar": {"type": "string", "description": "Calendar name (default: all)"}
+                }
+            }),
+        },
+        ToolDef {
+            name: "calendar.create_event".into(),
+            description: "Create a new calendar event. Requires calendar:write scope.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "calendar": {"type": "string", "description": "Calendar name (default: 'default')"},
+                    "summary": {"type": "string", "description": "Event title"},
+                    "start": {"type": "string", "description": "Start datetime (ISO 8601)"},
+                    "end": {"type": "string", "description": "End datetime (ISO 8601)"},
+                    "location": {"type": "string", "description": "Location"},
+                    "description": {"type": "string", "description": "Description"}
+                },
+                "required": ["summary", "start", "end"]
+            }),
+        },
+        ToolDef {
+            name: "contacts.search".into(),
+            description: "Search contacts by name, email, phone, or organization.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer", "description": "Max results (default 20)"}
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolDef {
+            name: "tasks.list".into(),
+            description: "List VTODO tasks from calendars.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "calendar": {"type": "string", "description": "Calendar name (default: all)"},
+                    "status": {"type": "string", "description": "Filter by status (NEEDS-ACTION, COMPLETED, etc.)"}
+                }
+            }),
+        },
+        ToolDef {
+            name: "tasks.add".into(),
+            description: "Create a new task (VTODO). Requires tasks:write scope.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "Task title"},
+                    "due": {"type": "string", "description": "Due date (ISO 8601)"},
+                    "priority": {"type": "integer", "description": "Priority (1=highest, 9=lowest)"},
+                    "calendar": {"type": "string", "description": "Calendar name (default: 'default')"}
+                },
+                "required": ["summary"]
+            }),
+        },
+        ToolDef {
+            name: "email.search".into(),
+            description: "Search emails by full-text query.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer", "description": "Max results (default 20)"}
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolDef {
+            name: "email.thread".into(),
+            description: "Get full email thread for a message.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "message_id": {"type": "string", "description": "Message-ID header value"}
+                },
+                "required": ["message_id"]
+            }),
+        },
+        ToolDef {
+            name: "email.recent".into(),
+            description: "Get the most recent emails.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer", "description": "Number of emails (default 10)"},
+                    "folder": {"type": "string", "description": "Folder name (default: all)"}
+                }
+            }),
+        },
     ]
 }
 
@@ -710,6 +809,14 @@ pub fn handle_mcp_request(
                     "files.search" => exec_files_search(&conn, &notes_dir, &arguments),
                     "trackers.log" => exec_trackers_log(&conn, &arguments),
                     "trackers.query" => exec_trackers_query(&conn, &arguments),
+                    "calendar.list_events" => exec_calendar_list_events(&conn, &arguments),
+                    "calendar.create_event" => exec_calendar_create_event(&conn, &arguments),
+                    "contacts.search" => exec_contacts_search(&conn, &arguments),
+                    "tasks.list" => exec_tasks_list(&conn, &arguments),
+                    "tasks.add" => exec_tasks_add(&conn, &arguments),
+                    "email.search" => exec_email_search(&conn, &arguments),
+                    "email.thread" => exec_email_thread(&conn, &arguments),
+                    "email.recent" => exec_email_recent(&conn, &arguments),
                     _ => Err(format!("unknown tool: {}", tool_name)),
                 }
             };
@@ -758,4 +865,170 @@ pub fn handle_mcp_request(
             )
         }
     }
+}
+
+// ─── Calendar/Contacts/Tasks/Email tool implementations ───────────��─────
+
+fn exec_calendar_list_events(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let calendar = args.get("calendar").and_then(|v| v.as_str());
+    let from = args.get("from").and_then(|v| v.as_str());
+    let to = args.get("to").and_then(|v| v.as_str());
+
+    let events = tilde_cal::list_events(conn, calendar, from, to);
+    let results: Vec<Value> = events.iter().map(|(uid, comp_type, summary, dtstart, dtend, location, status)| {
+        json!({
+            "uid": uid,
+            "type": comp_type,
+            "summary": summary,
+            "start": dtstart,
+            "end": dtend,
+            "location": location,
+            "status": status,
+        })
+    }).collect();
+    Ok(json!(results))
+}
+
+fn exec_calendar_create_event(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let calendar = args.get("calendar").and_then(|v| v.as_str()).unwrap_or("default");
+    let summary = args.get("summary").and_then(|v| v.as_str())
+        .ok_or("summary is required")?;
+    let start = args.get("start").and_then(|v| v.as_str())
+        .ok_or("start is required")?;
+    let end = args.get("end").and_then(|v| v.as_str())
+        .ok_or("end is required")?;
+    let location = args.get("location").and_then(|v| v.as_str());
+    let description = args.get("description").and_then(|v| v.as_str());
+
+    tilde_cal::ensure_default_calendar(conn);
+    match tilde_cal::create_event(conn, calendar, summary, start, end, location, description) {
+        Ok(uid) => Ok(json!({"uid": uid, "status": "created"})),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn exec_contacts_search(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let query = args.get("query").and_then(|v| v.as_str())
+        .ok_or("query is required")?;
+    let contacts = tilde_card::search_contacts(conn, query);
+    let results: Vec<Value> = contacts.iter().map(|(uid, name, email, phone, org)| {
+        json!({
+            "uid": uid,
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "org": org,
+        })
+    }).collect();
+    Ok(json!(results))
+}
+
+fn exec_tasks_list(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let calendar = args.get("calendar").and_then(|v| v.as_str());
+    let status = args.get("status").and_then(|v| v.as_str());
+
+    let tasks = tilde_cal::list_tasks(conn, calendar, status);
+    let results: Vec<Value> = tasks.iter().map(|(uid, summary, due, priority, status)| {
+        json!({
+            "uid": uid,
+            "summary": summary,
+            "due": due,
+            "priority": priority,
+            "status": status,
+        })
+    }).collect();
+    Ok(json!(results))
+}
+
+fn exec_tasks_add(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let summary = args.get("summary").and_then(|v| v.as_str())
+        .ok_or("summary is required")?;
+    let due = args.get("due").and_then(|v| v.as_str());
+    let priority = args.get("priority").and_then(|v| v.as_i64()).map(|p| p as i32);
+    let calendar = args.get("calendar").and_then(|v| v.as_str());
+
+    match tilde_cal::create_task(conn, calendar, summary, due, priority) {
+        Ok(uid) => Ok(json!({"uid": uid, "status": "created"})),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn exec_email_search(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let query = args.get("query").and_then(|v| v.as_str())
+        .ok_or("query is required")?;
+    let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(20) as u32;
+
+    // Try FTS5 search first, fall back to LIKE
+    let mut stmt = conn.prepare(
+        "SELECT message_id, from_address, subject, date, snippet FROM email_messages
+         WHERE subject LIKE ?1 OR from_address LIKE ?1 OR from_name LIKE ?1
+         ORDER BY date DESC LIMIT ?2"
+    ).map_err(|e| e.to_string())?;
+
+    let pattern = format!("%{}%", query);
+    let results: Vec<Value> = stmt.query_map(rusqlite::params![pattern, limit], |row| {
+        Ok(json!({
+            "message_id": row.get::<_, String>(0)?,
+            "from": row.get::<_, String>(1)?,
+            "subject": row.get::<_, String>(2)?,
+            "date": row.get::<_, String>(3)?,
+            "snippet": row.get::<_, Option<String>>(4)?,
+        }))
+    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    Ok(json!(results))
+}
+
+fn exec_email_thread(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let message_id = args.get("message_id").and_then(|v| v.as_str())
+        .ok_or("message_id is required")?;
+
+    let mut stmt = conn.prepare(
+        "SELECT message_id, from_address, to_addresses, subject, date, snippet
+         FROM email_messages WHERE message_id = ?1 OR in_reply_to = ?1
+         ORDER BY date"
+    ).map_err(|e| e.to_string())?;
+
+    let results: Vec<Value> = stmt.query_map([message_id], |row| {
+        Ok(json!({
+            "message_id": row.get::<_, String>(0)?,
+            "from": row.get::<_, String>(1)?,
+            "to": row.get::<_, String>(2)?,
+            "subject": row.get::<_, String>(3)?,
+            "date": row.get::<_, String>(4)?,
+            "body_snippet": row.get::<_, Option<String>>(5)?,
+        }))
+    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    Ok(json!(results))
+}
+
+fn exec_email_recent(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let count = args.get("count").and_then(|v| v.as_i64()).unwrap_or(10) as u32;
+    let folder = args.get("folder").and_then(|v| v.as_str());
+
+    let (query, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match folder {
+        Some(f) => (
+            "SELECT message_id, from_address, subject, date, snippet FROM email_messages WHERE folder = ?1 ORDER BY date DESC LIMIT ?2".into(),
+            vec![Box::new(f.to_string()), Box::new(count)],
+        ),
+        None => (
+            "SELECT message_id, from_address, subject, date, snippet FROM email_messages ORDER BY date DESC LIMIT ?1".into(),
+            vec![Box::new(count)],
+        ),
+    };
+
+    let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+    let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let results: Vec<Value> = stmt.query_map(refs.as_slice(), |row| {
+        Ok(json!({
+            "message_id": row.get::<_, String>(0)?,
+            "from": row.get::<_, String>(1)?,
+            "subject": row.get::<_, String>(2)?,
+            "date": row.get::<_, String>(3)?,
+            "snippet": row.get::<_, Option<String>>(4)?,
+        }))
+    }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+
+    Ok(json!(results))
 }

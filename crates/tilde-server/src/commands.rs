@@ -3,10 +3,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::info;
-use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands, NotesCommands, CollectionCommands, BookmarksCommands, TrackersCommands, WebhookCommands, WebhookTokenCommands, NotificationCommands, PhotosCommands, EmailCommands};
+use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands, NotesCommands, CollectionCommands, BookmarksCommands, TrackersCommands, WebhookCommands, WebhookTokenCommands, NotificationCommands, PhotosCommands, EmailCommands, CalendarCommands, ContactsCommands};
 use tilde_core::{config::Config, db, auth};
 use tilde_server::{AppState, build_router, SharedState};
 use tilde_dav;
+use tilde_cal;
+use tilde_card;
 
 pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
     println!("tilde init — Interactive Setup Wizard");
@@ -155,12 +157,31 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     });
 
     let dav_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
-        db: db_arc,
+        db: db_arc.clone(),
         files_root,
         uploads_root,
     });
 
-    let app = build_router(state, dav_state);
+    let session_ttl = state.config.auth.session_ttl_hours;
+
+    let caldav_state: tilde_cal::SharedCalDavState = Arc::new(tilde_cal::CalDavState {
+        db: db_arc.clone(),
+        session_ttl_hours: session_ttl,
+    });
+
+    let carddav_state: tilde_card::SharedCardDavState = Arc::new(tilde_card::CardDavState {
+        db: db_arc,
+        session_ttl_hours: session_ttl,
+    });
+
+    // Ensure default calendar and addressbook exist
+    {
+        let db = caldav_state.db.lock().unwrap();
+        tilde_cal::ensure_default_calendar(&db);
+        tilde_card::ensure_default_addressbook(&db);
+    }
+
+    let app = build_router(state, dav_state, caldav_state, carddav_state);
 
     println!("tilde server listening on http://{}", listen_addr);
 
@@ -1512,6 +1533,100 @@ fn ensure_bookmarks_collection(conn: &rusqlite::Connection) -> anyhow::Result<()
             "INSERT INTO collections (id, name, schema_json, created_at, updated_at) VALUES (?1, 'bookmarks', ?2, ?3, ?4)",
             rusqlite::params![id, serde_json::to_string(&schema)?, now, now],
         )?;
+    }
+    Ok(())
+}
+
+pub async fn run_calendar(config_path: Option<&str>, command: CalendarCommands) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let conn = db::init_db(config.db_path().to_str().unwrap())?;
+    let migrations_dir = tilde_cli::find_migrations_dir();
+    db::run_migrations(&conn, &migrations_dir)?;
+
+    match command {
+        CalendarCommands::List => {
+            let calendars = tilde_cal::list_calendars(&conn);
+            if calendars.is_empty() {
+                println!("No calendars found.");
+            } else {
+                println!("{:<20} {:<30} {:<10} {}", "NAME", "DISPLAY NAME", "CTAG", "DESCRIPTION");
+                println!("{}", "-".repeat(80));
+                for (name, display_name, ctag, desc) in &calendars {
+                    println!("{:<20} {:<30} {:<10} {}", name, display_name, ctag, desc.as_deref().unwrap_or(""));
+                }
+            }
+        }
+        CalendarCommands::Events { from, to, calendar } => {
+            let events = tilde_cal::list_events(
+                &conn,
+                calendar.as_deref(),
+                from.as_deref(),
+                to.as_deref(),
+            );
+            if events.is_empty() {
+                println!("No events found.");
+            } else {
+                println!("{:<38} {:<8} {:<30} {:<22} {:<22} {}", "UID", "TYPE", "SUMMARY", "START", "END", "LOCATION");
+                println!("{}", "-".repeat(140));
+                for (uid, comp_type, summary, dtstart, dtend, location, _status) in &events {
+                    println!("{:<38} {:<8} {:<30} {:<22} {:<22} {}",
+                        &uid[..std::cmp::min(36, uid.len())],
+                        comp_type,
+                        summary.as_deref().unwrap_or("(untitled)"),
+                        dtstart.as_deref().unwrap_or("-"),
+                        dtend.as_deref().unwrap_or("-"),
+                        location.as_deref().unwrap_or(""),
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn run_contacts(config_path: Option<&str>, command: ContactsCommands) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let conn = db::init_db(config.db_path().to_str().unwrap())?;
+    let migrations_dir = tilde_cli::find_migrations_dir();
+    db::run_migrations(&conn, &migrations_dir)?;
+
+    match command {
+        ContactsCommands::List => {
+            let contacts = tilde_card::list_contacts(&conn);
+            if contacts.is_empty() {
+                println!("No contacts found.");
+            } else {
+                println!("{:<38} {:<30} {:<30} {:<20} {}", "UID", "NAME", "EMAIL", "PHONE", "ORG");
+                println!("{}", "-".repeat(140));
+                for (uid, name, email, phone, org) in &contacts {
+                    println!("{:<38} {:<30} {:<30} {:<20} {}",
+                        &uid[..std::cmp::min(36, uid.len())],
+                        name.as_deref().unwrap_or("-"),
+                        email.as_deref().unwrap_or("-"),
+                        phone.as_deref().unwrap_or("-"),
+                        org.as_deref().unwrap_or(""),
+                    );
+                }
+            }
+        }
+        ContactsCommands::Search { query } => {
+            let contacts = tilde_card::search_contacts(&conn, &query);
+            if contacts.is_empty() {
+                println!("No contacts matching '{}'.", query);
+            } else {
+                println!("{:<38} {:<30} {:<30} {:<20} {}", "UID", "NAME", "EMAIL", "PHONE", "ORG");
+                println!("{}", "-".repeat(140));
+                for (uid, name, email, phone, org) in &contacts {
+                    println!("{:<38} {:<30} {:<30} {:<20} {}",
+                        &uid[..std::cmp::min(36, uid.len())],
+                        name.as_deref().unwrap_or("-"),
+                        email.as_deref().unwrap_or("-"),
+                        phone.as_deref().unwrap_or("-"),
+                        org.as_deref().unwrap_or(""),
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }

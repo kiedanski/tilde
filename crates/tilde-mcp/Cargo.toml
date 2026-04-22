@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 tilde-core = { workspace = true }
+tilde-cal = { workspace = true }
+tilde-card = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

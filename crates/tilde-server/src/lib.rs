@@ -18,6 +18,8 @@ use std::time::Instant;
 use tower_http::{trace::TraceLayer, compression::CompressionLayer};
 use tilde_core::{config::Config, auth};
 use tilde_dav;
+use tilde_cal;
+use tilde_card;
 use tilde_mcp;
 
 /// Per-IP rate limit tracking for auth endpoints
@@ -49,7 +51,7 @@ pub struct AppState {
 pub type SharedState = Arc<AppState>;
 
 /// Build the axum router with all routes
-pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) -> Router {
+pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState, caldav_state: tilde_cal::SharedCalDavState, carddav_state: tilde_card::SharedCardDavState) -> Router {
     // Routes that require authentication
     let authenticated = Router::new()
         .route("/api/auth/verify", get(auth_verify_handler))
@@ -79,6 +81,10 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
     });
     let photos_router = tilde_dav::build_dav_router(photos_state);
 
+    // CalDAV and CardDAV routers
+    let caldav_router = tilde_cal::build_caldav_router(caldav_state);
+    let carddav_router = tilde_card::build_carddav_router(carddav_state);
+
     Router::new()
         // Public endpoints
         .route("/health", get(health_handler))
@@ -107,6 +113,9 @@ pub fn build_router(state: SharedState, dav_state: tilde_dav::SharedDavState) ->
         .merge(authenticated)
         // Principals (RFC 5397)
         .route("/principals/{*path}", any(principals_handler))
+        // CalDAV and CardDAV
+        .nest_service("/caldav", caldav_router)
+        .nest_service("/carddav", carddav_router)
         // WebDAV
         .nest_service("/dav/files", dav_router)
         .nest_service("/dav/notes", notes_router)

@@ -1875,8 +1875,16 @@ name = "tilde-cal"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
+ "base64",
+ "jiff",
+ "quick-xml",
+ "rusqlite",
+ "serde_json",
+ "sha2",
  "tilde-core",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1884,8 +1892,16 @@ name = "tilde-card"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
+ "base64",
+ "jiff",
+ "quick-xml",
+ "rusqlite",
+ "serde_json",
+ "sha2",
  "tilde-core",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1970,6 +1986,8 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tilde-cal",
+ "tilde-card",
  "tilde-core",
  "tracing",
  "uuid",

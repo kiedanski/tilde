@@ -665,7 +665,7 @@
       "Step 4: DELETE calendar",
       "Step 5: Verify calendar no longer exists"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -679,7 +679,7 @@
       "Step 6: DELETE the event",
       "Step 7: Verify event no longer exists"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -691,7 +691,7 @@
       "Step 4: Update VTODO status to COMPLETED",
       "Step 5: Verify updated status persists"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -702,7 +702,7 @@
       "Step 3: Verify only events within range are returned",
       "Step 4: Verify returned data includes full VCALENDAR"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -713,7 +713,7 @@
       "Step 3: Verify exactly 2 events returned",
       "Step 4: Verify correct events returned with full VCALENDAR data"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -730,7 +730,7 @@
       "Step 9: Send sync-collection with latest sync-token",
       "Step 10: Verify deleted event indicated in response (404 status for that href)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -740,7 +740,7 @@
       "Step 2: Add an event",
       "Step 3: PROPFIND again and verify getctag changed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -779,7 +779,7 @@
       "Step 4: DELETE addressbook",
       "Step 5: Verify addressbook removed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -792,7 +792,7 @@
       "Step 5: DELETE contact",
       "Step 6: Verify contact removed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -802,7 +802,7 @@
       "Step 2: Send addressbook-multiget REPORT requesting 2 contacts",
       "Step 3: Verify exactly 2 contacts returned with full VCARD data"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -814,7 +814,7 @@
       "Step 4: Delete a contact",
       "Step 5: Sync \u2192 verify deletion indicated"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -826,7 +826,7 @@
       "Step 4: Access CardDAV with that password \u2192 verify success",
       "Step 5: Verify cross-scope access is denied"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -836,7 +836,7 @@
       "Step 2: Run `tilde calendar list`",
       "Step 3: Verify both calendars listed with names"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -848,7 +848,7 @@
       "Step 4: Run `tilde calendar events --from 2025-01-01 --to 2025-01-31`",
       "Step 5: Verify only events in range returned"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -858,7 +858,7 @@
       "Step 2: Run `tilde contacts list` \u2192 verify all contacts listed",
       "Step 3: Run `tilde contacts search 'John'` \u2192 verify matching contacts returned"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1601,7 +1601,7 @@
       "Step 2: Call calendar.list_events(from: '2025-01-01', to: '2025-12-31')",
       "Step 3: Verify events returned with summary, start, end, location"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1611,7 +1611,7 @@
       "Step 2: Verify event created and uid returned",
       "Step 3: Verify event visible via CalDAV"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1621,7 +1621,7 @@
       "Step 2: Call contacts.search(query: 'John')",
       "Step 3: Verify matching contacts returned with name, email, phone, org"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1664,7 +1664,7 @@
       "Step 2: Call tasks.list()",
       "Step 3: Verify tasks returned with summary, due, priority, status"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1674,7 +1674,7 @@
       "Step 2: Verify task created and uid returned",
       "Step 3: Verify task visible via CalDAV client"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1696,7 +1696,7 @@
       "Step 2: Call email.search(query: 'invoice')",
       "Step 3: Verify results with message_id, from, subject, date, snippet"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1706,7 +1706,7 @@
       "Step 2: Call email.thread(message_id: '<msgid>')",
       "Step 3: Verify thread messages returned in order"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1716,7 +1716,7 @@
       "Step 2: Call email.recent(count: 5)",
       "Step 3: Verify 5 most recent emails returned"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2334,7 +2334,7 @@
       "Step 2: Send free-busy-query REPORT for a time range",
       "Step 3: Verify VFREEBUSY response with busy periods"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
