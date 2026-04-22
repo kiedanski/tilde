@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Commands::Notes { command }) => commands::run_notes(config_path.as_deref(), command).await,
+        Some(Commands::Collection { command }) => commands::run_collection(config_path.as_deref(), command).await,
         None => {
             println!("tilde — Personal Cloud Server");
             println!("Run `tilde --help` for usage information.");

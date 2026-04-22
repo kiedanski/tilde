@@ -1233,7 +1233,7 @@
       "Step 2: Run `tilde collection create weight --schema weight-schema.json`",
       "Step 3: Verify collection created in collections table with schema_json"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1252,7 +1252,7 @@
       "Step 11: Run `tilde collection weight delete <id>` → verify removed",
       "Step 12: Run `tilde collection weight list` → verify empty"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1264,7 +1264,7 @@
       "Step 4: Run `tilde collection <name> list --filter 'value>70'`",
       "Step 5: Verify only matching records returned"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1276,7 +1276,7 @@
       "Step 4: Run `tilde collection <name> export --format csv`",
       "Step 5: Verify valid CSV output"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1559,7 +1559,7 @@
       "Step 3: Run `tilde mcp token rotate <id>` → verify old revoked, new created with same scopes",
       "Step 4: Run `tilde mcp token revoke <id>` → verify token no longer works"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2272,7 +2272,7 @@
       "Step 3: Verify env var references used for all credentials",
       "Step 4: Verify passwords not logged in tracing output"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2292,7 +2292,7 @@
       "Step 2: Run `tilde collection list`",
       "Step 3: Verify all collections listed with names and record counts"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2497,7 +2497,7 @@
       "Step 2: Verify token bucket rate limiting kicks in",
       "Step 3: Verify different IPs have independent buckets"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

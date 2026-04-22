@@ -222,6 +222,12 @@ pub enum ContactsCommands {
 pub enum CollectionCommands {
     Create { name: String, #[arg(long)] schema: String },
     List,
+    Add { name: String, #[arg(long)] data: String },
+    Get { name: String, id: String },
+    Update { name: String, id: String, #[arg(long)] data: String },
+    Delete { name: String, id: String },
+    ListRecords { name: String, #[arg(long)] filter: Option<String>, #[arg(long)] sort: Option<String>, #[arg(long)] limit: Option<u32> },
+    Export { name: String, #[arg(long, default_value = "json")] format: String },
 }
 
 #[derive(clap::Subcommand)]
