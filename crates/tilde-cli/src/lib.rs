@@ -72,6 +72,16 @@ pub enum Commands {
         #[command(subcommand)]
         command: CollectionCommands,
     },
+    /// Bookmarks shorthand: add, list bookmarks
+    Bookmarks {
+        #[command(subcommand)]
+        command: BookmarksCommands,
+    },
+    /// Trackers shorthand: log and query collection data
+    Trackers {
+        #[command(subcommand)]
+        command: TrackersCommands,
+    },
     /// Email archive operations
     Email {
         #[command(subcommand)]
@@ -228,6 +238,50 @@ pub enum CollectionCommands {
     Delete { name: String, id: String },
     ListRecords { name: String, #[arg(long)] filter: Option<String>, #[arg(long)] sort: Option<String>, #[arg(long)] limit: Option<u32> },
     Export { name: String, #[arg(long, default_value = "json")] format: String },
+}
+
+#[derive(clap::Subcommand)]
+pub enum BookmarksCommands {
+    /// Add a bookmark
+    Add {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        tags: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// List bookmarks
+    List {
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long)]
+        limit: Option<u32>,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub enum TrackersCommands {
+    /// Log a data entry to a collection
+    Log {
+        /// Collection name
+        collection: String,
+        /// JSON data to log
+        data: String,
+    },
+    /// Query collection data
+    Query {
+        /// Collection name
+        collection: String,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, default_value = "table")]
+        format: String,
+        #[arg(long)]
+        limit: Option<u32>,
+    },
 }
 
 #[derive(clap::Subcommand)]

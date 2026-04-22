@@ -1286,7 +1286,7 @@
       "Step 2: Verify bookmark stored in bookmarks collection",
       "Step 3: Verify schema validation (url is required string)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1297,7 +1297,7 @@
       "Step 3: Run `tilde trackers query weight --since 2025-01-01 --format json`",
       "Step 4: Verify records returned with timestamps"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2550,7 +2550,7 @@
       "Step 3: Try to add record with wrong type for 'url' \u2192 verify error",
       "Step 4: Add valid record \u2192 verify success"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

@@ -2,6 +2,7 @@
 //!
 //! Implements JSON-RPC 2.0 over HTTP with MCP protocol methods:
 //! - initialize, tools/list, tools/call
+//!
 //! Bearer token auth with scope enforcement, rate limiting, and audit logging.
 
 use std::collections::HashMap;
@@ -609,14 +610,14 @@ fn index_notes_fts_recursive(conn: &Connection, dir: &Path, base: &Path) {
 }
 
 fn basic_validate(data: &Value, schema: &Value) -> Result<(), String> {
-    if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
-        if let Some(obj) = data.as_object() {
-            for req in required {
-                if let Some(field) = req.as_str() {
-                    if !obj.contains_key(field) {
-                        return Err(format!("missing required field: '{}'", field));
-                    }
-                }
+    if let Some(required) = schema.get("required").and_then(|r| r.as_array())
+        && let Some(obj) = data.as_object()
+    {
+        for req in required {
+            if let Some(field) = req.as_str()
+                && !obj.contains_key(field)
+            {
+                return Err(format!("missing required field: '{}'", field));
             }
         }
     }

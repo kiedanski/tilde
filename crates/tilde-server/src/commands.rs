@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::info;
-use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands, NotesCommands, CollectionCommands};
+use tilde_cli::{AuthCommands, AppPasswordCommands, SessionCommands, McpCommands, TokenCommands, NotesCommands, CollectionCommands, BookmarksCommands, TrackersCommands};
 use tilde_core::{config::Config, db, auth};
 use tilde_server::{AppState, build_router, SharedState};
 use tilde_dav;
@@ -828,6 +828,197 @@ fn walkdir(path: &std::path::Path) -> anyhow::Result<u64> {
         }
     }
     Ok(total)
+}
+
+pub async fn run_bookmarks(config_path: Option<&str>, command: BookmarksCommands) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let conn = db::init_db(config.db_path().to_str().unwrap())?;
+    let migrations_dir = tilde_cli::find_migrations_dir();
+    db::run_migrations(&conn, &migrations_dir)?;
+
+    // Ensure "bookmarks" collection exists
+    ensure_bookmarks_collection(&conn)?;
+
+    match command {
+        BookmarksCommands::Add { url, title, tags, description } => {
+            let mut data = serde_json::json!({
+                "url": url,
+            });
+            if let Some(t) = title {
+                data["title"] = serde_json::json!(t);
+            }
+            if let Some(t) = tags {
+                let tag_list: Vec<&str> = t.split(',').map(|s| s.trim()).collect();
+                data["tags"] = serde_json::json!(tag_list);
+            }
+            if let Some(d) = description {
+                data["description"] = serde_json::json!(d);
+            }
+            data["created_at"] = serde_json::json!(
+                jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()
+            );
+
+            let collection_id: String = conn.query_row(
+                "SELECT id FROM collections WHERE name = 'bookmarks'",
+                [],
+                |row| row.get(0),
+            )?;
+
+            let id = uuid::Uuid::new_v4().to_string();
+            let data_str = serde_json::to_string(&data)?;
+            let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            conn.execute(
+                "INSERT INTO records (id, collection_id, data_json, created_at, updated_at, hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, collection_id, data_str, now, now, now],
+            )?;
+            println!("{}", id);
+        }
+        BookmarksCommands::List { tag, limit } => {
+            let collection_id: String = conn.query_row(
+                "SELECT id FROM collections WHERE name = 'bookmarks'",
+                [],
+                |row| row.get(0),
+            )?;
+
+            let limit = limit.unwrap_or(50);
+            let mut stmt = conn.prepare(
+                "SELECT id, data_json, created_at FROM records WHERE collection_id = ?1 ORDER BY created_at DESC LIMIT ?2"
+            )?;
+            let rows: Vec<(String, String, String)> = stmt.query_map(
+                rusqlite::params![collection_id, limit],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            )?.filter_map(|r| r.ok()).collect();
+
+            println!("{:<36} {:<50} {:<30} {}", "ID", "URL", "Title", "Tags");
+            println!("{}", "-".repeat(130));
+            for (id, data_str, _created) in &rows {
+                let data: serde_json::Value = serde_json::from_str(data_str).unwrap_or_default();
+                let url = data.get("url").and_then(|v| v.as_str()).unwrap_or("-");
+                let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("-");
+                let tags = data.get("tags").and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default();
+
+                // Filter by tag if specified
+                if let Some(ref filter_tag) = tag {
+                    if !tags.contains(filter_tag) {
+                        continue;
+                    }
+                }
+
+                println!("{:<36} {:<50} {:<30} {}", id, url, title, tags);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn run_trackers(config_path: Option<&str>, command: TrackersCommands) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let conn = db::init_db(config.db_path().to_str().unwrap())?;
+    let migrations_dir = tilde_cli::find_migrations_dir();
+    db::run_migrations(&conn, &migrations_dir)?;
+
+    match command {
+        TrackersCommands::Log { collection, data } => {
+            let data_val: serde_json::Value = serde_json::from_str(&data)
+                .map_err(|e| anyhow::anyhow!("Invalid JSON: {}", e))?;
+
+            let (collection_id, schema_json): (String, String) = conn.query_row(
+                "SELECT id, schema_json FROM collections WHERE name = ?1",
+                [&collection],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).map_err(|_| anyhow::anyhow!("Collection '{}' not found", collection))?;
+
+            let schema: serde_json::Value = serde_json::from_str(&schema_json)?;
+            validate_json_schema(&data_val, &schema)?;
+
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            conn.execute(
+                "INSERT INTO records (id, collection_id, data_json, created_at, updated_at, hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, collection_id, data, now, now, now],
+            )?;
+            println!("{}", id);
+        }
+        TrackersCommands::Query { collection, since, format, limit } => {
+            let (collection_id,): (String,) = conn.query_row(
+                "SELECT id FROM collections WHERE name = ?1",
+                [&collection],
+                |row| Ok((row.get(0)?,)),
+            ).map_err(|_| anyhow::anyhow!("Collection '{}' not found", collection))?;
+
+            let limit = limit.unwrap_or(50);
+
+            let rows: Vec<(String, String, String)> = if let Some(ref since_val) = since {
+                let mut stmt = conn.prepare(
+                    "SELECT id, data_json, created_at FROM records WHERE collection_id = ?1 AND created_at >= ?2 ORDER BY created_at DESC LIMIT ?3"
+                )?;
+                stmt.query_map(rusqlite::params![collection_id, since_val, limit],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                )?.filter_map(|r| r.ok()).collect()
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT id, data_json, created_at FROM records WHERE collection_id = ?1 ORDER BY created_at DESC LIMIT ?2"
+                )?;
+                stmt.query_map(rusqlite::params![collection_id, limit],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                )?.filter_map(|r| r.ok()).collect()
+            };
+
+            match format.as_str() {
+                "json" => {
+                    let records: Vec<serde_json::Value> = rows.iter().map(|(id, data, created)| {
+                        let mut record: serde_json::Value = serde_json::from_str(data).unwrap_or(serde_json::json!({}));
+                        if let Some(obj) = record.as_object_mut() {
+                            obj.insert("_id".to_string(), serde_json::json!(id));
+                            obj.insert("_created_at".to_string(), serde_json::json!(created));
+                        }
+                        record
+                    }).collect();
+                    println!("{}", serde_json::to_string_pretty(&records)?);
+                }
+                _ => {
+                    // Table format
+                    println!("{:<36} {:<40} {}", "ID", "Data", "Created");
+                    println!("{}", "-".repeat(90));
+                    for (id, data, created) in &rows {
+                        println!("{:<36} {:<40} {}", id, data, created);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_bookmarks_collection(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM collections WHERE name = 'bookmarks'",
+        [],
+        |row| row.get::<_, i64>(0),
+    ).map(|c| c > 0)?;
+
+    if !exists {
+        let id = uuid::Uuid::new_v4().to_string();
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["url"],
+            "properties": {
+                "url": {"type": "string"},
+                "title": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "description": {"type": "string"},
+                "created_at": {"type": "string"}
+            }
+        });
+        let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        conn.execute(
+            "INSERT INTO collections (id, name, schema_json, created_at, updated_at) VALUES (?1, 'bookmarks', ?2, ?3, ?4)",
+            rusqlite::params![id, serde_json::to_string(&schema)?, now, now],
+        )?;
+    }
+    Ok(())
 }
 
 fn check_dep(name: &str) {

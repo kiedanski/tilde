@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
@@ -155,21 +155,6 @@ impl Config {
         paths.push(PathBuf::from("config.toml"));
 
         paths
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            tls: TlsConfig::default(),
-            auth: AuthConfig::default(),
-            logging: LoggingConfig::default(),
-            files: FilesConfig::default(),
-            photos: PhotosConfig::default(),
-            notes: NotesConfig::default(),
-            mcp: McpConfig::default(),
-        }
     }
 }
 
