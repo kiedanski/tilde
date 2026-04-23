@@ -25,6 +25,7 @@ fn is_heic(path: &Path) -> bool {
 }
 
 /// Decode a HEIC/HEIF file using libheif-rs, returning an image::DynamicImage
+#[cfg(feature = "heic")]
 fn decode_heic(path: &Path) -> Result<DynamicImage> {
     use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
 
@@ -64,14 +65,18 @@ fn decode_heic(path: &Path) -> Result<DynamicImage> {
     Ok(DynamicImage::ImageRgb8(img_buf))
 }
 
-/// Open an image, using libheif-rs for HEIC/HEIF files
+/// Open an image, using libheif-rs for HEIC/HEIF files when available
 fn open_image(path: &Path) -> Result<DynamicImage> {
+    #[cfg(feature = "heic")]
     if is_heic(path) {
         debug!(path = %path.display(), "Decoding HEIC via libheif");
-        decode_heic(path)
-    } else {
-        image::open(path).context("Failed to open image for thumbnail generation")
+        return decode_heic(path);
     }
+    #[cfg(not(feature = "heic"))]
+    if is_heic(path) {
+        bail!("HEIC support not available (built without 'heic' feature)");
+    }
+    image::open(path).context("Failed to open image for thumbnail generation")
 }
 
 /// Generate thumbnails for a photo, storing them in the cache directory.

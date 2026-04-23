@@ -8,6 +8,10 @@ license.workspace = true
 name = "tilde"
 path = "src/main.rs"
 
+[features]
+default = ["heic"]
+heic = ["tilde-photos/heic"]
+
 [dependencies]
 tilde-core = { workspace = true }
 tilde-cli = { workspace = true }

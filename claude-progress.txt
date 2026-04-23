@@ -1,6 +1,32 @@
 tilde — Progress Notes
 ======================
 
+## Session 32 (2026-04-23) — 259/260 tests passing, production-ready
+
+### What was done
+- **libheif made optional:** Added `heic` feature flag to `tilde-photos` and `tilde-server` (default on). Allows musl cross-compilation without libheif C library dependency.
+- **Static musl binaries built:** Cross-compiled from macOS ARM using `messense/macos-cross-toolchains`. Both x86_64 (30MB) and aarch64 (28MB) static binaries produced — zero dynamic dependencies.
+- **Vendored OpenSSL:** Added `openssl` with `vendored` feature for `tilde-email`'s `native-tls` dependency, enabling musl cross-compilation.
+- **Nextcloud desktop client sync fixed (3 issues):**
+  - Added `/ocs/v1.php/cloud/capabilities` route (client requests v1, we only had v2)
+  - Added `/ocs/v1.php/cloud/user` and `/ocs/v2.php/cloud/user` endpoint (user info + quota stub)
+  - Fixed `/remote.php/dav/files/<username>/` redirect to strip username prefix (single-user server)
+  - Verified bidirectional sync with `nextcloudcmd`: upload and download both work
+- **B2 offsite backup working:** Endpoint was wrong region (us-west-004 vs us-east-005). Fixed config, created snapshot, uploaded to B2, verified listing.
+- **Install guide written:** Comprehensive INSTALL.md for Proxmox LXC deployment.
+
+### Tests fixed this session
+- Test 153: B2 offsite backup — was wrong region endpoint + stale credentials
+- Test 194: Static musl binary — cross-compile toolchain installed, libheif made optional
+- Test 229: Nextcloud desktop client sync — added missing OCS endpoints + username stripping
+
+### Remaining 1 Failing Test
+1. **rustls-acme TLS-ALPN-01** — requires real domain with public DNS for Let's Encrypt challenge
+
+### Status: 259/260 tests passing
+
+---
+
 ## Session 31 (2026-04-23) — Verification pass: 256/260 confirmed stable
 
 ### Verification

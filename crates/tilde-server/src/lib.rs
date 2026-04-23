@@ -105,6 +105,18 @@ pub fn build_router(
             "/ocs/v2.php/cloud/capabilities",
             get(ocs_capabilities_handler),
         )
+        .route(
+            "/ocs/v1.php/cloud/capabilities",
+            get(ocs_capabilities_handler),
+        )
+        .route(
+            "/ocs/v1.php/cloud/user",
+            get(ocs_user_handler),
+        )
+        .route(
+            "/ocs/v2.php/cloud/user",
+            get(ocs_user_handler),
+        )
         .route("/.well-known/caldav", get(well_known_caldav))
         .route("/.well-known/carddav", get(well_known_carddav))
         // Apple .mobileconfig profile for easy iOS/macOS CalDAV+CardDAV setup
@@ -300,6 +312,31 @@ async fn ocs_capabilities_handler() -> impl IntoResponse {
                         "bigfilechunking": true,
                         "versioning": false
                     }
+                }
+            }
+        }
+    }))
+}
+
+/// GET /ocs/v1.php/cloud/user — OCS user info stub for Nextcloud client
+async fn ocs_user_handler() -> impl IntoResponse {
+    Json(json!({
+        "ocs": {
+            "meta": {
+                "status": "ok",
+                "statuscode": 200,
+                "message": "OK"
+            },
+            "data": {
+                "id": "admin",
+                "display-name": "admin",
+                "email": "",
+                "quota": {
+                    "free": 10_000_000_000_i64,
+                    "used": 0,
+                    "total": 10_000_000_000_i64,
+                    "relative": 0.0,
+                    "quota": -3
                 }
             }
         }
@@ -636,8 +673,21 @@ async fn session_info_handler(
 }
 
 /// /remote.php/dav/* → redirect to /dav/*
+/// Strips Nextcloud-style username prefix: /remote.php/dav/files/admin/foo → /dav/files/foo
 async fn remote_php_dav_redirect(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
-    Redirect::permanent(&format!("/dav/{}", path))
+    let stripped = if path.starts_with("files/") {
+        // Strip username segment: files/<user>/rest → files/rest
+        let after_files = &path["files/".len()..];
+        if let Some(pos) = after_files.find('/') {
+            format!("files/{}", &after_files[pos + 1..])
+        } else {
+            // files/<user> with no trailing path — map to files root
+            "files/".to_string()
+        }
+    } else {
+        path
+    };
+    Redirect::permanent(&format!("/dav/{}", stripped))
 }
 
 /// /remote.php/webdav/* → redirect to /dav/files/*

@@ -1873,7 +1873,7 @@
       "Step 3: Verify snapshot uploaded to B2",
       "Step 4: Run `tilde backup list --offsite b2` \u2192 verify remote snapshots"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2345,7 +2345,7 @@
       "Step 3: Cross-compile for aarch64-unknown-linux-musl",
       "Step 4: Verify binary size is 15-30MB range"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2722,7 +2722,7 @@
       "Step 5: Create file on server",
       "Step 6: Verify file syncs to client"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

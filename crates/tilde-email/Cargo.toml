@@ -18,3 +18,4 @@ mailparse = { workspace = true }
 tokio = { workspace = true }
 imap = { workspace = true }
 native-tls = { workspace = true }
+openssl = { workspace = true }

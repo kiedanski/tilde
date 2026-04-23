@@ -121,6 +121,7 @@ sd-notify = "0.4"
 # IMAP
 imap = "2"
 native-tls = "0.2"
+openssl = { version = "0.10", features = ["vendored"] }
 
 # HTTP client (for notifications)
 reqwest = { version = "0.12", features = ["json"] }
@@ -136,7 +137,7 @@ tilde-cli = { path = "crates/tilde-cli" }
 tilde-dav = { path = "crates/tilde-dav" }
 tilde-cal = { path = "crates/tilde-cal" }
 tilde-card = { path = "crates/tilde-card" }
-tilde-photos = { path = "crates/tilde-photos" }
+tilde-photos = { path = "crates/tilde-photos", default-features = false }
 tilde-notes = { path = "crates/tilde-notes" }
 tilde-collections = { path = "crates/tilde-collections" }
 tilde-email = { path = "crates/tilde-email" }
