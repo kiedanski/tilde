@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tilde_core::{auth, config::Config};
-use tower_http::{compression::CompressionLayer, trace::TraceLayer};
+use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
 /// Per-IP rate limit tracking for auth endpoints
 #[derive(Debug, Clone)]
@@ -168,6 +168,15 @@ pub fn build_router(
         .nest_service("/dav/photos", photos_router)
         .nest_service("/dav/uploads", uploads_router)
         // Middleware
+        .layer(CorsLayer::new()
+            .allow_origin([
+                "app://obsidian.md".parse().unwrap(),
+                "capacitor://localhost".parse().unwrap(),
+                "http://localhost".parse().unwrap(),
+            ])
+            .allow_methods(tower_http::cors::Any)
+            .allow_headers(tower_http::cors::Any)
+            .expose_headers(tower_http::cors::Any))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(add_request_id))

@@ -575,11 +575,19 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
 
     let mut responses = Vec::new();
 
+    // Derive the URL prefix from db_path_prefix:
+    // "" -> "/dav/files", "notes/" -> "/dav/notes", "photos/" -> "/dav/photos"
+    let dav_mount = if state.db_path_prefix.is_empty() {
+        "/dav/files".to_string()
+    } else {
+        format!("/dav/{}", state.db_path_prefix.trim_end_matches('/'))
+    };
+
     // Add the requested resource itself
     let href = if rel_path.is_empty() {
-        "/dav/files/".to_string()
+        format!("{}/", dav_mount)
     } else {
-        format!("/dav/files/{}", rel_path)
+        format!("{}/{}", dav_mount, rel_path)
     };
     responses.push(propfind_entry(state, rel_path, &href));
 
@@ -601,7 +609,7 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
                 } else {
                     format!("{}/{}", rel_path, child_name)
                 };
-                let child_href = format!("/dav/files/{}", child_rel);
+                let child_href = format!("{}/{}", dav_mount, child_rel);
                 responses.push(propfind_entry(state, &child_rel, &child_href));
             }
         }
@@ -633,10 +641,15 @@ async fn handle_proppatch(state: &SharedDavState, rel_path: &str, body: Body) ->
     // Parse PROPPATCH XML to extract set/remove operations
     let ops = parse_proppatch_xml(&body_str);
 
-    let href = if rel_path.is_empty() {
-        "/dav/files/".to_string()
+    let dav_mount = if state.db_path_prefix.is_empty() {
+        "/dav/files".to_string()
     } else {
-        format!("/dav/files/{}", rel_path)
+        format!("/dav/{}", state.db_path_prefix.trim_end_matches('/'))
+    };
+    let href = if rel_path.is_empty() {
+        format!("{}/", dav_mount)
+    } else {
+        format!("{}/{}", dav_mount, rel_path)
     };
 
     let mut prop_results = Vec::new();
