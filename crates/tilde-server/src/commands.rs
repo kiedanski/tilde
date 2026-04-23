@@ -3017,8 +3017,7 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
             println!("Export complete: {} ({} sections in {:.1}s)", export_dir.display(), sections_exported, elapsed.as_secs_f64());
 
             // If tar.zst format requested, compress the export directory
-            if let Some(ref fmt) = format {
-                if fmt == "tar.zst" {
+            if format.as_deref() == Some("tar.zst") {
                     let archive_path = format!("{}.tar.zst", path.trim_end_matches('/'));
                     println!("Compressing to {}...", archive_path);
                     let tar_status = std::process::Command::new("tar")
@@ -3047,7 +3046,6 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                             println!("Export directory preserved at {}", export_dir.display());
                         }
                     }
-                }
             }
 
             // Encrypt with age if requested
