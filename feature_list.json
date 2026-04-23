@@ -1885,7 +1885,7 @@
       "Step 4: Verify WebDAV/CalDAV/MCP requests still served normally",
       "Step 5: Verify backup_failed notification sent"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
