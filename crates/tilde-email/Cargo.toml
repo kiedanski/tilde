@@ -16,3 +16,5 @@ sha2 = { workspace = true }
 jiff = { workspace = true }
 mailparse = { workspace = true }
 tokio = { workspace = true }
+imap = { workspace = true }
+native-tls = { workspace = true }

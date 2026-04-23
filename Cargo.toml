@@ -115,6 +115,10 @@ flate2 = "1"
 # systemd
 sd-notify = "0.4"
 
+# IMAP
+imap = "2"
+native-tls = "0.2"
+
 # HTTP client (for notifications)
 reqwest = { version = "0.12", features = ["json"] }
 
