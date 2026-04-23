@@ -1,6 +1,29 @@
 tilde — Progress Notes
 ======================
 
+## Session 20 (2026-04-22) — Verification pass: 256/260 confirmed stable
+
+### Summary
+Fresh verification of codebase state. All cargo tests pass (27 unit tests across crates).
+Server starts cleanly on port 8080, all core endpoints verified:
+- /health returns healthy status with db ok
+- /status.php returns Nextcloud-compatible version stub
+- WebDAV PROPFIND with Basic Auth returns proper multistatus XML
+
+### Tests Passing: 256/260
+
+### Remaining Failing Tests (4) — All Infrastructure-Blocked
+- Backup offsite to S3/B2 (code complete, needs valid B2 credentials)
+- Static musl binary build (needs Linux musl toolchain, we're on macOS)
+- Nextcloud desktop client test (needs Nextcloud client installed)
+- rustls-acme TLS-ALPN-01 (needs public domain for ACME challenge)
+
+### Status
+No new features to implement — all code-level work is complete.
+These 4 tests require external infrastructure that cannot be provided in this environment.
+
+---
+
 ## Session 19 (2026-04-22) — Verification pass: 256/260 stable, all infrastructure-blocked
 
 ### Summary
