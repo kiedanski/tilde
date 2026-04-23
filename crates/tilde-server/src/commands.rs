@@ -628,17 +628,17 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     info!("sd-notify: READY=1 sent");
 
     // Start watchdog ping task if WatchdogSec is configured
-    if let Ok(watchdog_usec) = std::env::var("WATCHDOG_USEC") {
-        if let Ok(usec) = watchdog_usec.parse::<u64>() {
-            let interval = std::time::Duration::from_micros(usec / 2);
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(interval).await;
-                    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
-                }
-            });
-            info!(interval_ms = usec / 2000, "sd-notify: watchdog pinger started");
-        }
+    if let Ok(watchdog_usec) = std::env::var("WATCHDOG_USEC")
+        && let Ok(usec) = watchdog_usec.parse::<u64>()
+    {
+        let interval = std::time::Duration::from_micros(usec / 2);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+            }
+        });
+        info!(interval_ms = usec / 2000, "sd-notify: watchdog pinger started");
     }
 
     match state_config_tls_mode.as_str() {
