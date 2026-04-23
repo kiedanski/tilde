@@ -1,6 +1,44 @@
 tilde — Progress Notes
 ======================
 
+## Session 16 (2026-04-22) — HEIC thumbnail support via libheif: 249 → 250 tests
+
+### Completed Features (1 new test)
+1. **HEIC thumbnail generation via libheif-rs** (Test 86): Added libheif-rs 2.7 crate
+   for native HEIC/HEIF decoding. Thumbnail pipeline now handles HEIC files alongside
+   JPEG/PNG/WebP. LibHeif decodes to RGB, then image crate handles resize/WebP encoding.
+   Single-slot semaphore (Mutex) prevents OOM on concurrent large HEIC decodes.
+
+### Implementation Details
+- Added `libheif-rs = "2.7"` to workspace and tilde-photos dependencies
+- `decode_heic()` function: HeifContext → primary_image_handle → LibHeif::decode → RGB plane → DynamicImage
+- `open_image()` dispatcher: checks extension, routes HEIC to libheif, others to image crate
+- `THUMBNAIL_LOCK` static Mutex: single-slot semaphore wrapping all thumbnail generation
+- `generate_thumbnails_inner()` refactored out of `generate_thumbnails()` to avoid deadlock
+  when `generate_video_thumbnail()` calls the inner function under the same lock
+- 3 new unit tests: HEIC thumbnail, HEIC blurhash, HEIC extension detection
+- Verified end-to-end: WebDAV PUT → watcher → organize → thumbnails (256.webp + 1920.webp)
+
+### Verified
+- All cargo tests pass (27 total, up from 24)
+- Zero clippy warnings
+- Server starts cleanly, health endpoint responds
+- HEIC uploaded via WebDAV to _inbox, processed by watcher, thumbnails generated
+- DB record shows thumbnail_256_generated=1, thumbnail_1920_generated=1, blurhash computed
+
+### Tests Passing: 250/260
+
+### Remaining Failing Tests (10)
+All require external infrastructure unavailable in dev environment:
+- IMAP (5 tests: 105, 106, 184, 198, 204): Need live IMAP server (code implemented)
+- B2 offsite backup (1 test: 153): Need Backblaze B2 credentials
+- musl binary (1 test: 194): Need Linux cross-compile toolchain
+- WebDAV-Push (1 test: 221): Need RustiCal push notification support
+- Nextcloud client (1 test: 229): Need Nextcloud desktop client
+- rustls-acme (1 test: 230): Need public domain for ACME challenge
+
+---
+
 ## Session 15 (2026-04-22) — Verification pass: 249/260 stable
 
 ### Summary

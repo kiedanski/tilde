@@ -82,6 +82,9 @@ directories = "6"
 # Image (disable heavy codecs like AVIF/rav1e to save disk and compile time)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif"] }
 
+# HEIC/HEIF decoding
+libheif-rs = "2.7"
+
 # Signatures
 minisign-verify = "0.2"
 

@@ -1091,7 +1091,7 @@
       "Step 3: Verify both 256.webp and 1920.webp generated",
       "Step 4: Verify single-slot semaphore prevents OOM on large HEIC"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
