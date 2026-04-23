@@ -1,6 +1,30 @@
 tilde — Progress Notes
 ======================
 
+## Session 28 (2026-04-23) — Verification pass: 256/260 confirmed stable
+
+### Summary
+Fresh context verification. Build succeeds, all 27 cargo unit tests pass. Server running on port 443 (upstream TLS mode).
+Core endpoints verified:
+- /health returns healthy JSON with db ok
+- WebDAV PUT/GET/DELETE roundtrip works correctly with Basic Auth
+- /status.php returns valid Nextcloud compat JSON
+- OCS capabilities endpoint works
+
+### Tests Passing: 256/260
+
+### Remaining Failing Tests (4) — All Infrastructure-Blocked
+- Backup offsite to S3/B2 (code complete, needs valid B2 credentials)
+- Static musl binary build (needs Linux musl toolchain, we're on macOS)
+- Nextcloud desktop client test (needs Nextcloud client installed)
+- rustls-acme TLS-ALPN-01 (needs public domain for ACME challenge)
+
+### Status
+No new features to implement — all code-level work is complete.
+These 4 tests require external infrastructure that cannot be provided in this environment.
+
+---
+
 ## Session 27 (2026-04-23) — Verification pass: 256/260 confirmed stable
 
 ### Summary
