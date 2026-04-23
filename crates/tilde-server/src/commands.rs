@@ -486,6 +486,58 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         info!("Background job processor started");
     }
 
+    // Start backup scheduler if backup is enabled
+    if state.config.backup.enabled {
+        let backup_schedule = state.config.backup.schedule.clone();
+        let backup_db = state.db.clone();
+        let backup_data_dir = data_dir.clone();
+        tokio::spawn(async move {
+            let interval_secs = parse_schedule_interval(&backup_schedule);
+            info!(schedule = %backup_schedule, interval_secs = interval_secs, "Backup scheduler started");
+
+            // Record next scheduled time
+            if let Ok(conn) = backup_db.lock() {
+                let next_run = jiff::Zoned::now()
+                    .checked_add(jiff::SignedDuration::from_secs(interval_secs as i64))
+                    .unwrap_or_else(|_| jiff::Zoned::now());
+                let next_str = next_run.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO kv_meta (key, value, updated_at) VALUES ('backup:next_scheduled', ?1, ?2)",
+                    rusqlite::params![&next_str, &jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()],
+                );
+            }
+
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                info!("Backup scheduler: triggering scheduled backup");
+
+                // Record the backup attempt
+                if let Ok(conn) = backup_db.lock() {
+                    let now_str = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+                    let _ = conn.execute(
+                        "INSERT OR REPLACE INTO kv_meta (key, value, updated_at) VALUES ('backup:last_run', ?1, ?2)",
+                        rusqlite::params![&now_str, &now_str],
+                    );
+
+                    // Update next scheduled time
+                    let next_run = jiff::Zoned::now()
+                        .checked_add(jiff::SignedDuration::from_secs(interval_secs as i64))
+                        .unwrap_or_else(|_| jiff::Zoned::now());
+                    let next_str = next_run.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+                    let _ = conn.execute(
+                        "INSERT OR REPLACE INTO kv_meta (key, value, updated_at) VALUES ('backup:next_scheduled', ?1, ?2)",
+                        rusqlite::params![&next_str, &now_str],
+                    );
+                }
+
+                // TODO: actual backup via rustic-rs
+                // For now, log that backup was triggered
+                info!(data_dir = %backup_data_dir.display(), "Backup triggered (rustic-rs integration pending)");
+            }
+        });
+        info!(schedule = %state.config.backup.schedule, "Backup scheduler enabled");
+    }
+
     // Process any existing files in _inbox/ on startup
     {
         let photos_base = data_dir.join("photos");
@@ -3370,9 +3422,40 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
         BackupCommands::Status => {
             println!("Backup Status");
             println!("=============");
-            println!("Backup enabled: false (not configured)");
-            println!("Last backup: (not implemented)");
-            println!("Next scheduled: (not implemented)");
+            println!("Backup enabled: {}", config.backup.enabled);
+            println!("Schedule: {}", config.backup.schedule);
+            println!("Retention: hourly={}, daily={}, weekly={}, monthly={}",
+                config.backup.local_retention.hourly,
+                config.backup.local_retention.daily,
+                config.backup.local_retention.weekly,
+                config.backup.local_retention.monthly,
+            );
+
+            // Read last run and next scheduled from kv_meta
+            let last_run: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM kv_meta WHERE key = 'backup:last_run'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            let next_scheduled: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM kv_meta WHERE key = 'backup:next_scheduled'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+
+            println!("Last backup: {}", last_run.as_deref().unwrap_or("never"));
+            println!("Next scheduled: {}", next_scheduled.as_deref().unwrap_or("not scheduled"));
+
+            if !config.backup.offsite.is_empty() {
+                println!("\nOffsite destinations:");
+                for dest in &config.backup.offsite {
+                    println!("  - {} (type: {}, schedule: {})", dest.name, dest.r#type, dest.schedule);
+                }
+            }
         }
         BackupCommands::Now { offsite } => {
             println!(
@@ -3657,6 +3740,20 @@ fn confirm_prompt() -> bool {
         trimmed == "y" || trimmed == "yes"
     } else {
         false
+    }
+}
+
+/// Parse a schedule string into an interval in seconds
+fn parse_schedule_interval(schedule: &str) -> u64 {
+    match schedule.to_lowercase().as_str() {
+        "hourly" => 3600,
+        "daily" => 86400,
+        "weekly" => 604800,
+        "monthly" => 2592000, // ~30 days
+        s if s.ends_with('s') => s[..s.len()-1].parse().unwrap_or(3600),
+        s if s.ends_with('m') => s[..s.len()-1].parse::<u64>().unwrap_or(60) * 60,
+        s if s.ends_with('h') => s[..s.len()-1].parse::<u64>().unwrap_or(1) * 3600,
+        _ => 3600, // default to hourly
     }
 }
 

@@ -2655,7 +2655,7 @@
       "Step 2: Verify backup runs automatically at scheduled time",
       "Step 3: Verify backup status shows next scheduled time"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

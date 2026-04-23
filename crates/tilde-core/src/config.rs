@@ -28,6 +28,8 @@ pub struct Config {
     pub mcp: McpConfig,
     #[serde(default)]
     pub updates: UpdatesConfig,
+    #[serde(default)]
+    pub backup: BackupConfig,
 }
 
 impl Config {
@@ -357,6 +359,73 @@ impl Default for UpdatesConfig {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Schedule: "hourly", "daily", "weekly", or cron-like expression
+    #[serde(default = "default_backup_schedule")]
+    pub schedule: String,
+    #[serde(default)]
+    pub local_retention: BackupRetention,
+    #[serde(default)]
+    pub offsite: Vec<BackupOffsiteConfig>,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            schedule: default_backup_schedule(),
+            local_retention: BackupRetention::default(),
+            offsite: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupRetention {
+    #[serde(default = "default_24")]
+    pub hourly: u32,
+    #[serde(default = "default_7")]
+    pub daily: u32,
+    #[serde(default = "default_4")]
+    pub weekly: u32,
+    #[serde(default = "default_12")]
+    pub monthly: u32,
+}
+
+impl Default for BackupRetention {
+    fn default() -> Self {
+        Self { hourly: 24, daily: 7, weekly: 4, monthly: 12 }
+    }
+}
+
+fn default_24() -> u32 { 24 }
+fn default_7() -> u32 { 7 }
+fn default_4() -> u32 { 4 }
+fn default_12() -> u32 { 12 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupOffsiteConfig {
+    pub name: String,
+    #[serde(default = "default_offsite_type")]
+    pub r#type: String,
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub bucket_env: String,
+    #[serde(default)]
+    pub key_id_env: String,
+    #[serde(default)]
+    pub key_env: String,
+    #[serde(default = "default_backup_schedule")]
+    pub schedule: String,
+}
+
+fn default_offsite_type() -> String { "s3".to_string() }
+fn default_backup_schedule() -> String { "hourly".to_string() }
 
 fn default_check_interval() -> u32 {
     24
