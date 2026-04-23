@@ -342,6 +342,8 @@ pub struct UpdatesConfig {
     pub manifest_url: String,
     #[serde(default)]
     pub manifest_mirror: String,
+    #[serde(default)]
+    pub public_key: Option<String>,
 }
 
 impl Default for UpdatesConfig {
@@ -351,6 +353,7 @@ impl Default for UpdatesConfig {
             check_interval_hours: 24,
             manifest_url: String::new(),
             manifest_mirror: String::new(),
+            public_key: None,
         }
     }
 }

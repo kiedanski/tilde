@@ -220,7 +220,7 @@
       "Step 3: Verify HTTPS listener on configured port",
       "Step 4: Verify TLS handshake completes with valid certificate"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2030,7 +2030,7 @@
       "Step 3: Verify manifest fetched and signature verified with minisign",
       "Step 4: Verify version comparison determines if update available"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2041,7 +2041,7 @@
       "Step 3: Verify binary downloaded",
       "Step 4: Verify no automatic restart or installation"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2745,7 +2745,7 @@
       "Step 3: Start tilde serve",
       "Step 4: Verify HTTPS serving with provided certificate"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",

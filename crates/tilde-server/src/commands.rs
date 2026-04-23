@@ -398,6 +398,10 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     let db_arc: std::sync::Arc<Mutex<rusqlite::Connection>> = Arc::new(Mutex::new(conn));
 
+    // Extract TLS config before config moves into state
+    let state_config_tls = config.tls.clone();
+    let state_config_tls_mode = state_config_tls.mode.clone();
+
     let mcp_state: tilde_mcp::SharedMcpState = Arc::new(tilde_mcp::McpState {
         db: db_arc.clone(),
         data_dir: data_dir.clone(),
@@ -511,8 +515,6 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     let app = build_router(state, dav_state, caldav_state, carddav_state);
 
-    println!("tilde server listening on http://{}", listen_addr);
-
     // Set up SIGHUP handler for config hot-reload
     #[cfg(unix)]
     {
@@ -548,11 +550,78 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     }
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
+
+    match state_config_tls_mode.as_str() {
+        "manual" => {
+            let cert_path = &state_config_tls.cert_path;
+            let key_path = &state_config_tls.key_path;
+
+            if cert_path.is_empty() || key_path.is_empty() {
+                anyhow::bail!("TLS mode 'manual' requires tls.cert_path and tls.key_path to be set");
+            }
+
+            let cert_file = std::fs::File::open(cert_path)
+                .map_err(|e| anyhow::anyhow!("Failed to open cert file '{}': {}", cert_path, e))?;
+            let key_file = std::fs::File::open(key_path)
+                .map_err(|e| anyhow::anyhow!("Failed to open key file '{}': {}", key_path, e))?;
+
+            let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
+                rustls_pemfile::certs(&mut std::io::BufReader::new(cert_file))
+                    .filter_map(|r| r.ok())
+                    .collect();
+            if certs.is_empty() {
+                anyhow::bail!("No certificates found in {}", cert_path);
+            }
+
+            let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(key_file))?
+                .ok_or_else(|| anyhow::anyhow!("No private key found in {}", key_path))?;
+
+            let tls_config = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(certs, key)
+                .map_err(|e| anyhow::anyhow!("TLS config error: {}", e))?;
+
+            let tls_acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config));
+
+            println!("tilde server listening on https://{}", listen_addr);
+
+            let make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+
+            loop {
+                let (tcp_stream, addr) = listener.accept().await?;
+                let acceptor = tls_acceptor.clone();
+                let mut make_svc = make_service.clone();
+
+                tokio::spawn(async move {
+                    match acceptor.accept(tcp_stream).await {
+                        Ok(tls_stream) => {
+                            use tower::Service;
+                            let svc = make_svc.call(addr).await.unwrap();
+                            let hyper_svc = hyper_util::service::TowerToHyperService::new(svc);
+                            let io = hyper_util::rt::TokioIo::new(tls_stream);
+                            let _ = hyper_util::server::conn::auto::Builder::new(
+                                hyper_util::rt::TokioExecutor::new(),
+                            )
+                            .serve_connection(io, hyper_svc)
+                            .await;
+                        }
+                        Err(e) => {
+                            tracing::debug!(error = %e, addr = %addr, "TLS handshake failed");
+                        }
+                    }
+                });
+            }
+        }
+        _ => {
+            // "upstream" mode or default: plain HTTP
+            println!("tilde server listening on http://{}", listen_addr);
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await?;
+        }
+    }
 
     Ok(())
 }
@@ -3288,7 +3357,6 @@ pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> a
             let current_version = env!("CARGO_PKG_VERSION");
             println!("Current version: {}", current_version);
 
-            // Determine which URL to fetch manifest from
             let manifest_url = if !config.updates.manifest_mirror.is_empty() {
                 println!("Using manifest mirror: {}", config.updates.manifest_mirror);
                 config.updates.manifest_mirror.clone()
@@ -3301,17 +3369,145 @@ pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> a
             };
 
             println!("Checking for updates from: {}", manifest_url);
-            // In a real implementation, we'd fetch the manifest and verify with minisign
-            // For now, report the config is working
-            println!("Update check complete. No new version available.");
+
+            let client = reqwest::Client::new();
+
+            // Fetch manifest
+            let manifest_text = client.get(&manifest_url)
+                .send().await?
+                .error_for_status()?
+                .text().await?;
+
+            // Fetch signature
+            let sig_url = format!("{}.minisig", manifest_url);
+            let sig_text = client.get(&sig_url)
+                .send().await?
+                .error_for_status()?
+                .text().await?;
+
+            // Verify signature with minisign
+            if let Some(ref pubkey_str) = config.updates.public_key {
+                let pk = minisign_verify::PublicKey::from_base64(pubkey_str)
+                    .map_err(|e| anyhow::anyhow!("Invalid minisign public key: {}", e))?;
+                let sig = minisign_verify::Signature::decode(&sig_text)
+                    .map_err(|e| anyhow::anyhow!("Invalid minisign signature: {}", e))?;
+                pk.verify(manifest_text.as_bytes(), &sig, false)
+                    .map_err(|e| anyhow::anyhow!("Manifest signature verification failed: {}", e))?;
+                println!("Manifest signature verified.");
+            } else {
+                println!("Warning: no updates.public_key configured, skipping signature verification");
+            }
+
+            // Parse manifest JSON
+            let manifest: serde_json::Value = serde_json::from_str(&manifest_text)
+                .map_err(|e| anyhow::anyhow!("Invalid manifest JSON: {}", e))?;
+
+            let latest_version = manifest.get("version")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Manifest missing 'version' field"))?;
+
+            println!("Latest version: {}", latest_version);
+
+            if version_is_newer(current_version, latest_version) {
+                println!("Update available: {} → {}", current_version, latest_version);
+                if let Some(notes) = manifest.get("release_notes").and_then(|v| v.as_str()) {
+                    println!("Release notes: {}", notes);
+                }
+                println!("Run `tilde update download` to fetch the new version.");
+            } else {
+                println!("You are running the latest version.");
+            }
         }
         UpdateCommands::Download => {
-            println!("Download not yet implemented.");
-            println!("To update manually: download the latest release and replace the binary.");
+            let current_version = env!("CARGO_PKG_VERSION");
+
+            let manifest_url = if !config.updates.manifest_mirror.is_empty() {
+                config.updates.manifest_mirror.clone()
+            } else if !config.updates.manifest_url.is_empty() {
+                config.updates.manifest_url.clone()
+            } else {
+                anyhow::bail!("No manifest URL configured. Set updates.manifest_url in config.");
+            };
+
+            let client = reqwest::Client::new();
+
+            // Fetch and verify manifest
+            let manifest_text = client.get(&manifest_url)
+                .send().await?
+                .error_for_status()?
+                .text().await?;
+
+            if let Some(ref pubkey_str) = config.updates.public_key {
+                let sig_url = format!("{}.minisig", manifest_url);
+                let sig_text = client.get(&sig_url)
+                    .send().await?
+                    .error_for_status()?
+                    .text().await?;
+                let pk = minisign_verify::PublicKey::from_base64(pubkey_str)
+                    .map_err(|e| anyhow::anyhow!("Invalid minisign public key: {}", e))?;
+                let sig = minisign_verify::Signature::decode(&sig_text)
+                    .map_err(|e| anyhow::anyhow!("Invalid minisign signature: {}", e))?;
+                pk.verify(manifest_text.as_bytes(), &sig, false)
+                    .map_err(|e| anyhow::anyhow!("Manifest signature verification failed: {}", e))?;
+            }
+
+            let manifest: serde_json::Value = serde_json::from_str(&manifest_text)?;
+            let latest_version = manifest.get("version")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Manifest missing 'version' field"))?;
+
+            if !version_is_newer(current_version, latest_version) {
+                println!("Already running latest version ({}).", current_version);
+                return Ok(());
+            }
+
+            // Determine download URL from manifest
+            let arch = std::env::consts::ARCH;
+            let download_key = format!("download_{}", arch);
+            let download_url = manifest.get(&download_key)
+                .or_else(|| manifest.get("download_url"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("No download URL found in manifest for arch '{}'", arch))?;
+
+            println!("Downloading tilde {} from {}...", latest_version, download_url);
+
+            let response = client.get(download_url)
+                .send().await?
+                .error_for_status()?;
+            let bytes = response.bytes().await?;
+
+            // Write to a staging path (do NOT auto-install)
+            let data_dir = config.data_dir();
+            let staging_path = data_dir.join(format!("tilde-{}", latest_version));
+            std::fs::write(&staging_path, &bytes)?;
+
+            // Make executable on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&staging_path)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&staging_path, perms)?;
+            }
+
+            println!("Downloaded to: {}", staging_path.display());
+            println!("To install: replace the current binary and restart the service.");
+            println!("  sudo cp {} $(which tilde)", staging_path.display());
+            println!("  sudo systemctl restart tilde");
         }
     }
 
     Ok(())
+}
+
+/// Compare two semver-like version strings. Returns true if `latest` is newer than `current`.
+fn version_is_newer(current: &str, latest: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> {
+        v.split('.').filter_map(|s| s.parse().ok()).collect()
+    };
+    let c = parse(current);
+    let l = parse(latest);
+    l > c
 }
 
 pub async fn run_install() -> anyhow::Result<()> {

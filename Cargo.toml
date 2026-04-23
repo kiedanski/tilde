@@ -31,7 +31,12 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "compression-gzip", "cors", "set-header"] }
 
 # TLS
-rustls = "0.23"
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+rustls-pemfile = "2"
+
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2", "service"] }
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled", "modern_sqlite"] }
@@ -76,6 +81,9 @@ directories = "6"
 
 # Image (disable heavy codecs like AVIF/rav1e to save disk and compile time)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif"] }
+
+# Signatures
+minisign-verify = "0.2"
 
 # Embed
 rust-embed = "8"
