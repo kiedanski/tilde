@@ -75,6 +75,8 @@ pub fn build_router(
         files_root: dav_state.files_root.join("notes"),
         uploads_root: dav_state.uploads_root.clone(),
         db_path_prefix: "notes/".to_string(),
+        session_ttl_hours: dav_state.session_ttl_hours,
+        scope_prefix: "/dav/".to_string(),
     });
     let notes_router = tilde_dav::build_dav_router(notes_state);
 
@@ -89,6 +91,8 @@ pub fn build_router(
         files_root: photos_root,
         uploads_root: dav_state.uploads_root.clone(),
         db_path_prefix: "photos/".to_string(),
+        session_ttl_hours: dav_state.session_ttl_hours,
+        scope_prefix: "/dav/".to_string(),
     });
     let photos_router = tilde_dav::build_dav_router(photos_state);
 
@@ -529,11 +533,7 @@ async fn login_handler(
         }
     };
 
-    let client_ip = body
-        .get("source_ip")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| addr.ip().to_string());
+    let client_ip = addr.ip().to_string();
 
     let max_attempts = state.config.auth.max_login_attempts;
     let lockout_minutes = state.config.auth.lockout_duration_minutes;

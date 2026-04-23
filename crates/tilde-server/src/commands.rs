@@ -438,14 +438,16 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         webauthn_auth_state: Mutex::new(std::collections::HashMap::new()),
     });
 
+    let session_ttl = state.config.auth.session_ttl_hours;
+
     let dav_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
         db: db_arc.clone(),
         files_root,
         uploads_root,
         db_path_prefix: String::new(),
+        session_ttl_hours: session_ttl,
+        scope_prefix: "/dav/".to_string(),
     });
-
-    let session_ttl = state.config.auth.session_ttl_hours;
 
     let caldav_state: tilde_cal::SharedCalDavState = Arc::new(tilde_cal::CalDavState {
         db: db_arc.clone(),

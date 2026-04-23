@@ -14,6 +14,7 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tilde_core::auth;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -24,6 +25,10 @@ pub struct DavState {
     pub uploads_root: PathBuf,
     /// Prefix to add to rel_path for DB lookups (e.g., "photos/" for the photos router)
     pub db_path_prefix: String,
+    /// Session TTL for auth validation
+    pub session_ttl_hours: u32,
+    /// The scope prefix used for app-password authorization (e.g., "/dav/")
+    pub scope_prefix: String,
 }
 
 pub type SharedDavState = Arc<DavState>;
@@ -37,6 +42,67 @@ impl DavState {
             format!("{}{}", self.db_path_prefix, rel_path)
         }
     }
+}
+
+/// Check authorization from request headers (same pattern as CalDAV/CardDAV)
+fn check_auth(state: &SharedDavState, headers: &HeaderMap) -> bool {
+    let auth_header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    match auth_header {
+        Some(ref h) if h.starts_with("Bearer ") => {
+            let token = &h[7..];
+            let db = state.db.lock().unwrap();
+            if token.starts_with("tilde_session_") {
+                auth::validate_session(&db, token, state.session_ttl_hours).unwrap_or(false)
+            } else {
+                false
+            }
+        }
+        Some(ref h) if h.starts_with("Basic ") => {
+            let decoded =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &h[6..])
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok());
+            if let Some(creds) = decoded {
+                if let Some((_user, password)) = creds.split_once(':') {
+                    let db = state.db.lock().unwrap();
+                    if auth::verify_admin_password(&db, password).unwrap_or(false) {
+                        return true;
+                    }
+                    auth::verify_app_password(&db, password, &state.scope_prefix)
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Validate that a relative path doesn't escape the root directory.
+/// Rejects paths containing `..` segments.
+fn is_safe_path(rel_path: &str) -> bool {
+    !rel_path
+        .split('/')
+        .any(|segment| segment == "..")
+}
+
+fn unauthorized_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [(
+            axum::http::header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Basic realm=\"tilde\""),
+        )],
+        "Unauthorized",
+    )
+        .into_response()
 }
 
 /// Build the WebDAV router — mount at /dav/files/
@@ -62,8 +128,21 @@ async fn dav_handler(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    // OPTIONS is allowed without auth (DAV discovery)
+    if method == Method::OPTIONS {
+        return handle_options().await;
+    }
+
+    if !check_auth(&state, &headers) {
+        return unauthorized_response();
+    }
+
     let path_str = path.map(|Path(p)| p).unwrap_or_default();
     let rel_path = path_str.trim_start_matches('/');
+
+    if !is_safe_path(rel_path) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
 
     match method.as_str() {
         "OPTIONS" => handle_options().await,
@@ -915,8 +994,16 @@ async fn uploads_handler(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    if !check_auth(&state, &headers) {
+        return unauthorized_response();
+    }
+
     let path_str = path.map(|Path(p)| p).unwrap_or_default();
     let rel_path = path_str.trim_start_matches('/');
+
+    if !is_safe_path(rel_path) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
 
     // Parse the path: <user>/<session-id>[/<chunk-number>]
     let parts: Vec<&str> = rel_path.splitn(3, '/').collect();
