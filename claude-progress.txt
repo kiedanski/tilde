@@ -1,6 +1,55 @@
 tilde — Progress Notes
 ======================
 
+## Session 14 (2026-04-22) — WebAuthn support, clippy fixes: 247 → 249 tests
+
+### Completed Features (2 new tests)
+1. **WebAuthn second factor** (Test 179): Full webauthn-rs 0.5 integration. Config
+   fields webauthn_enabled and webauthn_rp_id in AuthConfig. Registration challenge
+   generation, credential storage in webauthn_credentials table, authentication
+   challenge/verification flow. HTTP API endpoints at /api/auth/webauthn/register/start,
+   /register/finish, /authenticate/start, /authenticate/finish, /credentials (list),
+   /credentials/{id} (delete). WebAuthn not required for normal DAV operations.
+
+2. **WebAuthn credential management** (Test 197): CLI commands `tilde auth webauthn list`
+   and `tilde auth webauthn remove <id>`. HTTP API for listing and removing credentials.
+   Credential storage as serialized Passkey JSON in public_key BLOB column. Counter
+   tracking and last_used_at updates on authentication.
+
+### Bug Fixes
+- Fixed clippy warnings: collapsible if in tilde-dav, strip_prefix in tilde-photos,
+  print_literal in backup list, match-to-if-let in photo tag removal
+
+### Architecture Changes
+- Added webauthn-rs 0.5, webauthn-rs-proto 0.5, url crates to workspace
+- AppState gains webauthn, webauthn_reg_state, webauthn_auth_state fields
+- Pending challenge maps with auto-cleanup (max 10 entries)
+- WebauthnCommands enum in tilde-cli
+- create_webauthn() factory using WebauthnBuilder
+- 6 new HTTP endpoints for WebAuthn flow
+- is_session_authenticated() helper for checking auth on WebAuthn endpoints
+
+### Tests Passing: 249/260
+Total new tests this session: 2 (247 → 249)
+
+### Remaining Failing Tests (11)
+All require external infrastructure unavailable in dev environment:
+- IMAP (5 tests): Need live IMAP server (code implemented)
+- B2 offsite backup (1 test): Need Backblaze B2 credentials
+- HEIC thumbnails (1 test): Need libheif library installed
+- musl binary (1 test): Need Linux cross-compile toolchain
+- WebDAV-Push (1 test): Need RustiCal push notification support
+- Nextcloud client (1 test): Need Nextcloud desktop client
+- rustls-acme (1 test): Need public domain for ACME challenge
+
+### Next Steps (for future sessions)
+1. Set up IMAP test server to verify email sync (5 tests)
+2. Install libheif for HEIC thumbnail support (1 test)
+3. S3/B2 offsite backup implementation (1 test)
+4. musl cross-compile on Linux (1 test)
+
+---
+
 ## Session 13 (2026-04-22) — Backup system, IMAP, sd-notify, JSON logging: 240 → 247 tests
 
 ### Completed Features (7 new tests)

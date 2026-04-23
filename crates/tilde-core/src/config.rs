@@ -218,6 +218,10 @@ pub struct AuthConfig {
     pub lockout_duration_minutes: u32,
     #[serde(default)]
     pub admin_password: String,
+    #[serde(default)]
+    pub webauthn_enabled: bool,
+    #[serde(default)]
+    pub webauthn_rp_id: String,
 }
 
 impl Default for AuthConfig {
@@ -227,6 +231,8 @@ impl Default for AuthConfig {
             max_login_attempts: default_max_login_attempts(),
             lockout_duration_minutes: default_lockout_duration(),
             admin_password: String::new(),
+            webauthn_enabled: false,
+            webauthn_rp_id: String::new(),
         }
     }
 }

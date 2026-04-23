@@ -49,3 +49,5 @@ rustls-pemfile = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 sd-notify = { workspace = true }
+webauthn-rs = { workspace = true }
+webauthn-rs-proto = { workspace = true }

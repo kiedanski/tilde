@@ -121,11 +121,9 @@ pub fn reorganize_after_tag_change(
     // photos_base is the photos/ directory itself
     // Strip the "photos/" prefix to get the path within photos_base
     let photos_prefix = "photos/";
-    let current_within_photos = if current_rel_path.starts_with(photos_prefix) {
-        &current_rel_path[photos_prefix.len()..]
-    } else {
-        &current_rel_path
-    };
+    let current_within_photos = current_rel_path
+        .strip_prefix(photos_prefix)
+        .unwrap_or(&current_rel_path);
 
     let current_full = photos_base.join(current_within_photos);
     let filename = current_full

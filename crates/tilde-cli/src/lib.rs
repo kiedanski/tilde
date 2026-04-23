@@ -172,6 +172,22 @@ pub enum AuthCommands {
         #[command(subcommand)]
         command: SessionCommands,
     },
+    /// WebAuthn credential management
+    Webauthn {
+        #[command(subcommand)]
+        command: WebauthnCommands,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub enum WebauthnCommands {
+    /// List registered WebAuthn credentials
+    List,
+    /// Remove a WebAuthn credential by ID
+    Remove {
+        /// Credential ID to remove
+        id: String,
+    },
 }
 
 #[derive(clap::Subcommand)]

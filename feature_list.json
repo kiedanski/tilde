@@ -2179,7 +2179,7 @@
       "Step 4: Complete WebAuthn challenge \u2192 verify operation succeeds",
       "Step 5: Verify WebAuthn not required for normal DAV operations"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2380,7 +2380,7 @@
       "Step 4: List credentials \u2192 verify name, created_at, last_used_at",
       "Step 5: Remove credential \u2192 verify deleted"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

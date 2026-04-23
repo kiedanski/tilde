@@ -230,10 +230,10 @@ async fn handle_put(
     }
 
     // fsync parent directory
-    if let Some(parent) = disk_path.parent() {
-        if let Ok(dir) = tokio::fs::File::open(parent).await {
-            let _ = dir.sync_all().await;
-        }
+    if let Some(parent) = disk_path.parent()
+        && let Ok(dir) = tokio::fs::File::open(parent).await
+    {
+        let _ = dir.sync_all().await;
     }
 
     let sha256 = format!("{:x}", hasher.finalize());

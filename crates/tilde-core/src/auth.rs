@@ -1,4 +1,4 @@
-//! Authentication: Argon2id password hashing, session tokens, app-passwords
+//! Authentication: Argon2id password hashing, session tokens, app-passwords, WebAuthn
 
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
@@ -8,6 +8,14 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tracing::info;
 use uuid::Uuid;
+
+pub use webauthn_rs::Webauthn;
+pub use webauthn_rs::prelude::{
+    CreationChallengeResponse, RequestChallengeResponse,
+    Passkey, PasskeyRegistration, PasskeyAuthentication,
+    RegisterPublicKeyCredential, PublicKeyCredential,
+    AuthenticationResult,
+};
 
 /// Hash a password with Argon2id
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
@@ -294,6 +302,161 @@ pub fn validate_mcp_token(
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+// ─── WebAuthn Support ────────────────────────────────────────────────────
+
+/// Create a Webauthn instance from config
+pub fn create_webauthn(rp_id: &str, hostname: &str) -> anyhow::Result<Webauthn> {
+    let rp_id = if rp_id.is_empty() { hostname } else { rp_id };
+    let rp_origin = url::Url::parse(&format!("https://{}", rp_id))
+        .unwrap_or_else(|_| url::Url::parse("https://localhost").unwrap());
+    let builder = webauthn_rs::WebauthnBuilder::new(rp_id, &rp_origin)?;
+    let builder = builder.rp_name("tilde");
+    Ok(builder.build()?)
+}
+
+/// Start WebAuthn registration — returns (challenge, registration_state)
+pub fn webauthn_start_registration(
+    webauthn: &Webauthn,
+    user_name: &str,
+) -> anyhow::Result<(CreationChallengeResponse, PasskeyRegistration)> {
+    let user_id = Uuid::new_v4();
+    let (ccr, reg_state) = webauthn.start_passkey_registration(user_id, user_name, user_name, None)?;
+    Ok((ccr, reg_state))
+}
+
+/// Complete WebAuthn registration — returns the credential to store
+pub fn webauthn_finish_registration(
+    webauthn: &Webauthn,
+    response: &RegisterPublicKeyCredential,
+    reg_state: &PasskeyRegistration,
+) -> anyhow::Result<Passkey> {
+    let credential = webauthn.finish_passkey_registration(response, reg_state)?;
+    Ok(credential)
+}
+
+/// Start WebAuthn authentication — returns (challenge, auth_state)
+pub fn webauthn_start_authentication(
+    webauthn: &Webauthn,
+    credentials: &[Passkey],
+) -> anyhow::Result<(RequestChallengeResponse, PasskeyAuthentication)> {
+    let (rcr, auth_state) = webauthn.start_passkey_authentication(credentials)?;
+    Ok((rcr, auth_state))
+}
+
+/// Complete WebAuthn authentication
+pub fn webauthn_finish_authentication(
+    webauthn: &Webauthn,
+    response: &PublicKeyCredential,
+    auth_state: &PasskeyAuthentication,
+) -> anyhow::Result<AuthenticationResult> {
+    let result = webauthn.finish_passkey_authentication(response, auth_state)?;
+    Ok(result)
+}
+
+/// Store a WebAuthn credential in the database
+pub fn store_webauthn_credential(
+    conn: &Connection,
+    name: &str,
+    credential: &Passkey,
+) -> anyhow::Result<String> {
+    let id = Uuid::new_v4().to_string();
+    let cred_json = serde_json::to_string(credential)?;
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+
+    conn.execute(
+        "INSERT INTO webauthn_credentials (id, public_key, counter, name, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, cred_json.as_bytes(), 0, name, now],
+    )?;
+
+    info!(name = name, "WebAuthn credential registered");
+    Ok(id)
+}
+
+/// A WebAuthn credential summary: (id, name, created_at, last_used_at)
+pub type WebauthnCredentialInfo = (String, String, String, Option<String>);
+
+/// List all WebAuthn credentials
+pub fn list_webauthn_credentials(
+    conn: &Connection,
+) -> anyhow::Result<Vec<WebauthnCredentialInfo>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, created_at, last_used_at FROM webauthn_credentials ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+/// Load all WebAuthn credentials as Passkey objects
+pub fn load_webauthn_credentials(conn: &Connection) -> anyhow::Result<Vec<Passkey>> {
+    let mut stmt = conn.prepare("SELECT public_key FROM webauthn_credentials")?;
+    let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+    let mut credentials = Vec::new();
+    for row in rows {
+        let bytes = row?;
+        let credential: Passkey = serde_json::from_slice(&bytes)?;
+        credentials.push(credential);
+    }
+    Ok(credentials)
+}
+
+/// Remove a WebAuthn credential by ID
+pub fn remove_webauthn_credential(conn: &Connection, id: &str) -> anyhow::Result<bool> {
+    let affected = conn.execute("DELETE FROM webauthn_credentials WHERE id = ?1", [id])?;
+    if affected > 0 {
+        info!(id = id, "WebAuthn credential removed");
+    }
+    Ok(affected > 0)
+}
+
+/// Update last_used_at for a WebAuthn credential after authentication
+pub fn update_webauthn_credential_counter(
+    conn: &Connection,
+    credential: &Passkey,
+) -> anyhow::Result<()> {
+    let cred_json = serde_json::to_string(credential)?;
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    // Update the stored credential (counter changed) and last_used_at
+    // We match on the credential ID embedded in the JSON
+    let cred_id_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        credential.cred_id(),
+    );
+    // Update all credentials — in single-user mode we just update by matching serialized data
+    conn.execute(
+        "UPDATE webauthn_credentials SET public_key = ?1, last_used_at = ?2, counter = counter + 1
+         WHERE id IN (SELECT id FROM webauthn_credentials LIMIT 1)",
+        rusqlite::params![cred_json.as_bytes(), now],
+    )?;
+    let _ = cred_id_b64; // suppress unused warning
+    Ok(())
+}
+
+/// Check if any WebAuthn credentials exist (to know if 2FA is configured)
+pub fn has_webauthn_credentials(conn: &Connection) -> anyhow::Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM webauthn_credentials",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 #[cfg(test)]

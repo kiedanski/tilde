@@ -6,7 +6,8 @@ use tilde_cli::{
     AppPasswordCommands, AttachmentsCommands, AuthCommands, BackupCommands, BookmarksCommands,
     CalendarCommands, CollectionCommands, ContactsCommands, EmailCommands, ExportCommands,
     McpCommands, NotesCommands, NotificationCommands, PhotosCommands, SessionCommands,
-    TokenCommands, TrackersCommands, UpdateCommands, WebhookCommands, WebhookTokenCommands,
+    TokenCommands, TrackersCommands, UpdateCommands, WebauthnCommands, WebhookCommands,
+    WebhookTokenCommands,
 };
 use tilde_core::{auth, config::Config, db};
 use tilde_server::{AppState, SharedState, build_router};
@@ -408,6 +409,23 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         rate_limits: Mutex::new(std::collections::HashMap::new()),
     });
 
+    // Initialize WebAuthn if enabled
+    let webauthn = if config.auth.webauthn_enabled {
+        let hostname = if config.server.hostname.is_empty() { "localhost" } else { &config.server.hostname };
+        match tilde_core::auth::create_webauthn(&config.auth.webauthn_rp_id, hostname) {
+            Ok(w) => {
+                tracing::info!("WebAuthn enabled");
+                Some(w)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to initialize WebAuthn, continuing without it");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let state: SharedState = Arc::new(AppState {
         config,
         db: db_arc.clone(),
@@ -415,6 +433,9 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         login_attempts: Mutex::new(std::collections::HashMap::new()),
         login_flows: Mutex::new(std::collections::HashMap::new()),
         mcp_state,
+        webauthn,
+        webauthn_reg_state: Mutex::new(std::collections::HashMap::new()),
+        webauthn_auth_state: Mutex::new(std::collections::HashMap::new()),
     });
 
     let dav_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
@@ -965,6 +986,31 @@ pub async fn run_auth(config_path: Option<&str>, command: AuthCommands) -> anyho
                     [&id],
                 )?;
                 println!("Session revoked");
+            }
+        },
+        AuthCommands::Webauthn { command } => match command {
+            WebauthnCommands::List => {
+                let credentials = auth::list_webauthn_credentials(&conn)?;
+                if credentials.is_empty() {
+                    println!("No WebAuthn credentials registered");
+                } else {
+                    println!(
+                        "{:<38} {:<20} {:<25} Last Used",
+                        "ID", "Name", "Created"
+                    );
+                    println!("{}", "-".repeat(110));
+                    for (id, name, created_at, last_used_at) in &credentials {
+                        let last_used = last_used_at.as_deref().unwrap_or("-");
+                        println!("{:<38} {:<20} {:<25} {}", id, name, created_at, last_used);
+                    }
+                }
+            }
+            WebauthnCommands::Remove { id } => {
+                if auth::remove_webauthn_credential(&conn, &id)? {
+                    println!("WebAuthn credential {} removed", id);
+                } else {
+                    println!("WebAuthn credential {} not found", id);
+                }
             }
         },
     }
@@ -2278,25 +2324,22 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                                     println!("Tag '{}' removed from photo {}", tag, uuid);
 
                                     // Re-organize if tag removal affects destination path
-                                    match tilde_photos::exiftool::read_metadata(&full_path) {
-                                        Ok(updated_meta) => {
-                                            match tilde_photos::organize::reorganize_after_tag_change(
-                                                &conn,
-                                                &uuid,
-                                                &photos_dir,
-                                                &config.photos.organization_pattern,
-                                                &updated_meta,
-                                            ) {
-                                                Ok(Some(new_path)) => {
-                                                    println!("Photo re-organized to {}", new_path);
-                                                }
-                                                Ok(None) => {}
-                                                Err(e) => {
-                                                    println!("Warning: failed to re-organize photo: {}", e);
-                                                }
+                                    if let Ok(updated_meta) = tilde_photos::exiftool::read_metadata(&full_path) {
+                                        match tilde_photos::organize::reorganize_after_tag_change(
+                                            &conn,
+                                            &uuid,
+                                            &photos_dir,
+                                            &config.photos.organization_pattern,
+                                            &updated_meta,
+                                        ) {
+                                            Ok(Some(new_path)) => {
+                                                println!("Photo re-organized to {}", new_path);
+                                            }
+                                            Ok(None) => {}
+                                            Err(e) => {
+                                                println!("Warning: failed to re-organize photo: {}", e);
                                             }
                                         }
-                                        Err(_) => {} // EXIF read failure after remove is non-fatal
                                     }
                                 }
                                 Err(e) => println!("Failed to remove tag: {}", e),
@@ -3432,10 +3475,10 @@ pub async fn run_import(
     let manifest_path = import_dir.join("manifest.json");
     if manifest_path.exists() {
         let manifest_content = std::fs::read_to_string(&manifest_path)?;
-        if let Ok(manifest) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&manifest_content) {
-            if !manifest.is_empty() {
-                println!("Manifest contains {} UUID mappings (tilde:// URIs stable)", manifest.len());
-            }
+        if let Ok(manifest) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&manifest_content)
+            && !manifest.is_empty()
+        {
+            println!("Manifest contains {} UUID mappings (tilde:// URIs stable)", manifest.len());
         }
     }
 
@@ -3552,8 +3595,8 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
 
             println!("Backup Snapshots ({} total)", snapshots.len());
             println!("=============");
-            println!("{:<38} {:<26} {:>10} {:>6} {}",
-                "ID", "Created", "Size", "Files", "Pinned");
+            println!("{:<38} {:<26} {:>10} {:>6} Pinned",
+                "ID", "Created", "Size", "Files");
             println!("{}", "-".repeat(90));
 
             for s in &snapshots {

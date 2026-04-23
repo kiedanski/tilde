@@ -122,6 +122,10 @@ native-tls = "0.2"
 # HTTP client (for notifications)
 reqwest = { version = "0.12", features = ["json"] }
 
+# WebAuthn
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+webauthn-rs-proto = "0.5"
+
 # Internal crates
 tilde-core = { path = "crates/tilde-core" }
 tilde-server = { path = "crates/tilde-server" }
