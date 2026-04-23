@@ -1,6 +1,65 @@
 tilde — Progress Notes
 ======================
 
+## Session 13 (2026-04-22) — Backup system, IMAP, sd-notify, JSON logging: 240 → 247 tests
+
+### Completed Features (7 new tests)
+1. **Backup system** (Tests 149-152): Full tar.gz backup implementation in tilde-backup
+   crate. `tilde backup now` creates snapshots, `list` shows them with size/date/pin
+   status, `verify` checks SHA-256 checksums (detects corruption), `pin` prevents
+   pruning, `restore` extracts to target directory. Retention policy auto-prunes old
+   snapshots while preserving pinned ones.
+
+2. **Backup paranoid mode** (Test 199): encrypt_recipient config field enables age
+   encryption. Server holds only public key, cannot decrypt. Unencrypted archive
+   removed after encryption.
+
+3. **sd-notify integration** (Test 21): Sends READY=1 when server starts listening.
+   Watchdog pinger spawned at WatchdogSec/2 interval when WATCHDOG_USEC env set.
+
+4. **Structured JSON logging** (Test 245): Auto-detects systemd via JOURNAL_STREAM
+   env var. Switches to JSON format for journald structured logging. Human-readable
+   format in non-systemd mode.
+
+### Code Implemented (not yet testable)
+- **IMAP client** (Tests 105-106, 184, 198, 204): Full imap crate integration with
+  SSL, IDLE (29 min timeout per RFC), poll fallback, UID-based incremental sync,
+  exponential backoff retry (5s to 5min), folder filtering, Maildir atomic writes.
+  Requires live IMAP server to verify.
+
+### Architecture Changes
+- Added tar, flate2 crates for backup archives
+- Added sd-notify crate for systemd integration
+- Added imap, native-tls crates for IMAP connectivity
+- Migration 004: backup_snapshots table
+- BackupConfig gains encrypt_recipient field
+- tilde-backup crate: full implementation (was empty)
+- New `tilde restore` CLI command with --from, --at, --to flags
+- JSON logging mode auto-selected under systemd
+
+### Tests Passing: 247/260
+Total new tests this session: 7 (240 → 247)
+
+### Remaining Failing Tests (13)
+All require external infrastructure unavailable in dev environment:
+- IMAP (105, 106, 184, 198, 204): Need live IMAP server (code implemented)
+- B2 offsite backup (155): Need Backblaze B2 credentials
+- WebAuthn (179, 197): Need webauthn-rs crate + credential simulator
+- HEIC thumbnails (86): Need libheif library installed
+- musl binary (194): Need Linux cross-compile toolchain
+- WebDAV-Push (221): Need RustiCal push notification support
+- Nextcloud client (229): Need Nextcloud desktop client
+- rustls-acme (230): Need public domain for ACME challenge
+
+### Next Steps (for future sessions)
+1. Set up IMAP test server to verify email sync (5 tests)
+2. Install libheif for HEIC thumbnail support (1 test)
+3. Add webauthn-rs for WebAuthn support (2 tests)
+4. S3/B2 offsite backup implementation (1 test)
+5. musl cross-compile on Linux (1 test)
+
+---
+
 ## Session 12 (2026-04-22) — TLS, update check, age encryption, backup scheduler: 233 → 240 tests
 
 ### Completed Features (7 new tests)
