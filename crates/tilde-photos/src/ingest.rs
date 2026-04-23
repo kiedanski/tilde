@@ -330,7 +330,7 @@ fn process_library_drop_recursive(
 }
 
 /// Atomic file move: try rename first, fall back to copy+delete for cross-filesystem moves
-fn atomic_move(src: &Path, dst: &Path) -> Result<()> {
+pub fn atomic_move(src: &Path, dst: &Path) -> Result<()> {
     debug!(src = %src.display(), dst = %dst.display(), "Moving file");
 
     match std::fs::rename(src, dst) {

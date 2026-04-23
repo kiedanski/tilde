@@ -171,30 +171,74 @@ async fn handle_put(
 
     let exists = disk_path.exists();
 
-    // Read body
-    let content = match axum::body::to_bytes(body, 10 * 1024 * 1024 * 1024).await {
-        Ok(bytes) => bytes,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    // Streaming write: stream body chunks directly to temp file (never buffer full file in memory)
+    let tmp_path = disk_path.with_extension("tmp_tilde_upload");
+    let tmp_file = match tokio::fs::File::create(&tmp_path).await {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(error = %e, path = %tmp_path.display(), "Failed to create tmp file");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     };
 
-    // Atomic write: write to tmp, then rename
-    let tmp_path = disk_path.with_extension("tmp_tilde_upload");
-    if let Err(e) = tokio::fs::write(&tmp_path, &content).await {
-        warn!(error = %e, path = %disk_path.display(), "Failed to write tmp file");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    let mut writer = tokio::io::BufWriter::new(tmp_file);
+    let mut hasher = Sha256::new();
+    let mut total_bytes: u64 = 0;
+
+    use http_body_util::BodyExt;
+    use tokio::io::AsyncWriteExt;
+
+    let mut body = body;
+    loop {
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                if let Ok(chunk) = frame.into_data() {
+                    hasher.update(&chunk);
+                    total_bytes += chunk.len() as u64;
+                    if let Err(e) = writer.write_all(&chunk).await {
+                        let _ = tokio::fs::remove_file(&tmp_path).await;
+                        warn!(error = %e, "Failed to write chunk to tmp file");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                }
+            }
+            Some(Err(_)) => {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            None => break,
+        }
     }
 
+    if let Err(e) = writer.flush().await {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        warn!(error = %e, "Failed to flush tmp file");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    drop(writer);
+
+    // fsync the temp file for durability
+    if let Ok(f) = tokio::fs::File::open(&tmp_path).await {
+        let _ = f.sync_all().await;
+    }
+
+    // Atomic rename
     if let Err(e) = tokio::fs::rename(&tmp_path, &disk_path).await {
         let _ = tokio::fs::remove_file(&tmp_path).await;
         warn!(error = %e, "Failed to rename tmp file");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
-    // Compute SHA-256 and ETag
-    let mut hasher = Sha256::new();
-    hasher.update(&content);
+    // fsync parent directory
+    if let Some(parent) = disk_path.parent() {
+        if let Ok(dir) = tokio::fs::File::open(parent).await {
+            let _ = dir.sync_all().await;
+        }
+    }
+
     let sha256 = format!("{:x}", hasher.finalize());
     let etag = sha256[..16].to_string();
+    let _ = total_bytes; // used during streaming
 
     let content_type = mime_from_path(rel_path);
     let now = jiff::Zoned::now()
@@ -232,7 +276,7 @@ async fn handle_put(
                 sha256 = excluded.sha256,
                 modified_at = excluded.modified_at,
                 hlc = excluded.hlc",
-            rusqlite::params![id, db_path, db_parent, file_name, content.len(), content_type, etag, sha256, now, now, now],
+            rusqlite::params![id, db_path, db_parent, file_name, total_bytes, content_type, etag, sha256, now, now, now],
         ).ok();
     }
 
@@ -255,7 +299,7 @@ async fn handle_put(
         resp_headers.insert(header::LOCATION, loc);
     }
 
-    info!(path = rel_path, size = content.len(), "WebDAV PUT");
+    info!(path = rel_path, size = total_bytes, "WebDAV PUT");
     (status, resp_headers).into_response()
 }
 

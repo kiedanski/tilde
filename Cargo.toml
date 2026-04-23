@@ -25,6 +25,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 # HTTP & async
 axum = "0.8"
+http-body-util = "0.1"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "compression-gzip", "cors", "set-header"] }

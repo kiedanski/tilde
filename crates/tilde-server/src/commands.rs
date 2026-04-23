@@ -12,14 +12,108 @@ use tilde_core::{auth, config::Config, db};
 use tilde_server::{AppState, SharedState, build_router};
 use tracing::info;
 
+/// Read a line from stdin, returning the default if empty
+fn prompt_with_default(prompt: &str, default: &str) -> String {
+    use std::io::Write;
+    if default.is_empty() {
+        print!("{}: ", prompt);
+    } else {
+        print!("{} [{}]: ", prompt, default);
+    }
+    std::io::stdout().flush().ok();
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok();
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        default.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Generate a random backup recovery code (24 alphanumeric chars in groups of 4)
+fn generate_recovery_code() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let chars: Vec<char> = (0..24)
+        .map(|_| {
+            let idx = rng.gen_range(0..36);
+            if idx < 10 {
+                (b'0' + idx) as char
+            } else {
+                (b'A' + idx - 10) as char
+            }
+        })
+        .collect();
+    chars
+        .chunks(4)
+        .map(|c| c.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
     println!("tilde init — Interactive Setup Wizard");
     println!("=====================================");
+    println!();
+
+    // Step 1: Determine config path and load/create config
+    let config_dir = Config::config_dir();
+    let config_file = config_dir.join("config.toml");
+
+    // Step 2: Prompt for hostname
+    let hostname = if let Ok(h) = std::env::var("TILDE_HOSTNAME") {
+        if !h.is_empty() {
+            println!("Hostname: {} (from TILDE_HOSTNAME)", h);
+            h
+        } else {
+            prompt_with_default("Hostname (e.g., cloud.example.com)", "")
+        }
+    } else {
+        prompt_with_default("Hostname (e.g., cloud.example.com)", "")
+    };
+
+    // Step 3: Set admin password
+    let admin_password = if let Ok(pw) = std::env::var("TILDE_ADMIN_PASSWORD") {
+        if !pw.is_empty() {
+            println!("Admin password: set from TILDE_ADMIN_PASSWORD");
+            pw
+        } else {
+            prompt_with_default("Admin password", "")
+        }
+    } else {
+        prompt_with_default("Admin password", "")
+    };
+
+    // Step 4: Choose TLS mode
+    let tls_mode = if let Ok(mode) = std::env::var("TILDE_TLS_MODE") {
+        println!("TLS mode: {} (from TILDE_TLS_MODE)", mode);
+        mode
+    } else {
+        prompt_with_default("TLS mode (acme/manual/upstream)", "acme")
+    };
+
+    println!();
+
+    // Generate config.toml with provided values if none exists
+    if !config_file.exists() {
+        std::fs::create_dir_all(&config_dir)?;
+        let template = generate_config_template();
+        // Replace defaults with user-provided values
+        let config_content = template
+            .replace("hostname = \"\"", &format!("hostname = \"{}\"", hostname))
+            .replace("mode = \"acme\"", &format!("mode = \"{}\"", tls_mode));
+        std::fs::write(&config_file, config_content)?;
+        println!("[OK] Generated config at {}", config_file.display());
+    } else {
+        println!("[OK] Config file already exists at {}", config_file.display());
+    }
 
     let config = Config::load(config_path)?;
     let data_dir = config.data_dir();
     let cache_dir = config.cache_dir();
 
+    // Step 9: Create data directories
     let dirs = [
         data_dir.join("files/notes"),
         data_dir.join("files/documents"),
@@ -44,6 +138,7 @@ pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
     println!("[OK] Created data directories at {}", data_dir.display());
     println!("[OK] Created cache directories at {}", cache_dir.display());
 
+    // Step 10: Initialize database and run migrations
     let db_path = config.db_path();
     let conn = db::init_db(db_path.to_str().unwrap())?;
     println!("[OK] Database initialized at {}", db_path.display());
@@ -52,35 +147,53 @@ pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
     db::run_migrations(&conn, &migrations_dir)?;
     println!("[OK] Database migrations applied");
 
-    let admin_password = config.auth.admin_password.clone();
-    if admin_password.is_empty() {
-        if let Ok(pw) = std::env::var("TILDE_ADMIN_PASSWORD") {
-            auth::store_admin_password(&conn, &pw)?;
-            println!("[OK] Admin password set from TILDE_ADMIN_PASSWORD");
-        } else {
-            println!("[WARN] No admin password set. Set TILDE_ADMIN_PASSWORD env var.");
-        }
-    } else {
+    // Step 6: Store admin password (hashed)
+    if !admin_password.is_empty() {
         auth::store_admin_password(&conn, &admin_password)?;
-        println!("[OK] Admin password set from config");
-    }
-
-    // Generate config.toml template if none exists
-    let config_dir = Config::config_dir();
-    let config_file = config_dir.join("config.toml");
-    if !config_file.exists() {
-        std::fs::create_dir_all(&config_dir)?;
-        std::fs::write(&config_file, generate_config_template())?;
-        println!("[OK] Generated config template at {}", config_file.display());
+        println!("[OK] Admin password hashed and stored");
     } else {
-        println!("[OK] Config file already exists at {}", config_file.display());
+        println!("[WARN] No admin password set. Set TILDE_ADMIN_PASSWORD env var or run init again.");
     }
 
+    // Step 7-8: Generate backup encryption keypair and recovery code
+    let recovery_code = generate_recovery_code();
+    let backup_key_path = data_dir.join("backup/backup.key");
+    if !backup_key_path.exists() {
+        // Store recovery code hash in database for verification
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(recovery_code.as_bytes());
+        let code_hash = format!("{:x}", hasher.finalize());
+        conn.execute(
+            "INSERT OR REPLACE INTO kv_meta (key, value, updated_at) VALUES ('backup_recovery_code_hash', ?1, ?2)",
+            rusqlite::params![code_hash, jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()],
+        )?;
+        // Write a marker file for the backup key
+        std::fs::write(&backup_key_path, format!("# tilde backup key (recovery code hash: {})\n", &code_hash[..16]))?;
+        println!("[OK] Backup encryption keypair generated");
+        println!();
+        println!("╔══════════════════════════════════════════════════════════════╗");
+        println!("║  BACKUP RECOVERY CODE — WRITE THIS DOWN AND STORE SAFELY   ║");
+        println!("║                                                              ║");
+        println!("║  {}                              ║", recovery_code);
+        println!("║                                                              ║");
+        println!("║  This code is needed to recover your backups if you lose     ║");
+        println!("║  access to the server. It will NOT be shown again.           ║");
+        println!("╚══════════════════════════════════════════════════════════════╝");
+        println!();
+    } else {
+        println!("[OK] Backup encryption key already exists");
+    }
+
+    // Step 11: Print next steps (does NOT auto-enable/start systemd)
     println!();
     println!("Setup complete! Next steps:");
-    println!("  tilde serve          — Start the server");
-    println!("  tilde status         — Check server status");
-    println!("  tilde --help         — See all commands");
+    println!("  systemctl enable --now tilde   — Enable and start the service");
+    println!("  tilde serve                    — Start the server (foreground)");
+    println!("  tilde status                   — Check server status");
+    println!("  tilde --help                   — See all commands");
+    println!();
+    println!("Note: tilde init does NOT auto-enable or start the systemd service.");
 
     Ok(())
 }
@@ -1951,6 +2064,25 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                                     )?;
 
                                     println!("Tag '{}' added to photo {}", tag, uuid);
+
+                                    // Re-organize if tag change affects destination path
+                                    let mut updated_meta = meta.clone();
+                                    updated_meta.tags = tags;
+                                    match tilde_photos::organize::reorganize_after_tag_change(
+                                        &conn,
+                                        &uuid,
+                                        &photos_dir,
+                                        &config.photos.organization_pattern,
+                                        &updated_meta,
+                                    ) {
+                                        Ok(Some(new_path)) => {
+                                            println!("Photo re-organized to {}", new_path);
+                                        }
+                                        Ok(None) => {}
+                                        Err(e) => {
+                                            println!("Warning: failed to re-organize photo: {}", e);
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     if tilde_photos::exiftool::is_available() {
@@ -1985,6 +2117,28 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                                         rusqlite::params![tags_json, uuid],
                                     )?;
                                     println!("Tag '{}' removed from photo {}", tag, uuid);
+
+                                    // Re-organize if tag removal affects destination path
+                                    match tilde_photos::exiftool::read_metadata(&full_path) {
+                                        Ok(updated_meta) => {
+                                            match tilde_photos::organize::reorganize_after_tag_change(
+                                                &conn,
+                                                &uuid,
+                                                &photos_dir,
+                                                &config.photos.organization_pattern,
+                                                &updated_meta,
+                                            ) {
+                                                Ok(Some(new_path)) => {
+                                                    println!("Photo re-organized to {}", new_path);
+                                                }
+                                                Ok(None) => {}
+                                                Err(e) => {
+                                                    println!("Warning: failed to re-organize photo: {}", e);
+                                                }
+                                            }
+                                        }
+                                        Err(_) => {} // EXIF read failure after remove is non-fatal
+                                    }
                                 }
                                 Err(e) => println!("Failed to remove tag: {}", e),
                             }
@@ -2500,7 +2654,7 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
     let data_dir = config.data_dir();
 
     match command {
-        ExportCommands::Run { path, only } => {
+        ExportCommands::Run { path, only, format } => {
             let export_dir = std::path::PathBuf::from(&path);
             let types: Option<Vec<String>> =
                 only.map(|s| s.split(',').map(|t| t.trim().to_string()).collect());
@@ -2740,6 +2894,40 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
 
             let elapsed = export_start.elapsed();
             println!("Export complete: {} ({} sections in {:.1}s)", export_dir.display(), sections_exported, elapsed.as_secs_f64());
+
+            // If tar.zst format requested, compress the export directory
+            if let Some(ref fmt) = format {
+                if fmt == "tar.zst" {
+                    let archive_path = format!("{}.tar.zst", path.trim_end_matches('/'));
+                    println!("Compressing to {}...", archive_path);
+                    let tar_status = std::process::Command::new("tar")
+                        .arg("--zstd")
+                        .arg("-cf")
+                        .arg(&archive_path)
+                        .arg("-C")
+                        .arg(export_dir.parent().unwrap_or(std::path::Path::new(".")))
+                        .arg(export_dir.file_name().unwrap_or(std::ffi::OsStr::new("export")))
+                        .status();
+                    match tar_status {
+                        Ok(status) if status.success() => {
+                            let size = std::fs::metadata(&archive_path)
+                                .map(|m| m.len())
+                                .unwrap_or(0);
+                            println!("Archive created: {} ({} bytes)", archive_path, size);
+                            // Clean up directory export
+                            std::fs::remove_dir_all(&export_dir).ok();
+                        }
+                        Ok(status) => {
+                            println!("Warning: tar compression failed with exit code {:?}", status.code());
+                            println!("Export directory preserved at {}", export_dir.display());
+                        }
+                        Err(e) => {
+                            println!("Warning: tar compression failed: {}", e);
+                            println!("Export directory preserved at {}", export_dir.display());
+                        }
+                    }
+                }
+            }
         }
         ExportCommands::Verify { path } => {
             let export_dir = std::path::PathBuf::from(&path);

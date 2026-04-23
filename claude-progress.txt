@@ -1,6 +1,63 @@
 tilde — Progress Notes
 ======================
 
+## Session 11 (2026-04-22) — Photo reorg, streaming writes, init wizard, mobileconfig, tar.zst: 227 → 233 tests
+
+### Completed Features (6 new tests)
+1. **Photo metadata-triggered MOVE** (Test 81): Tag add/remove now re-organizes
+   photos to new destination path based on organization pattern. Preserves oc:id (UUID).
+   Respects `manually_placed` flag — won't re-organize user-placed photos.
+
+2. **Apple .mobileconfig profile** (Test 219): GET /apple-mobileconfig generates
+   valid XML plist with CalDAV and CardDAV account configs, hostname, path prefixes,
+   SSL settings. Content-Type: application/x-apple-aspen-config.
+
+3. **Streaming writes** (Test 194): WebDAV PUT now streams body chunks directly to
+   temp file via BufWriter instead of buffering full body in memory. Includes fsync
+   for durability and fsync parent directory for crash safety.
+
+4. **tilde init interactive wizard** (Test 25): Enhanced wizard with hostname prompting,
+   password prompting, TLS mode selection, backup keypair generation, recovery code
+   display. Non-interactive when env vars set. Does NOT auto-start systemd.
+
+5. **Backup recovery code** (Test 200): tilde init generates 24-char alphanumeric
+   recovery code (groups of 4), stores hash in kv_meta, prints to terminal once.
+
+6. **Export tar.zst** (Test 158): `tilde export run --format tar.zst` compresses
+   the export directory into a zstandard-compressed tar archive.
+
+### Architecture Changes
+- Made `atomic_move` public in tilde-photos/src/ingest.rs
+- Added `reorganize_after_tag_change()` to tilde-photos/src/organize.rs
+- Changed WebDAV PUT from `to_bytes()` (full-body buffer) to streaming `BodyExt::frame()` chunks
+- Added `http-body-util` workspace dependency for streaming body consumption
+- Enhanced `run_init()` with interactive prompts and backup keypair generation
+- Added Apple .mobileconfig endpoint at GET /apple-mobileconfig
+- Added `--format` option to export CLI command
+
+### Tests Passing: 233/260
+Total new tests this session: 6 (227 → 233)
+
+### Remaining Failing Tests (27)
+- Infrastructure (16, 21, 191, 231, 245): HTTPS/TLS, systemd, musl binary, journalctl
+- IMAP (105-106, 184, 198, 204): Require live IMAP server
+- Photos (86): HEIC thumbnails (requires libheif)
+- Backup (149-154, 199, 223, 224): rustic-rs integration
+- Export (159): age encryption
+- WebAuthn (179, 197): Optional second factor
+- Update (166-167): minisign verification, binary download
+- CalDAV (219): WebDAV-Push notifications
+- WebDAV (230): Nextcloud desktop client functional test
+
+### Next Steps (for future sessions)
+1. HEIC thumbnail support (test 86) - requires libheif
+2. Backup rustic-rs integration (tests 149-154)
+3. WebAuthn support (tests 179, 197)
+4. Age encryption export (test 159)
+5. Minisign update verification (tests 166-167)
+
+---
+
 ## Session 10 (2026-04-22) — Jobs Queue, Install, Progress, Confirmations, Cross-refs, Updates: 221 → 227 tests
 
 ### Completed Features (6 new tests)

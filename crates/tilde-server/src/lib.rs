@@ -104,6 +104,8 @@ pub fn build_router(
         )
         .route("/.well-known/caldav", get(well_known_caldav))
         .route("/.well-known/carddav", get(well_known_carddav))
+        // Apple .mobileconfig profile for easy iOS/macOS CalDAV+CardDAV setup
+        .route("/apple-mobileconfig", get(apple_mobileconfig_handler))
         // Nextcloud compat redirects
         .route("/remote.php/dav/{*path}", any(remote_php_dav_redirect))
         .route(
@@ -308,6 +310,117 @@ async fn well_known_carddav() -> impl IntoResponse {
         StatusCode::MOVED_PERMANENTLY,
         [(header::LOCATION, "/carddav/")],
     )
+}
+
+/// GET /apple-mobileconfig — Generate Apple .mobileconfig profile for CalDAV + CardDAV
+async fn apple_mobileconfig_handler(
+    State(state): State<SharedState>,
+) -> axum::response::Response {
+    let hostname = if state.config.server.hostname.is_empty() {
+        "localhost".to_string()
+    } else {
+        state.config.server.hostname.clone()
+    };
+
+    let profile_uuid = uuid::Uuid::new_v4().to_string().to_uppercase();
+    let caldav_uuid = uuid::Uuid::new_v4().to_string().to_uppercase();
+    let carddav_uuid = uuid::Uuid::new_v4().to_string().to_uppercase();
+
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>CalDAVAccountDescription</key>
+            <string>tilde CalDAV</string>
+            <key>CalDAVHostName</key>
+            <string>{hostname}</string>
+            <key>CalDAVPort</key>
+            <integer>443</integer>
+            <key>CalDAVPrincipalURL</key>
+            <string>/caldav/admin/</string>
+            <key>CalDAVUseSSL</key>
+            <true/>
+            <key>PayloadDescription</key>
+            <string>CalDAV account for tilde</string>
+            <key>PayloadDisplayName</key>
+            <string>tilde CalDAV</string>
+            <key>PayloadIdentifier</key>
+            <string>com.tilde.caldav.{caldav_uuid}</string>
+            <key>PayloadType</key>
+            <string>com.apple.caldav.account</string>
+            <key>PayloadUUID</key>
+            <string>{caldav_uuid}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
+        <dict>
+            <key>CardDAVAccountDescription</key>
+            <string>tilde CardDAV</string>
+            <key>CardDAVHostName</key>
+            <string>{hostname}</string>
+            <key>CardDAVPort</key>
+            <integer>443</integer>
+            <key>CardDAVPrincipalURL</key>
+            <string>/carddav/admin/</string>
+            <key>CardDAVUseSSL</key>
+            <true/>
+            <key>PayloadDescription</key>
+            <string>CardDAV account for tilde</string>
+            <key>PayloadDisplayName</key>
+            <string>tilde CardDAV</string>
+            <key>PayloadIdentifier</key>
+            <string>com.tilde.carddav.{carddav_uuid}</string>
+            <key>PayloadType</key>
+            <string>com.apple.carddav.account</string>
+            <key>PayloadUUID</key>
+            <string>{carddav_uuid}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
+    </array>
+    <key>PayloadDescription</key>
+    <string>Configure CalDAV and CardDAV accounts for tilde personal cloud</string>
+    <key>PayloadDisplayName</key>
+    <string>tilde — {hostname}</string>
+    <key>PayloadIdentifier</key>
+    <string>com.tilde.profile.{profile_uuid}</string>
+    <key>PayloadOrganization</key>
+    <string>tilde</string>
+    <key>PayloadRemovalDisallowed</key>
+    <false/>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>{profile_uuid}</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+</dict>
+</plist>"#,
+        hostname = hostname,
+        profile_uuid = profile_uuid,
+        caldav_uuid = caldav_uuid,
+        carddav_uuid = carddav_uuid,
+    );
+
+    (
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/x-apple-aspen-config; charset=utf-8",
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"tilde.mobileconfig\"",
+            ),
+        ],
+        xml,
+    )
+        .into_response()
 }
 
 /// POST /api/auth/login — Authenticate with admin password, returns session token

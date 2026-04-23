@@ -379,6 +379,9 @@ pub enum ExportCommands {
         /// Selective export: comma-separated types (photos, notes, calendars, contacts, collections, email)
         #[arg(long)]
         only: Option<String>,
+        /// Output format: "dir" (default directory), "tar.zst" (compressed archive)
+        #[arg(long)]
+        format: Option<String>,
     },
     /// Verify an existing export
     Verify {

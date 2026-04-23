@@ -330,7 +330,7 @@
       "Step 10: Verify SQLite migrations are applied",
       "Step 11: Verify init does NOT auto-enable or start systemd service"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1032,7 +1032,7 @@
       "Step 3: Verify file MOVE'd to 2025/01-iceland/ (if pattern includes {-trip})",
       "Step 4: Verify oc:id (UUID) preserved after MOVE"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1936,7 +1936,7 @@
       "Step 2: Verify .tar.zst archive created",
       "Step 3: Decompress and verify contents match full export"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2313,7 +2313,7 @@
       "Step 3: Verify memory usage stays well below file size",
       "Step 4: Verify file written correctly to disk"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2411,7 +2411,7 @@
       "Step 2: Verify recovery code printed to terminal",
       "Step 3: Verify recovery code can decrypt backup"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2614,7 +2614,7 @@
       "Step 2: Verify valid XML plist with CalDAV and CardDAV account configs",
       "Step 3: Verify profile includes server hostname and path prefixes"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

@@ -9,6 +9,7 @@ tilde-core = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
+http-body-util = { workspace = true }
 tokio = { workspace = true }
 rusqlite = { workspace = true }
 uuid = { workspace = true }

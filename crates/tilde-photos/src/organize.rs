@@ -3,7 +3,11 @@
 //! Computes destination paths from photo metadata using configurable patterns.
 
 use crate::exiftool::PhotoMetadata;
-use std::path::PathBuf;
+use crate::ingest::atomic_move;
+use anyhow::{Context, Result};
+use rusqlite::Connection;
+use std::path::{Path, PathBuf};
+use tracing::info;
 
 /// Compute the organized destination path for a photo based on its metadata and the pattern.
 ///
@@ -77,6 +81,102 @@ fn parse_date_components(date_str: &str) -> Option<(i32, u32, u32)> {
 /// Determine if a photo has sufficient metadata for organization
 pub fn has_sufficient_metadata(metadata: &PhotoMetadata) -> bool {
     metadata.date_time_original.is_some()
+}
+
+/// Re-organize a photo after a tag change, moving it to the new destination
+/// if the organization pattern produces a different path.
+///
+/// Returns Some(new_rel_path) if the file was moved, None if no move was needed.
+/// Skips re-organization if the photo has manually_placed=1.
+pub fn reorganize_after_tag_change(
+    conn: &Connection,
+    photo_uuid: &str,
+    photos_base: &Path,
+    organization_pattern: &str,
+    metadata: &PhotoMetadata,
+) -> Result<Option<String>> {
+    // Check manually_placed flag
+    let manually_placed: bool = conn
+        .query_row(
+            "SELECT manually_placed FROM photos WHERE id = ?1",
+            [photo_uuid],
+            |row| row.get::<_, i32>(0).map(|v| v != 0),
+        )
+        .context("Failed to query manually_placed flag")?;
+
+    if manually_placed {
+        return Ok(None);
+    }
+
+    // Get current file path
+    let current_rel_path: String = conn
+        .query_row(
+            "SELECT f.path FROM photos p JOIN files f ON p.file_id = f.id WHERE p.id = ?1",
+            [photo_uuid],
+            |row| row.get(0),
+        )
+        .context("Failed to query current photo path")?;
+
+    // The current_rel_path is relative to data_dir (e.g., "photos/2025/01/IMG.jpg")
+    // photos_base is the photos/ directory itself
+    // Strip the "photos/" prefix to get the path within photos_base
+    let photos_prefix = "photos/";
+    let current_within_photos = if current_rel_path.starts_with(photos_prefix) {
+        &current_rel_path[photos_prefix.len()..]
+    } else {
+        &current_rel_path
+    };
+
+    let current_full = photos_base.join(current_within_photos);
+    let filename = current_full
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    // Compute new destination based on updated metadata
+    let new_rel = match compute_destination(organization_pattern, metadata, &filename) {
+        Some(p) => p,
+        None => return Ok(None), // Can't compute destination (no date), skip
+    };
+
+    let new_rel_str = new_rel.to_string_lossy().to_string();
+
+    // No change needed
+    if current_within_photos == new_rel_str {
+        return Ok(None);
+    }
+
+    // Perform the move
+    let new_full = photos_base.join(&new_rel);
+
+    // Create parent directory
+    if let Some(parent) = new_full.parent() {
+        std::fs::create_dir_all(parent)
+            .context("Failed to create destination directory for photo reorganization")?;
+    }
+
+    info!(
+        photo = photo_uuid,
+        from = current_within_photos,
+        to = %new_rel_str,
+        "Re-organizing photo after tag change"
+    );
+
+    atomic_move(&current_full, &new_full)?;
+
+    // Update the file path in the database
+    let new_db_path = format!("photos/{}", new_rel_str);
+    let new_parent = Path::new(&new_db_path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    conn.execute(
+        "UPDATE files SET path = ?1, parent_path = ?2 WHERE id = (SELECT file_id FROM photos WHERE id = ?3)",
+        rusqlite::params![new_db_path, new_parent, photo_uuid],
+    )?;
+
+    Ok(Some(new_db_path))
 }
 
 #[cfg(test)]
