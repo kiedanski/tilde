@@ -1,6 +1,25 @@
 tilde — Progress Notes
 ======================
 
+## Session 29 (2026-04-23) — Verification pass: 256/260 confirmed stable
+
+### Verification
+- Server builds cleanly (0 clippy warnings)
+- All 27 unit tests pass
+- Server starts and serves HTTP on port 8080 (upstream TLS mode)
+- WebDAV PROPFIND returns proper multistatus XML with Nextcloud properties
+- MCP endpoint responds correctly (auth validation working)
+- Health endpoint returns healthy status
+
+### Remaining 4 Failing Tests (all infrastructure-blocked)
+1. **B2 offsite backup** — requires real Backblaze B2 credentials
+2. **Static musl binary build** — requires musl target toolchain (Linux-only)
+3. **Nextcloud desktop client sync** — requires actual Nextcloud client software
+4. **rustls-acme TLS-ALPN-01** — requires real domain with DNS resolution
+
+### Status: 256/260 tests passing
+No new tests can be completed without infrastructure access.
+
 ## Session 28 (2026-04-23) — Verification pass: 256/260 confirmed stable
 
 ### Summary
