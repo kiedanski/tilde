@@ -97,6 +97,8 @@ pub fn build_router(
     let carddav_router = tilde_card::build_carddav_router(carddav_state);
 
     Router::new()
+        // Root PROPFIND for DAV client discovery (DAVx5, etc.)
+        .route("/", any(root_propfind_handler))
         // Public endpoints
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
@@ -117,8 +119,8 @@ pub fn build_router(
             "/ocs/v2.php/cloud/user",
             get(ocs_user_handler),
         )
-        .route("/.well-known/caldav", get(well_known_caldav))
-        .route("/.well-known/carddav", get(well_known_carddav))
+        .route("/.well-known/caldav", any(well_known_caldav))
+        .route("/.well-known/carddav", any(well_known_carddav))
         // Apple .mobileconfig profile for easy iOS/macOS CalDAV+CardDAV setup
         .route("/apple-mobileconfig", get(apple_mobileconfig_handler))
         // Nextcloud compat redirects
@@ -341,6 +343,37 @@ async fn ocs_user_handler() -> impl IntoResponse {
             }
         }
     }))
+}
+
+/// PROPFIND / — Root handler for DAV client discovery (DAVx5, etc.)
+async fn root_propfind_handler(method: Method) -> axum::response::Response {
+    if method.as_str() == "PROPFIND" {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:current-user-principal>
+          <d:href>/principals/admin/</d:href>
+        </d:current-user-principal>
+        <d:resourcetype>
+          <d:collection/>
+        </d:resourcetype>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"#;
+        return (
+            StatusCode::MULTI_STATUS,
+            [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
+            xml.to_string(),
+        )
+            .into_response();
+    }
+    // For GET /, return a simple redirect or empty response
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// GET /.well-known/caldav — Redirect to /caldav/
@@ -622,7 +655,11 @@ async fn auth_middleware(
     if authenticated {
         Ok(next.run(req).await)
     } else {
-        Err(StatusCode::UNAUTHORIZED)
+        Ok((
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Basic realm=\"tilde\"")],
+            "You need to sign in to continue. If you have trouble with your credentials, please reach out to your server administrator.",
+        ).into_response())
     }
 }
 
@@ -700,6 +737,16 @@ async fn principals_handler(
     method: Method,
     path: Option<AxumPath<String>>,
 ) -> axum::response::Response {
+    if method == Method::OPTIONS {
+        return axum::response::Response::builder()
+            .status(StatusCode::OK)
+            .header("Allow", "OPTIONS, PROPFIND")
+            .header("DAV", "1, 2, 3, calendar-access, addressbook")
+            .body(axum::body::Body::empty())
+            .unwrap()
+            .into_response();
+    }
+
     if method.as_str() != "PROPFIND" {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
@@ -707,7 +754,7 @@ async fn principals_handler(
     let _path = path.map(|AxumPath(p)| p).unwrap_or_default();
 
     let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<d:multistatus xmlns:d="DAV:">
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:card="urn:ietf:params:xml:ns:carddav">
   <d:response>
     <d:href>/principals/admin/</d:href>
     <d:propstat>
@@ -718,6 +765,12 @@ async fn principals_handler(
         <d:resourcetype>
           <d:principal/>
         </d:resourcetype>
+        <cal:calendar-home-set>
+          <d:href>/caldav/admin/</d:href>
+        </cal:calendar-home-set>
+        <card:addressbook-home-set>
+          <d:href>/carddav/admin/</d:href>
+        </card:addressbook-home-set>
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
