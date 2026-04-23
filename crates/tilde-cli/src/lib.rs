@@ -96,6 +96,18 @@ pub enum Commands {
         #[command(subcommand)]
         command: BackupCommands,
     },
+    /// Restore from backup snapshot
+    Restore {
+        /// Backup source (e.g., "local")
+        #[arg(long)]
+        from: String,
+        /// Snapshot ID to restore
+        #[arg(long)]
+        at: String,
+        /// Target directory to restore into
+        #[arg(long)]
+        to: String,
+    },
     /// Export data
     Export {
         #[command(subcommand)]

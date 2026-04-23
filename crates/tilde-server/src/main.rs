@@ -72,6 +72,9 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Backup { command }) => {
             commands::run_backup(config_path.as_deref(), command).await
         }
+        Some(Commands::Restore { from, at, to }) => {
+            commands::run_restore(config_path.as_deref(), &from, &at, &to).await
+        }
         Some(Commands::Install) => commands::run_install().await,
         Some(Commands::Update { command }) => {
             commands::run_update(config_path.as_deref(), command).await

@@ -530,9 +530,23 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     );
                 }
 
-                // TODO: actual backup via rustic-rs
-                // For now, log that backup was triggered
-                info!(data_dir = %backup_data_dir.display(), "Backup triggered (rustic-rs integration pending)");
+                // Run actual backup
+                if let Ok(conn) = backup_db.lock() {
+                    let backup_dir = backup_data_dir.join("backup");
+                    match tilde_backup::create_snapshot(&conn, &backup_data_dir, &backup_dir) {
+                        Ok(snapshot) => {
+                            info!(
+                                snapshot_id = %snapshot.id,
+                                size = %tilde_backup::format_size(snapshot.size_bytes),
+                                files = snapshot.file_count,
+                                "Scheduled backup completed"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Scheduled backup failed");
+                        }
+                    }
+                }
             }
         });
         info!(schedule = %state.config.backup.schedule, "Backup scheduler enabled");
@@ -3416,6 +3430,9 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
     let migrations_dir = tilde_cli::find_migrations_dir();
     db::run_migrations(&conn, &migrations_dir)?;
 
+    let data_dir = config.data_dir();
+    let backup_dir = data_dir.join("backup");
+
     match command {
         BackupCommands::Status => {
             println!("Backup Status");
@@ -3448,6 +3465,10 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             println!("Last backup: {}", last_run.as_deref().unwrap_or("never"));
             println!("Next scheduled: {}", next_scheduled.as_deref().unwrap_or("not scheduled"));
 
+            // Show snapshot count
+            let snapshots = tilde_backup::list_snapshots(&conn)?;
+            println!("Snapshots: {}", snapshots.len());
+
             if !config.backup.offsite.is_empty() {
                 println!("\nOffsite destinations:");
                 for dest in &config.backup.offsite {
@@ -3456,34 +3477,122 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             }
         }
         BackupCommands::Now { offsite } => {
-            println!(
-                "Running backup{}...",
-                offsite.map(|o| format!(" to {}", o)).unwrap_or_default()
-            );
-            println!("Backup functionality requires rustic-rs integration");
+            if offsite.is_some() {
+                println!("Offsite backup requires S3/B2 credential configuration");
+                return Ok(());
+            }
+
+            println!("Creating backup snapshot...");
+            let snapshot = tilde_backup::create_snapshot(&conn, &data_dir, &backup_dir)?;
+            println!("Snapshot created successfully:");
+            println!("  ID:         {}", snapshot.id);
+            println!("  Created:    {}", snapshot.created_at);
+            println!("  Size:       {}", tilde_backup::format_size(snapshot.size_bytes));
+            println!("  Files:      {}", snapshot.file_count);
+            println!("  Checksum:   {}", &snapshot.checksum[..16]);
+
+            // Apply retention policy
+            let retention = &config.backup.local_retention;
+            let pruned = tilde_backup::apply_retention(
+                &conn,
+                retention.hourly,
+                retention.daily,
+                retention.weekly,
+                retention.monthly,
+            )?;
+            if !pruned.is_empty() {
+                println!("  Pruned {} old snapshot(s)", pruned.len());
+            }
         }
         BackupCommands::List { offsite } => {
-            println!(
-                "Listing snapshots{}...",
-                offsite.map(|o| format!(" from {}", o)).unwrap_or_default()
-            );
-            println!("No snapshots available (backup not configured)");
+            if offsite.is_some() {
+                println!("Offsite snapshot listing requires S3/B2 credential configuration");
+                return Ok(());
+            }
+
+            let snapshots = tilde_backup::list_snapshots(&conn)?;
+            if snapshots.is_empty() {
+                println!("No snapshots found.");
+                return Ok(());
+            }
+
+            println!("Backup Snapshots ({} total)", snapshots.len());
+            println!("=============");
+            println!("{:<38} {:<26} {:>10} {:>6} {}",
+                "ID", "Created", "Size", "Files", "Pinned");
+            println!("{}", "-".repeat(90));
+
+            for s in &snapshots {
+                let pin_mark = if s.pinned {
+                    format!("YES ({})", s.pin_reason.as_deref().unwrap_or(""))
+                } else {
+                    String::new()
+                };
+                println!("{:<38} {:<26} {:>10} {:>6} {}",
+                    &s.id[..36.min(s.id.len())],
+                    &s.created_at,
+                    tilde_backup::format_size(s.size_bytes),
+                    s.file_count,
+                    pin_mark,
+                );
+            }
         }
         BackupCommands::Verify { offsite } => {
-            println!(
-                "Verifying backup{}...",
-                offsite.map(|o| format!(" {}", o)).unwrap_or_default()
-            );
-            println!("Backup verification requires rustic-rs integration");
+            if offsite.is_some() {
+                println!("Offsite verification requires S3/B2 credential configuration");
+                return Ok(());
+            }
+
+            let snapshots = tilde_backup::list_snapshots(&conn)?;
+            if snapshots.is_empty() {
+                println!("No snapshots to verify.");
+                return Ok(());
+            }
+
+            println!("Verifying {} snapshot(s)...", snapshots.len());
+            let (passed, failed) = tilde_backup::verify_all_snapshots(&conn)?;
+            println!("Results: {} passed, {} failed", passed, failed);
+
+            if failed > 0 {
+                println!("WARNING: Some snapshots failed integrity verification!");
+                std::process::exit(1);
+            } else {
+                println!("All snapshots verified successfully.");
+            }
         }
         BackupCommands::Pin {
             snapshot_id,
             reason,
         } => {
-            println!("Pinning snapshot {} (reason: {})", snapshot_id, reason);
-            println!("Snapshot pinning requires rustic-rs integration");
+            tilde_backup::pin_snapshot(&conn, &snapshot_id, &reason)?;
+            println!("Snapshot {} pinned (reason: {})", snapshot_id, reason);
         }
     }
+    Ok(())
+}
+
+pub async fn run_restore(
+    config_path: Option<&str>,
+    from: &str,
+    snapshot_id: &str,
+    target_path: &str,
+) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    let conn = db::init_db(config.db_path().to_str().unwrap())?;
+    let migrations_dir = tilde_cli::find_migrations_dir();
+    db::run_migrations(&conn, &migrations_dir)?;
+
+    if from != "local" {
+        println!("Offsite restore requires S3/B2 credential configuration");
+        return Ok(());
+    }
+
+    let target_dir = std::path::Path::new(target_path);
+    println!("Restoring snapshot {} to {}...", snapshot_id, target_path);
+
+    tilde_backup::restore_snapshot(&conn, snapshot_id, target_dir)?;
+    println!("Restore completed successfully to {}", target_path);
+
     Ok(())
 }
 

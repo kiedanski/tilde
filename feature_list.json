@@ -1828,7 +1828,7 @@
       "Step 9: Run `tilde backup list` \u2192 verify both snapshots listed",
       "Step 10: Verify retention policy stored correctly in config"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1840,7 +1840,7 @@
       "Step 4: Corrupt a backup file",
       "Step 5: Run verify again \u2192 verify corruption detected"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1851,7 +1851,7 @@
       "Step 3: Run backup prune",
       "Step 4: Verify pinned snapshot is NOT pruned"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1862,7 +1862,7 @@
       "Step 3: Run `tilde restore --from local --at <snapshot> --to /tmp/restore`",
       "Step 4: Verify restored data matches original"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
