@@ -371,6 +371,9 @@ pub struct BackupConfig {
     pub local_retention: BackupRetention,
     #[serde(default)]
     pub offsite: Vec<BackupOffsiteConfig>,
+    /// Paranoid mode: encrypt backups with age public key (server cannot decrypt)
+    #[serde(default)]
+    pub encrypt_recipient: String,
 }
 
 impl Default for BackupConfig {
@@ -380,6 +383,7 @@ impl Default for BackupConfig {
             schedule: default_backup_schedule(),
             local_retention: BackupRetention::default(),
             offsite: Vec::new(),
+            encrypt_recipient: String::new(),
         }
     }
 }

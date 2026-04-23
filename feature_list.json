@@ -2401,7 +2401,7 @@
       "Step 2: Verify server cannot decrypt backups (only public key held)",
       "Step 3: Verify append-only enforcement on destination"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

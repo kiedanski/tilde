@@ -491,6 +491,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         let backup_schedule = state.config.backup.schedule.clone();
         let backup_db = state.db.clone();
         let backup_data_dir = data_dir.clone();
+        let backup_encrypt_recipient = state.config.backup.encrypt_recipient.clone();
         tokio::spawn(async move {
             let interval_secs = parse_schedule_interval(&backup_schedule);
             info!(schedule = %backup_schedule, interval_secs = interval_secs, "Backup scheduler started");
@@ -533,7 +534,12 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 // Run actual backup
                 if let Ok(conn) = backup_db.lock() {
                     let backup_dir = backup_data_dir.join("backup");
-                    match tilde_backup::create_snapshot(&conn, &backup_data_dir, &backup_dir) {
+                    let encrypt = if backup_encrypt_recipient.is_empty() {
+                        None
+                    } else {
+                        Some(backup_encrypt_recipient.as_str())
+                    };
+                    match tilde_backup::create_snapshot_with_encryption(&conn, &backup_data_dir, &backup_dir, encrypt) {
                         Ok(snapshot) => {
                             info!(
                                 snapshot_id = %snapshot.id,
@@ -3483,7 +3489,17 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             }
 
             println!("Creating backup snapshot...");
-            let snapshot = tilde_backup::create_snapshot(&conn, &data_dir, &backup_dir)?;
+            let encrypt_recipient = if config.backup.encrypt_recipient.is_empty() {
+                None
+            } else {
+                Some(config.backup.encrypt_recipient.as_str())
+            };
+            let snapshot = tilde_backup::create_snapshot_with_encryption(
+                &conn, &data_dir, &backup_dir, encrypt_recipient,
+            )?;
+            if encrypt_recipient.is_some() {
+                println!("  Encrypted with age (paranoid mode — server cannot decrypt)");
+            }
             println!("Snapshot created successfully:");
             println!("  ID:         {}", snapshot.id);
             println!("  Created:    {}", snapshot.created_at);

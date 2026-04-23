@@ -30,11 +30,22 @@ pub struct Snapshot {
 /// Create a backup snapshot of the data directory.
 ///
 /// Creates a tar.gz archive in `backup_dir`, records metadata in SQLite.
+/// If `encrypt_recipient` is provided, encrypts the archive with age.
 /// Returns the snapshot ID on success.
 pub fn create_snapshot(
     conn: &Connection,
     data_dir: &Path,
     backup_dir: &Path,
+) -> Result<Snapshot> {
+    create_snapshot_with_encryption(conn, data_dir, backup_dir, None)
+}
+
+/// Create a backup snapshot, optionally encrypted with an age public key.
+pub fn create_snapshot_with_encryption(
+    conn: &Connection,
+    data_dir: &Path,
+    backup_dir: &Path,
+    encrypt_recipient: Option<&str>,
 ) -> Result<Snapshot> {
     std::fs::create_dir_all(backup_dir)?;
 
@@ -81,17 +92,45 @@ pub fn create_snapshot(
         .context("Failed to finalize tar archive")?;
     encoder.finish().context("Failed to finish gzip compression")?;
 
-    // Compute checksum of the archive
-    let checksum = compute_file_sha256(&archive_path)?;
+    // Encrypt with age if recipient provided (paranoid mode)
+    let final_path = if let Some(recipient) = encrypt_recipient {
+        let encrypted_path = std::path::PathBuf::from(format!("{}.age", archive_path.display()));
+        info!(recipient = %recipient, "Encrypting backup with age (paranoid mode)");
 
-    let size_bytes = std::fs::metadata(&archive_path)?.len() as i64;
+        let status = std::process::Command::new("age")
+            .args([
+                "--recipient", recipient,
+                "--output", encrypted_path.to_str().unwrap(),
+                archive_path.to_str().unwrap(),
+            ])
+            .status()
+            .context("Failed to run age for encryption")?;
+
+        if !status.success() {
+            bail!("age encryption failed with status: {}", status);
+        }
+
+        // Remove unencrypted archive
+        std::fs::remove_file(&archive_path)
+            .context("Failed to remove unencrypted archive")?;
+
+        info!("Backup encrypted — server holds only public key, cannot decrypt");
+        encrypted_path
+    } else {
+        archive_path.clone()
+    };
+
+    // Compute checksum of the final archive
+    let checksum = compute_file_sha256(&final_path)?;
+
+    let size_bytes = std::fs::metadata(&final_path)?.len() as i64;
 
     let snapshot = Snapshot {
         id: snapshot_id,
         created_at: created_at.clone(),
         size_bytes,
         file_count,
-        archive_path: archive_path.to_string_lossy().to_string(),
+        archive_path: final_path.to_string_lossy().to_string(),
         checksum: checksum.clone(),
         pinned: false,
         pin_reason: None,
