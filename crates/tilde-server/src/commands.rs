@@ -11,7 +11,7 @@ use tilde_cli::{
 };
 use tilde_core::{auth, config::Config, db};
 use tilde_server::{AppState, SharedState, build_router};
-use tracing::info;
+use tracing::{info, warn};
 
 /// Read a line from stdin, returning the default if empty
 fn prompt_with_default(prompt: &str, default: &str) -> String {
@@ -603,6 +603,48 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             }
             Err(e) => tracing::warn!(error = %e, "Failed to process library-drop on startup"),
             _ => {}
+        }
+    }
+
+    // Start email IMAP sync if email is enabled
+    if state.config.email.enabled {
+        let mail_dir = data_dir.join("mail");
+        let mut accounts = state.config.email.accounts.clone();
+
+        // If no accounts configured but env vars are set, create a default account
+        if accounts.is_empty() {
+            let imap_host = std::env::var("TILDE_EMAIL_IMAP_HOST").unwrap_or_default();
+            if !imap_host.is_empty() {
+                let account = tilde_core::config::EmailAccountConfig {
+                    name: "personal".to_string(),
+                    imap_host,
+                    imap_port: std::env::var("TILDE_EMAIL_IMAP_PORT")
+                        .ok()
+                        .and_then(|p| p.parse().ok())
+                        .unwrap_or(993),
+                    username_env: "TILDE_EMAIL_USERNAME".to_string(),
+                    password_env: "TILDE_EMAIL_PASSWORD".to_string(),
+                    ..Default::default()
+                };
+                accounts.push(account);
+            }
+        }
+
+        for account_cfg in &accounts {
+            let imap_config = tilde_email::imap::ImapAccountConfig::from_config(account_cfg);
+            if imap_config.imap_host.is_empty() {
+                warn!(account = %imap_config.name, "Skipping email account with empty IMAP host");
+                continue;
+            }
+            let email_db = state.db.clone();
+            let email_mail_dir = mail_dir.clone();
+            info!(account = %imap_config.name, host = %imap_config.imap_host, "Starting email sync");
+            tokio::spawn(async move {
+                tilde_email::imap::run_sync_loop(imap_config, email_db, email_mail_dir).await;
+            });
+        }
+        if !accounts.is_empty() {
+            info!(accounts = accounts.len(), "Email sync started");
         }
     }
 

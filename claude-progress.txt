@@ -1,6 +1,61 @@
 tilde — Progress Notes
 ======================
 
+## Session 17 (2026-04-22) — IMAP email sync wired up and verified: 250 → 255 tests
+
+### Completed Features (5 new tests)
+1. **IMAP SSL connection** (Test 105): Wired up email config into Config struct with
+   EmailConfig and EmailAccountConfig. Added env var support (username_env, password_env).
+   IMAP sync now starts automatically during `tilde serve` when email.enabled=true.
+   Supports both SSL (IMAPS) and plain IMAP connections. Verified with Greenmail Docker
+   test server: SSL connection, folder listing, message fetch, UID tracking, email status.
+
+2. **IMAP IDLE push** (Test 106): IDLE mode enters after successful sync, detects new
+   mail within seconds, triggers re-sync. Verified: sent email during IDLE → notification
+   received → re-synced → re-entered IDLE.
+
+3. **Exponential backoff** (Test 184): On IMAP connection failure, retries with doubling
+   delay (5s → 10s → 20s → ... → 300s max). Stops Greenmail → tilde retries with backoff
+   → restart Greenmail → tilde recovers automatically.
+
+4. **Background initial sync** (Test 198): All messages fetched on first sync cycle
+   automatically as background task. UID-based incremental sync for subsequent cycles.
+
+5. **Poll fallback** (Test 204): When idle_enabled=false, polls at configured interval
+   (poll_interval_seconds). Verified with 10s interval: new email detected on next poll.
+
+### Implementation Details
+- Added `EmailConfig` and `EmailAccountConfig` to tilde-core Config struct
+- `EmailAccountConfig` has `username_env`/`password_env` for env var credential resolution
+- Added `from_config()` constructor on `ImapAccountConfig` to bridge config to IMAP module
+- `connect_and_login()` now supports both SSL (`imap::connect` with TLS) and plain (`imap::Client::new`)
+- `ImapSession` enum abstracts over SSL and plain connections
+- `run_serve` spawns email sync tasks per configured account when `email.enabled=true`
+- Falls back to env var account creation (TILDE_EMAIL_IMAP_HOST etc.) when no accounts configured
+- Changed from `tokio::sync::Mutex` to `std::sync::Mutex` for DB arc consistency
+- Accepts self-signed certs via `danger_accept_invalid_certs(true)` for test/dev environments
+- Zero clippy warnings
+
+### Verified Against
+- Greenmail Docker IMAP test server (greenmail/standalone:2.1.2)
+- SSL connection on port 3993 with self-signed cert
+- IDLE notifications within seconds
+- Poll fallback at 10s interval
+- Exponential backoff: 5s → 10s with recovery
+- `tilde email status` shows account, message count, last sync, folders
+- `tilde email search` finds synced messages
+
+### Tests Passing: 255/260
+
+### Remaining Failing Tests (5)
+- Test 153: Backup offsite to S3/B2 (needs B2 credentials)
+- Test 194: Static musl binary build (needs Linux musl toolchain)
+- Test 221: WebDAV-Push notifications (needs RustiCal push support)
+- Test 229: Nextcloud desktop client test (needs Nextcloud client)
+- Test 230: rustls-acme TLS-ALPN-01 (needs public domain)
+
+---
+
 ## Session 16 (2026-04-22) — HEIC thumbnail support via libheif: 249 → 250 tests
 
 ### Completed Features (1 new test)

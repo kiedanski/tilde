@@ -1314,7 +1314,7 @@
       "Step 9: Verify email sync status shows connected",
       "Step 10: Run `tilde email status` \u2192 verify connected status displayed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -1326,7 +1326,7 @@
       "Step 4: Verify IDLE notifies of new message",
       "Step 5: Verify message fetched and stored within seconds"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2241,7 +2241,7 @@
       "Step 3: Verify notification on persistent sync errors",
       "Step 4: Make IMAP server reachable \u2192 verify connection recovers"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2391,7 +2391,7 @@
       "Step 3: Verify messages fetched progressively",
       "Step 4: Configure with --since 2024-01-01 \u2192 verify only recent messages fetched"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2455,7 +2455,7 @@
       "Step 3: Verify polling occurs at configured interval",
       "Step 4: Verify new messages fetched during poll"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

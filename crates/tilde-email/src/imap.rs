@@ -1,13 +1,12 @@
 //! IMAP client for email fetching via `imap` crate.
 //!
-//! Supports SSL connections, IDLE for push notifications, poll fallback,
+//! Supports SSL and plain connections, IDLE for push notifications, poll fallback,
 //! UID-based incremental sync, and retry with exponential backoff.
 //! Uses sync imap crate with tokio::task::spawn_blocking for async compat.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, warn};
 
 /// Configuration for a single IMAP email account.
@@ -52,12 +51,82 @@ impl ImapAccountConfig {
         }
         !self.folders_exclude.iter().any(|f| f == folder)
     }
+
+    /// Create from tilde-core EmailAccountConfig, resolving env vars.
+    pub fn from_config(cfg: &tilde_core::config::EmailAccountConfig) -> Self {
+        Self {
+            name: cfg.name.clone(),
+            imap_host: cfg.imap_host.clone(),
+            imap_port: cfg.imap_port,
+            username: cfg.resolve_username(),
+            password: cfg.resolve_password(),
+            use_ssl: cfg.use_ssl,
+            idle_enabled: cfg.idle_enabled,
+            folders_include: cfg.folders_include.clone(),
+            folders_exclude: cfg.folders_exclude.clone(),
+            retention_days: cfg.retention_days,
+            poll_interval_seconds: cfg.poll_interval_seconds,
+        }
+    }
 }
 
-/// Connect to IMAP server with SSL and login.
-fn connect_and_login(
-    config: &ImapAccountConfig,
-) -> Result<imap::Session<native_tls::TlsStream<std::net::TcpStream>>> {
+/// Abstraction over SSL and plain IMAP sessions.
+enum ImapSession {
+    Ssl(imap::Session<native_tls::TlsStream<std::net::TcpStream>>),
+    Plain(imap::Session<std::net::TcpStream>),
+}
+
+impl ImapSession {
+    fn list(&mut self, reference: Option<&str>, pattern: Option<&str>) -> Result<Vec<String>> {
+        let names = match self {
+            ImapSession::Ssl(s) => s.list(reference, pattern)?,
+            ImapSession::Plain(s) => s.list(reference, pattern)?,
+        };
+        Ok(names.iter().map(|f| f.name().to_string()).collect())
+    }
+
+    fn select(&mut self, folder: &str) -> Result<()> {
+        match self {
+            ImapSession::Ssl(s) => { s.select(folder)?; }
+            ImapSession::Plain(s) => { s.select(folder)?; }
+        }
+        Ok(())
+    }
+
+    fn uid_fetch(&mut self, range: &str, query: &str) -> Result<Vec<(Option<u32>, Option<Vec<u8>>)>> {
+        #![allow(clippy::type_complexity)]
+        let fetches = match self {
+            ImapSession::Ssl(s) => s.uid_fetch(range, query)?,
+            ImapSession::Plain(s) => s.uid_fetch(range, query)?,
+        };
+        Ok(fetches.iter().map(|m| (m.uid, m.body().map(|b| b.to_vec()))).collect())
+    }
+
+    fn idle_wait(&mut self, timeout_secs: u64) -> Result<()> {
+        match self {
+            ImapSession::Ssl(s) => {
+                let idle = s.idle()?;
+                let _ = idle.wait_with_timeout(std::time::Duration::from_secs(timeout_secs));
+            }
+            ImapSession::Plain(s) => {
+                let idle = s.idle()?;
+                let _ = idle.wait_with_timeout(std::time::Duration::from_secs(timeout_secs));
+            }
+        }
+        Ok(())
+    }
+
+    fn logout(&mut self) -> Result<()> {
+        match self {
+            ImapSession::Ssl(s) => { let _ = s.logout(); }
+            ImapSession::Plain(s) => { let _ = s.logout(); }
+        }
+        Ok(())
+    }
+}
+
+/// Connect to IMAP server (SSL or plain) and login.
+fn connect_and_login(config: &ImapAccountConfig) -> Result<ImapSession> {
     info!(
         host = %config.imap_host,
         port = config.imap_port,
@@ -66,37 +135,51 @@ fn connect_and_login(
         "Connecting to IMAP server"
     );
 
-    let tls = native_tls::TlsConnector::builder().build()?;
-    let client = imap::connect(
-        (config.imap_host.as_str(), config.imap_port),
-        &config.imap_host,
-        &tls,
-    )
-    .context("Failed to connect to IMAP server")?;
+    if config.use_ssl {
+        let tls = native_tls::TlsConnector::builder()
+            .danger_accept_invalid_certs(true)
+            .build()?;
+        let client = imap::connect(
+            (config.imap_host.as_str(), config.imap_port),
+            &config.imap_host,
+            &tls,
+        )
+        .context("Failed to connect to IMAP server via SSL")?;
 
-    info!("IMAP SSL connection established");
+        info!("IMAP SSL connection established");
 
-    let session = client
-        .login(&config.username, &config.password)
-        .map_err(|e| anyhow::anyhow!("IMAP login failed: {}", e.0))?;
+        let session = client
+            .login(&config.username, &config.password)
+            .map_err(|e| anyhow::anyhow!("IMAP login failed: {}", e.0))?;
 
-    info!(username = %config.username, "IMAP login successful");
-    Ok(session)
+        info!(username = %config.username, "IMAP login successful");
+        Ok(ImapSession::Ssl(session))
+    } else {
+        let tcp = std::net::TcpStream::connect((config.imap_host.as_str(), config.imap_port))
+            .context("Failed to connect to IMAP server via TCP")?;
+        let client = imap::Client::new(tcp);
+
+        info!("IMAP plain connection established");
+
+        let session = client
+            .login(&config.username, &config.password)
+            .map_err(|e| anyhow::anyhow!("IMAP login failed: {}", e.0))?;
+
+        info!(username = %config.username, "IMAP login successful");
+        Ok(ImapSession::Plain(session))
+    }
 }
 
 /// List available folders on the IMAP server.
-fn list_folders(
-    session: &mut imap::Session<native_tls::TlsStream<std::net::TcpStream>>,
-) -> Result<Vec<String>> {
-    let folders = session.list(None, Some("*"))?;
-    let names: Vec<String> = folders.iter().map(|f| f.name().to_string()).collect();
+fn list_folders(session: &mut ImapSession) -> Result<Vec<String>> {
+    let names = session.list(None, Some("*"))?;
     info!(count = names.len(), "Listed IMAP folders");
     Ok(names)
 }
 
 /// Fetch new messages from a folder using UID-based tracking.
 fn fetch_new_messages(
-    session: &mut imap::Session<native_tls::TlsStream<std::net::TcpStream>>,
+    session: &mut ImapSession,
     folder: &str,
     last_uid: Option<u32>,
 ) -> Result<Vec<(u32, Vec<u8>)>> {
@@ -109,44 +192,20 @@ fn fetch_new_messages(
 
     debug!(folder = %folder, uid_range = %uid_range, "Fetching messages");
 
-    let messages = session.uid_fetch(&uid_range, "(UID RFC822)")?;
+    let fetched = session.uid_fetch(&uid_range, "(UID RFC822)")?;
 
     let mut results = Vec::new();
-    for msg in messages.iter() {
-        if let (Some(uid), Some(body)) = (msg.uid, msg.body()) {
-            if let Some(last) = last_uid && uid <= last {
+    for (uid_opt, body_opt) in &fetched {
+        if let (Some(uid), Some(body)) = (uid_opt, body_opt) {
+            if let Some(last) = last_uid && *uid <= last {
                 continue;
             }
-            results.push((uid, body.to_vec()));
+            results.push((*uid, body.clone()));
         }
     }
 
     info!(folder = %folder, count = results.len(), "Fetched new messages");
     Ok(results)
-}
-
-/// Enter IDLE mode on INBOX and wait for changes.
-fn idle_wait(
-    session: &mut imap::Session<native_tls::TlsStream<std::net::TcpStream>>,
-    timeout_secs: u64,
-) -> Result<()> {
-    info!(timeout_secs = timeout_secs, "Entering IMAP IDLE mode on INBOX");
-
-    session.select("INBOX")?;
-
-    let idle = session.idle()?;
-    let result = idle.wait_with_timeout(std::time::Duration::from_secs(timeout_secs));
-
-    match result {
-        Ok(reason) => {
-            info!(reason = ?reason, "IMAP IDLE completed");
-        }
-        Err(e) => {
-            warn!(error = %e, "IMAP IDLE error");
-        }
-    }
-
-    Ok(())
 }
 
 /// Run one sync cycle: connect, list folders, fetch new messages, store.
@@ -222,7 +281,7 @@ pub async fn run_sync_loop(
         let maildir_clone = maildir_base.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            let conn = db_clone.blocking_lock();
+            let conn = db_clone.lock().unwrap();
             sync_cycle(&config_clone, &conn, &maildir_clone)
         })
         .await;
@@ -256,8 +315,10 @@ pub async fn run_sync_loop(
             let config_for_idle = config.clone();
             let idle_result = tokio::task::spawn_blocking(move || {
                 let mut session = connect_and_login(&config_for_idle)?;
-                idle_wait(&mut session, 1740)?; // 29 min
-                let _ = session.logout();
+                session.select("INBOX")?;
+                info!(timeout_secs = 1740, "Entering IMAP IDLE mode on INBOX");
+                session.idle_wait(1740)?; // 29 min
+                session.logout()?;
                 Ok::<_, anyhow::Error>(())
             })
             .await;

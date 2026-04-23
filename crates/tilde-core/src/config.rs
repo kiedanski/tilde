@@ -30,6 +30,8 @@ pub struct Config {
     pub updates: UpdatesConfig,
     #[serde(default)]
     pub backup: BackupConfig,
+    #[serde(default)]
+    pub email: EmailConfig,
 }
 
 impl Config {
@@ -433,6 +435,95 @@ pub struct BackupOffsiteConfig {
     #[serde(default = "default_backup_schedule")]
     pub schedule: String,
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EmailConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub accounts: Vec<EmailAccountConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailAccountConfig {
+    #[serde(default = "default_email_account_name")]
+    pub name: String,
+    #[serde(default)]
+    pub imap_host: String,
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    /// Environment variable name for username (alternative to inline username)
+    #[serde(default)]
+    pub username_env: String,
+    /// Environment variable name for password (alternative to inline password)
+    #[serde(default)]
+    pub password_env: String,
+    #[serde(default = "default_true")]
+    pub use_ssl: bool,
+    #[serde(default = "default_true")]
+    pub idle_enabled: bool,
+    #[serde(default)]
+    pub folders_include: Vec<String>,
+    #[serde(default = "default_folders_exclude")]
+    pub folders_exclude: Vec<String>,
+    #[serde(default)]
+    pub retention_days: u32,
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_seconds: u64,
+}
+
+impl Default for EmailAccountConfig {
+    fn default() -> Self {
+        Self {
+            name: default_email_account_name(),
+            imap_host: String::new(),
+            imap_port: default_imap_port(),
+            username: String::new(),
+            password: String::new(),
+            username_env: String::new(),
+            password_env: String::new(),
+            use_ssl: true,
+            idle_enabled: true,
+            folders_include: Vec::new(),
+            folders_exclude: default_folders_exclude(),
+            retention_days: 0,
+            poll_interval_seconds: default_poll_interval(),
+        }
+    }
+}
+
+impl EmailAccountConfig {
+    /// Resolve the actual username (from direct value or env var).
+    pub fn resolve_username(&self) -> String {
+        if !self.username.is_empty() {
+            return self.username.clone();
+        }
+        if !self.username_env.is_empty() && let Ok(val) = std::env::var(&self.username_env) {
+            return val;
+        }
+        String::new()
+    }
+
+    /// Resolve the actual password (from direct value or env var).
+    pub fn resolve_password(&self) -> String {
+        if !self.password.is_empty() {
+            return self.password.clone();
+        }
+        if !self.password_env.is_empty() && let Ok(val) = std::env::var(&self.password_env) {
+            return val;
+        }
+        String::new()
+    }
+}
+
+fn default_email_account_name() -> String { "personal".to_string() }
+fn default_imap_port() -> u16 { 993 }
+fn default_folders_exclude() -> Vec<String> { vec!["Trash".to_string(), "Spam".to_string()] }
+fn default_poll_interval() -> u64 { 300 }
 
 fn default_offsite_type() -> String { "s3".to_string() }
 fn default_backup_schedule() -> String { "hourly".to_string() }
