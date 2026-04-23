@@ -623,6 +623,24 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
 
+    // Notify systemd we're ready (no-op if not running under systemd)
+    let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
+    info!("sd-notify: READY=1 sent");
+
+    // Start watchdog ping task if WatchdogSec is configured
+    if let Ok(watchdog_usec) = std::env::var("WATCHDOG_USEC") {
+        if let Ok(usec) = watchdog_usec.parse::<u64>() {
+            let interval = std::time::Duration::from_micros(usec / 2);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(interval).await;
+                    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+                }
+            });
+            info!(interval_ms = usec / 2000, "sd-notify: watchdog pinger started");
+        }
+    }
+
     match state_config_tls_mode.as_str() {
         "manual" => {
             let cert_path = &state_config_tls.cert_path;

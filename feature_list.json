@@ -278,7 +278,7 @@
       "Step 3: Verify watchdog pings at WatchdogSec/2 interval",
       "Step 4: Kill tilde process and verify systemd detects failure"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -2901,7 +2901,7 @@
       "Step 3: Verify structured JSON logs parse correctly in journald",
       "Step 4: Verify log entries filterable by level"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "style",

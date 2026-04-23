@@ -5,11 +5,28 @@ mod commands;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info".into());
+
+    // Use JSON format when running under systemd (detected by JOURNAL_STREAM or INVOCATION_ID)
+    // This produces structured logs that journald can parse and filter by fields
+    let under_systemd = std::env::var("JOURNAL_STREAM").is_ok()
+        || std::env::var("INVOCATION_ID").is_ok();
+
+    if under_systemd {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(env_filter)
+            .with_target(true)
+            .with_thread_ids(false)
+            .with_file(false)
+            .with_line_number(false)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .init();
+    }
 
     let cli = Cli::parse();
     let config_path = cli.config.clone();
