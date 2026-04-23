@@ -2,6 +2,9 @@
 //!
 //! Implements CalDAV over HTTP with axum. Supports MKCALENDAR, PUT, GET, DELETE,
 //! PROPFIND, PROPPATCH, and REPORT (calendar-query, calendar-multiget, sync-collection).
+//! WebDAV-Push: subscribe to change notifications via callback URLs.
+
+pub mod push;
 
 use axum::{
     Router,
@@ -157,7 +160,7 @@ async fn handle_caldav_request(
             );
             resp.headers_mut().insert(
                 header::HeaderName::from_static("allow"),
-                HeaderValue::from_static("OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT, MKCALENDAR, MKCOL, MOVE, COPY"),
+                HeaderValue::from_static("OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT, MKCALENDAR, MKCOL, MOVE, COPY, POST"),
             );
             resp
         }
@@ -168,6 +171,7 @@ async fn handle_caldav_request(
         "GET" => handle_get(state, path),
         "DELETE" => handle_delete(state, path),
         "REPORT" => handle_report(state, path, &body),
+        "POST" => handle_push_subscribe(state, path, &body),
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
     }
 }
@@ -602,11 +606,15 @@ fn handle_put(
     ).unwrap();
 
     let change_type = if is_new { "created" } else { "modified" };
+    let object_uri = format!("{}.ics", uid);
     db.execute(
         "INSERT INTO sync_changes (collection_type, collection_id, object_uri, change_type, sync_token, created_at)
          VALUES ('calendar', ?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![cal_id, format!("{}.ics", uid), change_type, new_sync_token, now],
+        rusqlite::params![cal_id, &object_uri, change_type, new_sync_token, now],
     ).unwrap();
+
+    // Fire WebDAV-Push notifications to subscribers
+    push::notify_change(&db, "calendar", &cal_id, change_type, &object_uri);
 
     let status = if is_new {
         StatusCode::CREATED
@@ -700,11 +708,15 @@ fn handle_delete(state: &SharedCalDavState, path: &str) -> axum::response::Respo
                 rusqlite::params![new_sync_token, now, cal_id],
             ).unwrap();
 
+            let object_uri = format!("{}.ics", uid);
             db.execute(
                 "INSERT INTO sync_changes (collection_type, collection_id, object_uri, change_type, sync_token, created_at)
                  VALUES ('calendar', ?1, ?2, 'deleted', ?3, ?4)",
-                rusqlite::params![cal_id, format!("{}.ics", uid), new_sync_token, now],
+                rusqlite::params![cal_id, &object_uri, new_sync_token, now],
             ).unwrap();
+
+            // Fire WebDAV-Push notifications to subscribers
+            push::notify_change(&db, "calendar", &cal_id, "deleted", &object_uri);
 
             StatusCode::NO_CONTENT.into_response()
         }
@@ -1151,6 +1163,103 @@ fn extract_hrefs(xml: &str) -> Vec<String> {
         }
     }
     hrefs
+}
+
+/// Handle push subscription requests (POST to a calendar collection).
+/// Body is JSON: {"callback_url": "https://...", "expiry_hours": 24}
+/// Path should be /admin/calname/ to subscribe to a calendar.
+fn handle_push_subscribe(
+    state: &SharedCalDavState,
+    path: &str,
+    body: &str,
+) -> axum::response::Response {
+    let db = state.db.lock().unwrap();
+    let (_principal, cal_name, obj_name) = parse_path(path);
+
+    // Push subscribe only works on calendar collections, not individual objects
+    if obj_name.is_some() {
+        return (StatusCode::BAD_REQUEST, "Push subscribe only works on calendar collections").into_response();
+    }
+
+    let cal_name = match cal_name {
+        Some(n) => n,
+        None => return (StatusCode::BAD_REQUEST, "Calendar name required").into_response(),
+    };
+
+    // Parse the subscription request
+    let req: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid JSON body").into_response(),
+    };
+
+    let callback_url = match req.get("callback_url").and_then(|v| v.as_str()) {
+        Some(url) => url,
+        None => return (StatusCode::BAD_REQUEST, "callback_url required").into_response(),
+    };
+
+    let expiry_hours = req
+        .get("expiry_hours")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(24) as u32;
+
+    // Look up calendar ID
+    let cal_id: String = match db.query_row(
+        "SELECT id FROM calendars WHERE name = ?1",
+        [cal_name],
+        |row| row.get(0),
+    ) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    // Check for existing subscription with same callback
+    let existing: Option<String> = db.query_row(
+        "SELECT id FROM push_subscriptions WHERE collection_type = 'calendar' AND collection_id = ?1 AND callback_url = ?2",
+        rusqlite::params![cal_id, callback_url],
+        |row| row.get(0),
+    ).ok();
+
+    if let Some(existing_id) = existing {
+        // Update expiry
+        let now = jiff::Zoned::now();
+        let expiry = now
+            .checked_add(jiff::SignedDuration::from_hours(expiry_hours as i64))
+            .unwrap_or(now.clone());
+        let expiry_str = expiry.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        let now_str = now.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+
+        let _ = db.execute(
+            "UPDATE push_subscriptions SET expiry = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![expiry_str, now_str, existing_id],
+        );
+
+        let resp_body = serde_json::json!({
+            "subscription_id": existing_id,
+            "status": "renewed",
+            "expiry": expiry_str,
+        });
+        return (StatusCode::OK, [(header::CONTENT_TYPE, "application/json")], resp_body.to_string()).into_response();
+    }
+
+    match push::subscribe(&db, "calendar", &cal_id, callback_url, expiry_hours) {
+        Ok(sub_id) => {
+            let now = jiff::Zoned::now();
+            let expiry = now
+                .checked_add(jiff::SignedDuration::from_hours(expiry_hours as i64))
+                .unwrap_or(now);
+            let expiry_str = expiry.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+
+            let resp_body = serde_json::json!({
+                "subscription_id": sub_id,
+                "status": "created",
+                "expiry": expiry_str,
+            });
+            (StatusCode::CREATED, [(header::CONTENT_TYPE, "application/json")], resp_body.to_string()).into_response()
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
+        }
+    }
 }
 
 fn extract_ics_field(ics: &str, field: &str) -> Option<String> {

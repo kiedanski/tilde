@@ -3586,11 +3586,6 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             }
         }
         BackupCommands::Now { offsite } => {
-            if offsite.is_some() {
-                println!("Offsite backup requires S3/B2 credential configuration");
-                return Ok(());
-            }
-
             println!("Creating backup snapshot...");
             let encrypt_recipient = if config.backup.encrypt_recipient.is_empty() {
                 None
@@ -3610,6 +3605,18 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             println!("  Files:      {}", snapshot.file_count);
             println!("  Checksum:   {}", &snapshot.checksum[..16]);
 
+            // Upload to offsite if requested
+            if let Some(dest_name) = offsite {
+                let offsite_cfg = config.backup.offsite.iter()
+                    .find(|d| d.name == dest_name)
+                    .ok_or_else(|| anyhow::anyhow!("Offsite destination '{}' not found in config", dest_name))?;
+
+                let s3_config = tilde_backup::offsite::OffsiteConfig::from_config(offsite_cfg)?;
+                println!("Uploading to offsite destination '{}'...", dest_name);
+                let remote_key = tilde_backup::offsite::upload_snapshot(&s3_config, &snapshot).await?;
+                println!("  Uploaded to: {}", remote_key);
+            }
+
             // Apply retention policy
             let retention = &config.backup.local_retention;
             let pruned = tilde_backup::apply_retention(
@@ -3624,8 +3631,31 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             }
         }
         BackupCommands::List { offsite } => {
-            if offsite.is_some() {
-                println!("Offsite snapshot listing requires S3/B2 credential configuration");
+            if let Some(dest_name) = offsite {
+                let offsite_cfg = config.backup.offsite.iter()
+                    .find(|d| d.name == dest_name)
+                    .ok_or_else(|| anyhow::anyhow!("Offsite destination '{}' not found in config", dest_name))?;
+
+                let s3_config = tilde_backup::offsite::OffsiteConfig::from_config(offsite_cfg)?;
+                println!("Listing remote snapshots from '{}'...", dest_name);
+                let objects = tilde_backup::offsite::list_remote_snapshots(&s3_config).await?;
+
+                if objects.is_empty() {
+                    println!("No remote snapshots found.");
+                    return Ok(());
+                }
+
+                println!("Remote Snapshots ({} total)", objects.len());
+                println!("=============");
+                println!("{:<50} {:>12} Last Modified", "Key", "Size");
+                println!("{}", "-".repeat(80));
+                for obj in &objects {
+                    println!("{:<50} {:>12} {}",
+                        &obj.key,
+                        tilde_backup::format_size(obj.size),
+                        &obj.last_modified,
+                    );
+                }
                 return Ok(());
             }
 
@@ -3657,8 +3687,24 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             }
         }
         BackupCommands::Verify { offsite } => {
-            if offsite.is_some() {
-                println!("Offsite verification requires S3/B2 credential configuration");
+            if let Some(dest_name) = offsite {
+                // Verify offsite: check that remote snapshots exist and are listed
+                let offsite_cfg = config.backup.offsite.iter()
+                    .find(|d| d.name == dest_name)
+                    .ok_or_else(|| anyhow::anyhow!("Offsite destination '{}' not found in config", dest_name))?;
+
+                let s3_config = tilde_backup::offsite::OffsiteConfig::from_config(offsite_cfg)?;
+                println!("Verifying offsite snapshots in '{}'...", dest_name);
+                let objects = tilde_backup::offsite::list_remote_snapshots(&s3_config).await?;
+
+                if objects.is_empty() {
+                    println!("No remote snapshots found — nothing to verify.");
+                } else {
+                    println!("Found {} remote snapshot(s) — offsite storage accessible", objects.len());
+                    for obj in &objects {
+                        println!("  {} ({}, {})", obj.key, tilde_backup::format_size(obj.size), obj.last_modified);
+                    }
+                }
                 return Ok(());
             }
 
@@ -3702,7 +3748,13 @@ pub async fn run_restore(
     db::run_migrations(&conn, &migrations_dir)?;
 
     if from != "local" {
-        println!("Offsite restore requires S3/B2 credential configuration");
+        // Offsite restore: download from S3 then restore locally
+        let offsite_cfg = config.backup.offsite.iter()
+            .find(|d| d.name == from)
+            .ok_or_else(|| anyhow::anyhow!("Offsite destination '{}' not found in config", from))?;
+
+        println!("Offsite restore from '{}' is not yet supported — download manually and use --from local", from);
+        let _ = offsite_cfg;
         return Ok(());
     }
 

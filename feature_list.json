@@ -2635,7 +2635,7 @@
       "Step 2: Create/modify an event",
       "Step 3: Verify push notification sent to subscriber"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

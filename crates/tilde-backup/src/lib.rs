@@ -2,6 +2,9 @@
 //!
 //! Creates tar.gz snapshots of the data directory, tracks them in SQLite,
 //! supports retention policies, pinning, verification, and restore.
+//! Offsite backup to S3-compatible storage (B2, AWS, MinIO).
+
+pub mod offsite;
 
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;

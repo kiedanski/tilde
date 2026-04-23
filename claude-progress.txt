@@ -1,6 +1,44 @@
 tilde — Progress Notes
 ======================
 
+## Session 18 (2026-04-22) — WebDAV-Push + S3 offsite backup: 255 → 256 tests
+
+### Completed Features (1 new test + 1 implementation)
+1. **WebDAV-Push notifications** (Test 221): Implemented CalDAV push notification
+   system. Clients subscribe via POST to a calendar collection with a callback_url.
+   Server fires async HTTP POST notifications to all subscribers on event
+   create/modify/delete. Subscription management with expiry, renewal, cleanup.
+   - New `push` module in tilde-cal with subscribe/unsubscribe/notify_change
+   - POST handler in CalDAV dispatcher for subscription requests
+   - Notifications fire from handle_put() and handle_delete()
+   - Verified end-to-end: subscribe → create event → receive "created" notification
+     → modify event → receive "modified" → delete event → receive "deleted"
+
+2. **S3-compatible offsite backup** (Code complete, Test 153 blocked by credentials):
+   Implemented full S3-compatible offsite backup via AWS Signature V4 signing.
+   - New `offsite` module in tilde-backup with upload_file, list_objects, upload_snapshot
+   - Direct reqwest + HMAC-SHA256 signing (no S3 SDK dependency)
+   - Wired into CLI: `backup now --offsite b2`, `backup list --offsite b2`, `backup verify --offsite b2`
+   - Config: [[backup.offsite]] entries with name, type, endpoint, bucket_env, key_id_env, key_env
+   - Signing verified correct (B2 returns "InvalidAccessKeyId" not "SignatureDoesNotMatch")
+   - **Cannot mark test passing: B2 credentials in .env are invalid/expired**
+
+### Tests Passing: 256/260
+
+### Remaining Failing Tests (4)
+- Test 153: Backup offsite to S3/B2 (code complete, needs valid B2 credentials)
+- Test 194: Static musl binary build (needs Linux musl toolchain)
+- Test 229: Nextcloud desktop client test (needs Nextcloud client)
+- Test 230: rustls-acme TLS-ALPN-01 (needs public domain)
+
+### Next Steps
+1. Provide valid B2 credentials to verify offsite backup (test 153)
+2. musl cross-compile on Linux (test 194)
+3. Nextcloud desktop client testing (test 229)
+4. ACME auto-provisioning (test 230)
+
+---
+
 ## Session 17 (2026-04-22) — IMAP email sync wired up and verified: 250 → 255 tests
 
 ### Completed Features (5 new tests)
