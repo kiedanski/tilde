@@ -1,6 +1,40 @@
 tilde — Progress Notes
 ======================
 
+## Session 33 (2026-04-23) — First real deployment, phone + desktop connected
+
+### Deployment
+- Built native macOS ARM release binary (24MB), installed to ~/bin/tilde
+- Created launchd service (com.tilde.server.plist) — auto-starts on login
+- Configured for Pangolin tunnel: tls.mode=upstream, listen 127.0.0.1:8080
+- Set up Pangolin resource + Newt tunnel agent (com.pangolin.newt.plist)
+- Live at https://tilde.kiedanski.xyz
+
+### Fixes for real-world client compatibility
+- **DAVx5 discovery**: Added OPTIONS handler on /principals/ returning DAV: calendar-access, addressbook
+- **DAVx5 auth**: Added WWW-Authenticate: Basic header on 401 responses
+- **DAVx5 root discovery**: Added PROPFIND handler on / returning current-user-principal
+- **DAVx5 principal properties**: Added calendar-home-set and addressbook-home-set to /principals/admin/
+- **WebDAV href paths**: Fixed PROPFIND to return correct hrefs for /dav/notes/ and /dav/photos/ (was hardcoded to /dav/files/)
+- **CORS**: Added Obsidian mobile origins (app://obsidian.md, capacitor://localhost)
+- **Login Flow v2**: Fixed https:// scheme when tls.mode=upstream (was hardcoded http://)
+- **.well-known**: Changed caldav/carddav to accept any HTTP method (not just GET)
+
+### Connected clients
+- **CalDAV** (DAVx5 on e/OS phone) — syncing, confirmed calendar event received
+- **CardDAV** (DAVx5 on e/OS phone) — discovered and connected
+- **Notes** (Obsidian + Remotely Save on phone + desktop Mac) — bidirectional sync working
+- **Files** (RoundSync on phone) — WebDAV configured, pending sync job setup
+
+### Not yet working
+- Nextcloud Android app rejects the URL (possibly e/OS specific)
+- Photo auto-upload not yet configured
+- Contacts sync untested
+
+### Status: 259/260 tests passing
+
+---
+
 ## Session 32 (2026-04-23) — 259/260 tests passing, production-ready
 
 ### What was done
