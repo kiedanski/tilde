@@ -848,7 +848,7 @@ async fn login_flow_initiate(
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost");
-    let scheme = "http"; // In production behind TLS this would be https
+    let scheme = if state.config.tls.mode == "upstream" { "https" } else { "http" };
     let login_url = format!("{}://{}/login/v2/auth?token={}", scheme, host, poll_token);
     let poll_endpoint = format!("{}://{}/login/v2/poll", scheme, host);
 
