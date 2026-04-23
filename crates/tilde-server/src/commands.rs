@@ -2723,7 +2723,7 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
     let data_dir = config.data_dir();
 
     match command {
-        ExportCommands::Run { path, only, format } => {
+        ExportCommands::Run { path, only, format, encrypt, recipient } => {
             let export_dir = std::path::PathBuf::from(&path);
             let types: Option<Vec<String>> =
                 only.map(|s| s.split(',').map(|t| t.trim().to_string()).collect());
@@ -2994,6 +2994,78 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                             println!("Warning: tar compression failed: {}", e);
                             println!("Export directory preserved at {}", export_dir.display());
                         }
+                    }
+                }
+            }
+
+            // Encrypt with age if requested
+            if encrypt {
+                let recipient_key = recipient.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("--encrypt requires --recipient <age-public-key>")
+                })?;
+
+                // Determine what to encrypt: the tar.zst archive or the directory
+                let source_to_encrypt = if let Some(ref fmt) = format {
+                    if fmt == "tar.zst" {
+                        format!("{}.tar.zst", path.trim_end_matches('/'))
+                    } else {
+                        // For directory export, tar it first then encrypt
+                        let tar_path = format!("{}.tar", path.trim_end_matches('/'));
+                        let tar_status = std::process::Command::new("tar")
+                            .arg("-cf")
+                            .arg(&tar_path)
+                            .arg("-C")
+                            .arg(export_dir.parent().unwrap_or(std::path::Path::new(".")))
+                            .arg(export_dir.file_name().unwrap_or(std::ffi::OsStr::new("export")))
+                            .status()?;
+                        if !tar_status.success() {
+                            anyhow::bail!("Failed to create tar archive for encryption");
+                        }
+                        tar_path
+                    }
+                } else {
+                    // No format specified, tar the directory first
+                    let tar_path = format!("{}.tar", path.trim_end_matches('/'));
+                    let tar_status = std::process::Command::new("tar")
+                        .arg("-cf")
+                        .arg(&tar_path)
+                        .arg("-C")
+                        .arg(export_dir.parent().unwrap_or(std::path::Path::new(".")))
+                        .arg(export_dir.file_name().unwrap_or(std::ffi::OsStr::new("export")))
+                        .status()?;
+                    if !tar_status.success() {
+                        anyhow::bail!("Failed to create tar archive for encryption");
+                    }
+                    // Clean up directory
+                    std::fs::remove_dir_all(&export_dir).ok();
+                    tar_path
+                };
+
+                let encrypted_path = format!("{}.age", source_to_encrypt);
+                println!("Encrypting with age to {}...", encrypted_path);
+
+                let age_status = std::process::Command::new("age")
+                    .arg("--recipient")
+                    .arg(recipient_key)
+                    .arg("--output")
+                    .arg(&encrypted_path)
+                    .arg(&source_to_encrypt)
+                    .status();
+
+                match age_status {
+                    Ok(status) if status.success() => {
+                        let size = std::fs::metadata(&encrypted_path)
+                            .map(|m| m.len())
+                            .unwrap_or(0);
+                        println!("Encrypted export: {} ({} bytes)", encrypted_path, size);
+                        // Clean up unencrypted source
+                        std::fs::remove_file(&source_to_encrypt).ok();
+                    }
+                    Ok(status) => {
+                        anyhow::bail!("age encryption failed with exit code {:?}. Is `age` installed?", status.code());
+                    }
+                    Err(e) => {
+                        anyhow::bail!("Failed to run age: {}. Is `age` installed?", e);
                     }
                 }
             }

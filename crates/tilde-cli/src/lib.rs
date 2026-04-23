@@ -382,6 +382,12 @@ pub enum ExportCommands {
         /// Output format: "dir" (default directory), "tar.zst" (compressed archive)
         #[arg(long)]
         format: Option<String>,
+        /// Encrypt the export with age (requires `age` CLI installed)
+        #[arg(long)]
+        encrypt: bool,
+        /// age public key recipient for encryption
+        #[arg(long)]
+        recipient: Option<String>,
     },
     /// Verify an existing export
     Verify {

@@ -1947,7 +1947,7 @@
       "Step 3: Verify export is encrypted",
       "Step 4: Decrypt with private key and verify contents"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
