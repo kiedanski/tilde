@@ -402,6 +402,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     // Extract TLS config before config moves into state
     let state_config_tls = config.tls.clone();
     let state_config_tls_mode = state_config_tls.mode.clone();
+    let tunnel_config = config.tunnel.clone();
 
     let mcp_state: tilde_mcp::SharedMcpState = Arc::new(tilde_mcp::McpState {
         db: db_arc.clone(),
@@ -436,6 +437,13 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         webauthn,
         webauthn_reg_state: Mutex::new(std::collections::HashMap::new()),
         webauthn_auth_state: Mutex::new(std::collections::HashMap::new()),
+        tunnel_status: if tunnel_config.enabled {
+            info!("Tunnel configured — starting newt subprocess");
+            let (status, _handle) = tilde_server::tunnel::spawn_tunnel_supervisor(tunnel_config);
+            Some(status)
+        } else {
+            None
+        },
     });
 
     let session_ttl = state.config.auth.session_ttl_hours;

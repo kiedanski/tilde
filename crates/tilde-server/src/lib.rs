@@ -1,5 +1,7 @@
 //! tilde-server: axum app assembly and HTTP routing
 
+pub mod tunnel;
+
 use axum::{
     Router,
     extract::{ConnectInfo, Path as AxumPath, Query, State},
@@ -45,6 +47,7 @@ pub struct AppState {
     pub webauthn: Option<webauthn_rs::Webauthn>,
     pub webauthn_reg_state: Mutex<HashMap<String, webauthn_rs::prelude::PasskeyRegistration>>,
     pub webauthn_auth_state: Mutex<HashMap<String, webauthn_rs::prelude::PasskeyAuthentication>>,
+    pub tunnel_status: Option<tunnel::SharedTunnelStatus>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -231,11 +234,22 @@ async fn health_handler(State(state): State<SharedState>) -> impl IntoResponse {
         Err(_) => "error",
     };
 
+    let tunnel = state.tunnel_status.as_ref().map(|ts| {
+        json!({
+            "status": ts.summary(),
+            "connected": ts.connected.load(std::sync::atomic::Ordering::Relaxed),
+            "consecutive_ping_failures": ts.consecutive_ping_failures.load(std::sync::atomic::Ordering::Relaxed),
+            "restart_count": ts.restart_count.load(std::sync::atomic::Ordering::Relaxed),
+            "last_connected_at": ts.last_connected_at.load(std::sync::atomic::Ordering::Relaxed),
+        })
+    });
+
     let body = json!({
         "status": if db_status == "ok" { "healthy" } else { "unhealthy" },
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": uptime_secs,
         "database": db_status,
+        "tunnel": tunnel,
     });
 
     let status = if db_status == "ok" {

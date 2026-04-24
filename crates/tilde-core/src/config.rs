@@ -32,6 +32,8 @@ pub struct Config {
     pub backup: BackupConfig,
     #[serde(default)]
     pub email: EmailConfig,
+    #[serde(default)]
+    pub tunnel: TunnelConfig,
 }
 
 impl Config {
@@ -525,6 +527,58 @@ fn default_imap_port() -> u16 { 993 }
 fn default_folders_exclude() -> Vec<String> { vec!["Trash".to_string(), "Spam".to_string()] }
 fn default_poll_interval() -> u64 { 300 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TunnelConfig {
+    /// Enable tunnel (requires newt binary). Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the newt binary. Default: "newt" (found via PATH).
+    #[serde(default = "default_newt_binary")]
+    pub binary: String,
+    /// Pangolin server endpoint (e.g., "https://pangolin.example.com")
+    #[serde(default)]
+    pub endpoint: String,
+    /// Newt client ID
+    #[serde(default)]
+    pub id: String,
+    /// Newt client secret (prefer secret_env for production)
+    #[serde(default)]
+    pub secret: String,
+    /// Env var name containing the secret (preferred over inline secret)
+    #[serde(default)]
+    pub secret_env: String,
+    /// Log level for newt (DEBUG, INFO, WARN, ERROR). Default: INFO.
+    #[serde(default = "default_newt_log_level")]
+    pub log_level: String,
+    /// Restart delay after crash, in seconds. Default: 5.
+    #[serde(default = "default_restart_delay")]
+    pub restart_delay_seconds: u64,
+    /// Max restart delay (exponential backoff cap), in seconds. Default: 300.
+    #[serde(default = "default_max_restart_delay")]
+    pub max_restart_delay_seconds: u64,
+}
+
+impl Default for TunnelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            binary: default_newt_binary(),
+            endpoint: String::new(),
+            id: String::new(),
+            secret: String::new(),
+            secret_env: String::new(),
+            log_level: default_newt_log_level(),
+            restart_delay_seconds: default_restart_delay(),
+            max_restart_delay_seconds: default_max_restart_delay(),
+        }
+    }
+}
+
+fn default_newt_binary() -> String { "newt".to_string() }
+fn default_newt_log_level() -> String { "INFO".to_string() }
+fn default_restart_delay() -> u64 { 5 }
+fn default_max_restart_delay() -> u64 { 300 }
+
 fn default_offsite_type() -> String { "s3".to_string() }
 fn default_backup_schedule() -> String { "hourly".to_string() }
 
@@ -615,5 +669,15 @@ mod tests {
         let config = Config::load(None).unwrap();
         assert_eq!(config.server.listen_port, 443);
         assert_eq!(config.tls.mode, "acme");
+    }
+
+    #[test]
+    fn test_tunnel_config_defaults() {
+        let config = Config::default();
+        assert!(!config.tunnel.enabled);
+        assert_eq!(config.tunnel.binary, "newt");
+        assert_eq!(config.tunnel.log_level, "INFO");
+        assert_eq!(config.tunnel.restart_delay_seconds, 5);
+        assert_eq!(config.tunnel.max_restart_delay_seconds, 300);
     }
 }
