@@ -523,12 +523,18 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         let backup_encrypt_recipient = state.config.backup.encrypt_recipient.clone();
         tokio::spawn(async move {
             let interval_secs = parse_schedule_interval(&backup_schedule);
-            info!(schedule = %backup_schedule, interval_secs = interval_secs, "Backup scheduler started");
+            let first_wait = secs_until_next_run(&backup_schedule);
+            info!(
+                schedule = %backup_schedule,
+                next_run_secs = first_wait,
+                interval_secs = interval_secs,
+                "Backup scheduler started"
+            );
 
             // Record next scheduled time
             if let Ok(conn) = backup_db.lock() {
                 let next_run = jiff::Zoned::now()
-                    .checked_add(jiff::SignedDuration::from_secs(interval_secs as i64))
+                    .checked_add(jiff::SignedDuration::from_secs(first_wait as i64))
                     .unwrap_or_else(|_| jiff::Zoned::now());
                 let next_str = next_run.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
                 let _ = conn.execute(
@@ -537,8 +543,10 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 );
             }
 
+            // First wait: until the scheduled time (e.g., 4:00 AM)
+            tokio::time::sleep(std::time::Duration::from_secs(first_wait)).await;
+
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
                 info!("Backup scheduler: triggering scheduled backup");
 
                 // Record the backup attempt
@@ -582,6 +590,9 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                         }
                     }
                 }
+
+                // Wait for next interval
+                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
             }
         });
         info!(schedule = %state.config.backup.schedule, "Backup scheduler enabled");
@@ -4024,7 +4035,10 @@ fn confirm_prompt() -> bool {
 
 /// Parse a schedule string into an interval in seconds
 fn parse_schedule_interval(schedule: &str) -> u64 {
-    match schedule.to_lowercase().as_str() {
+    let s = schedule.to_lowercase();
+    // Strip @HH:MM suffix for interval calculation
+    let base = s.split('@').next().unwrap_or(&s);
+    match base {
         "hourly" => 3600,
         "daily" => 86400,
         "weekly" => 604800,
@@ -4032,8 +4046,42 @@ fn parse_schedule_interval(schedule: &str) -> u64 {
         s if s.ends_with('s') => s[..s.len()-1].parse().unwrap_or(3600),
         s if s.ends_with('m') => s[..s.len()-1].parse::<u64>().unwrap_or(60) * 60,
         s if s.ends_with('h') => s[..s.len()-1].parse::<u64>().unwrap_or(1) * 3600,
-        _ => 3600, // default to hourly
+        _ => 86400, // default to daily
     }
+}
+
+/// Calculate seconds until the next occurrence of a scheduled time.
+/// Supports formats like "daily@04:00", "daily@23:30".
+/// For non-time-specific schedules (e.g., "hourly"), returns the interval directly.
+fn secs_until_next_run(schedule: &str) -> u64 {
+    let s = schedule.to_lowercase();
+    if let Some(time_part) = s.split('@').nth(1) {
+        // Parse HH:MM
+        let parts: Vec<&str> = time_part.split(':').collect();
+        if parts.len() == 2 {
+            if let (Ok(hour), Ok(minute)) = (parts[0].parse::<i8>(), parts[1].parse::<i8>()) {
+                let now = jiff::Zoned::now();
+                let today_target = now
+                    .date()
+                    .at(hour, minute, 0, 0)
+                    .to_zoned(now.time_zone().clone());
+                if let Ok(today_target) = today_target {
+                    let until = today_target.since(&now);
+                    if let Ok(dur) = until {
+                        let secs = dur.get_seconds();
+                        if secs > 0 {
+                            return secs as u64;
+                        }
+                        // Already past today's time — schedule for tomorrow
+                        let interval = parse_schedule_interval(schedule);
+                        return (secs + interval as i64) as u64;
+                    }
+                }
+            }
+        }
+    }
+    // No @HH:MM — just use the interval
+    parse_schedule_interval(schedule)
 }
 
 fn nix_is_root() -> bool {

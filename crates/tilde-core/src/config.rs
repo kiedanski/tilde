@@ -580,7 +580,7 @@ fn default_restart_delay() -> u64 { 5 }
 fn default_max_restart_delay() -> u64 { 300 }
 
 fn default_offsite_type() -> String { "s3".to_string() }
-fn default_backup_schedule() -> String { "hourly".to_string() }
+fn default_backup_schedule() -> String { "daily@04:00".to_string() }
 
 fn default_check_interval() -> u32 {
     24
