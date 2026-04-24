@@ -359,6 +359,99 @@ fn process_library_drop_recursive(
     Ok(())
 }
 
+/// Re-check an untriaged file: if it now has sufficient metadata (date), organize it.
+/// Returns Some(destination) if organized, None if still insufficient.
+pub fn reprocess_untriaged_file(
+    conn: &Connection,
+    file_path: &Path,
+    photos_base: &Path,
+    organization_pattern: &str,
+) -> Result<Option<PathBuf>> {
+    let filename = file_path
+        .file_name()
+        .context("No filename")?
+        .to_string_lossy()
+        .to_string();
+
+    // Re-read metadata from the file (it may have been edited)
+    let metadata = metadata::read_metadata(file_path)?;
+
+    if !organize::has_sufficient_metadata(&metadata) {
+        return Ok(None); // Still no date
+    }
+
+    // Compute organized destination
+    let rel_dest = organize::compute_destination(organization_pattern, &metadata, &filename)
+        .context("Failed to compute destination")?;
+    let dest = photos_base.join(&rel_dest);
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let dest = unique_path(&dest);
+
+    info!(file = %filename, dest = %dest.display(), "Re-organizing untriaged file");
+
+    // Move from _untriaged to organized (not copy — we're fixing placement)
+    atomic_move(file_path, &dest)?;
+
+    // Update DB file path
+    let old_rel = file_path
+        .strip_prefix(photos_base)
+        .map(|p| format!("photos/{}", p.to_string_lossy()))
+        .unwrap_or_default();
+    let new_rel = dest
+        .strip_prefix(photos_base)
+        .map(|p| format!("photos/{}", p.to_string_lossy()))
+        .unwrap_or_default();
+    let new_parent = std::path::Path::new(&new_rel)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    conn.execute(
+        "UPDATE files SET path = ?1, parent_path = ?2 WHERE path = ?3",
+        rusqlite::params![new_rel, new_parent, old_rel],
+    )?;
+
+    Ok(Some(dest))
+}
+
+/// Scan _untriaged/ and re-organize any files that now have sufficient metadata.
+pub fn reprocess_untriaged(
+    conn: &Connection,
+    photos_base: &Path,
+    organization_pattern: &str,
+) -> Result<u32> {
+    let untriaged = photos_base.join("_untriaged");
+    if !untriaged.exists() {
+        return Ok(0);
+    }
+
+    let mut count = 0;
+    for entry in std::fs::read_dir(&untriaged)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        match reprocess_untriaged_file(conn, &path, photos_base, organization_pattern) {
+            Ok(Some(dest)) => {
+                info!(dest = %dest.display(), "Untriaged file organized");
+                count += 1;
+            }
+            Ok(None) => {} // Still insufficient metadata
+            Err(e) => {
+                debug!(file = %path.display(), error = %e, "Failed to reprocess untriaged file");
+            }
+        }
+    }
+
+    Ok(count)
+}
+
 /// Atomic file move: try rename first, fall back to copy+delete for cross-filesystem moves
 pub fn atomic_move(src: &Path, dst: &Path) -> Result<()> {
     debug!(src = %src.display(), dst = %dst.display(), "Moving file");

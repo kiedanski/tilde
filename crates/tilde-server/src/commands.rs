@@ -621,6 +621,13 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             Err(e) => tracing::warn!(error = %e, "Failed to process library-drop on startup"),
             _ => {}
         }
+        match tilde_photos::ingest::reprocess_untriaged(&db, &photos_base, &pattern) {
+            Ok(n) if n > 0 => {
+                info!(count = n, "Re-organized untriaged files on startup");
+            }
+            Err(e) => tracing::warn!(error = %e, "Failed to reprocess untriaged on startup"),
+            _ => {}
+        }
     }
 
     // Start email IMAP sync if email is enabled

@@ -22,10 +22,12 @@ pub fn start_watcher(
 ) -> anyhow::Result<notify::RecommendedWatcher> {
     let inbox = photos_base.join("_inbox");
     let library_drop = photos_base.join("_library-drop");
+    let untriaged = photos_base.join("_untriaged");
 
     // Ensure dirs exist
     std::fs::create_dir_all(&inbox)?;
     std::fs::create_dir_all(&library_drop)?;
+    std::fs::create_dir_all(&untriaged)?;
 
     // Debounce: track pending files
     let pending: Arc<Mutex<std::collections::HashMap<PathBuf, std::time::Instant>>> =
@@ -39,6 +41,7 @@ pub fn start_watcher(
     let debounce_pattern = organization_pattern.clone();
     let debounce_inbox = inbox.clone();
     let debounce_library = library_drop.clone();
+    let debounce_untriaged = untriaged.clone();
     let debounce_cache = cache_dir.clone();
 
     std::thread::spawn(move || {
@@ -77,7 +80,29 @@ pub fn start_watcher(
                     continue;
                 }
 
-                // Process the file with a short-lived DB lock
+                // Handle untriaged files separately — re-check metadata and organize if possible
+                if path.starts_with(&debounce_untriaged) {
+                    let conn = debounce_conn.lock().unwrap();
+                    match ingest::reprocess_untriaged_file(
+                        &conn,
+                        &path,
+                        &debounce_photos,
+                        &debounce_pattern,
+                    ) {
+                        Ok(Some(dest)) => {
+                            info!(dest = %dest.display(), "Watcher: untriaged file organized");
+                        }
+                        Ok(None) => {
+                            debug!("Watcher: untriaged file still lacks metadata");
+                        }
+                        Err(e) => {
+                            debug!(error = %e, "Watcher: failed to reprocess untriaged file");
+                        }
+                    }
+                    continue;
+                }
+
+                // Process inbox/library-drop files with a short-lived DB lock
                 let result = {
                     let conn = debounce_conn.lock().unwrap();
                     let r = if path.starts_with(&debounce_inbox) {
@@ -221,8 +246,9 @@ pub fn start_watcher(
 
     watcher.watch(&inbox, RecursiveMode::Recursive)?;
     watcher.watch(&library_drop, RecursiveMode::Recursive)?;
+    watcher.watch(&untriaged, RecursiveMode::Recursive)?;
 
-    info!(inbox = %inbox.display(), library_drop = %library_drop.display(), "Photo file watcher started");
+    info!(inbox = %inbox.display(), library_drop = %library_drop.display(), untriaged = %untriaged.display(), "Photo file watcher started");
 
     Ok(watcher)
 }
