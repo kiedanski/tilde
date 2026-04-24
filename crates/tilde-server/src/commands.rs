@@ -245,8 +245,6 @@ organization_pattern = "{year}/{month:02}"
 thumbnail_sizes = [256, 1920]
 # WebP quality (1-100)
 thumbnail_quality = 80
-# ExifTool subprocess timeout
-exiftool_timeout_seconds = 30
 # ffmpeg subprocess timeout
 ffmpeg_timeout_seconds = 60
 # File watcher debounce
@@ -928,7 +926,6 @@ pub async fn run_diagnose(config_path: Option<&str>) -> anyhow::Result<()> {
     }
 
     check_dep("sqlite3");
-    check_dep("exiftool");
     check_dep("ffmpeg");
 
     if let Ok(ref config) = config {
@@ -2300,16 +2297,16 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                     match command {
                         TagCommands::Add { tag } => {
                             // Read current tags, add new one, write back
-                            match tilde_photos::exiftool::read_metadata(&full_path) {
+                            match tilde_photos::metadata::read_metadata(&full_path) {
                                 Ok(meta) => {
                                     let mut tags = meta.tags.clone();
                                     if !tags.contains(&tag) {
                                         tags.push(tag.clone());
                                     }
-                                    tilde_photos::exiftool::write_tags(&full_path, &tags)?;
+                                    tilde_photos::metadata::write_tags(&full_path, &tags)?;
 
                                     // Update database
-                                    let prefix = tilde_photos::exiftool::classify_tag_prefix(&tag);
+                                    let prefix = tilde_photos::metadata::classify_tag_prefix(&tag);
                                     conn.execute(
                                         "INSERT OR IGNORE INTO photo_tags (photo_id, tag, prefix) VALUES (?1, ?2, ?3)",
                                         rusqlite::params![uuid, tag, prefix],
@@ -2342,18 +2339,12 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                                     }
                                 }
                                 Err(e) => {
-                                    if tilde_photos::exiftool::is_available() {
-                                        println!("Failed to read metadata: {}", e);
-                                    } else {
-                                        println!(
-                                            "ExifTool is not installed. Install it to manage photo tags."
-                                        );
-                                    }
+                                    println!("Failed to read metadata: {}", e);
                                 }
                             }
                         }
                         TagCommands::Remove { tag } => {
-                            match tilde_photos::exiftool::remove_tags(
+                            match tilde_photos::metadata::remove_tags(
                                 &full_path,
                                 std::slice::from_ref(&tag),
                             ) {
@@ -2376,7 +2367,7 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                                     println!("Tag '{}' removed from photo {}", tag, uuid);
 
                                     // Re-organize if tag removal affects destination path
-                                    if let Ok(updated_meta) = tilde_photos::exiftool::read_metadata(&full_path) {
+                                    if let Ok(updated_meta) = tilde_photos::metadata::read_metadata(&full_path) {
                                         match tilde_photos::organize::reorganize_after_tag_change(
                                             &conn,
                                             &uuid,

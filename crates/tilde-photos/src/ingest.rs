@@ -2,7 +2,7 @@
 //!
 //! Processes files from _inbox/ and _library-drop/ directories.
 
-use crate::{exiftool, is_encrypted, is_photo_ext, is_video_ext, organize, validate_magic_bytes};
+use crate::{is_encrypted, is_photo_ext, is_video_ext, metadata, organize, validate_magic_bytes};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -29,6 +29,18 @@ pub fn process_inbox_file(
 
     info!(file = %filename, "Processing inbox file");
 
+    // Dedup: skip files already processed (prevents re-processing on restart)
+    let sha256 = crate::compute_sha256(file_path)?;
+    let already_processed: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM photos WHERE original_sha256 = ?1",
+        rusqlite::params![sha256],
+        |row| row.get(0),
+    )?;
+    if already_processed {
+        debug!(file = %filename, "Inbox file already processed, skipping");
+        return Ok(IngestResult::AlreadyProcessed);
+    }
+
     // Step 1: Validate magic bytes
     let content_type = match validate_magic_bytes(file_path) {
         Some(ct) => ct.to_string(),
@@ -40,7 +52,7 @@ pub fn process_inbox_file(
             } else if is_video_ext(ext) {
                 format!("video/{}", ext.to_lowercase())
             } else {
-                return move_to_errors(
+                return copy_to_errors(
                     file_path,
                     photos_base,
                     "Unsupported file type: magic bytes not recognized and extension not a known photo/video type",
@@ -54,7 +66,8 @@ pub fn process_inbox_file(
         info!(file = %filename, "Encrypted file detected, storing as opaque blob");
         let dest = photos_base.join(&filename);
         if dest != file_path {
-            atomic_move(file_path, &dest)?;
+            std::fs::copy(file_path, &dest)
+                .context("Failed to copy encrypted file")?;
         }
         let photo_id = crate::index_photo(conn, &dest, photos_base, &content_type)?;
         return Ok(IngestResult::Indexed {
@@ -64,11 +77,11 @@ pub fn process_inbox_file(
     }
 
     // Step 3: Read metadata via ExifTool
-    let metadata = match exiftool::read_metadata(file_path) {
+    let metadata = match metadata::read_metadata(file_path) {
         Ok(m) => m,
         Err(e) => {
             warn!(file = %filename, error = %e, "Failed to read metadata, using defaults");
-            exiftool::PhotoMetadata::default()
+            metadata::PhotoMetadata::default()
         }
     };
 
@@ -79,7 +92,8 @@ pub fn process_inbox_file(
         std::fs::create_dir_all(&untriaged_dir)?;
         let dest = untriaged_dir.join(&filename);
         let dest = unique_path(&dest);
-        atomic_move(file_path, &dest)?;
+        std::fs::copy(file_path, &dest)
+            .context("Failed to copy file to untriaged")?;
         let photo_id = crate::index_photo(conn, &dest, photos_base, &content_type)?;
         return Ok(IngestResult::Untriaged {
             photo_id,
@@ -98,9 +112,10 @@ pub fn process_inbox_file(
         std::fs::create_dir_all(parent)?;
     }
 
-    // Step 6: Move file
+    // Step 6: Copy file (keep original in inbox so upload clients don't re-upload)
     let dest = unique_path(&dest);
-    atomic_move(file_path, &dest)?;
+    std::fs::copy(file_path, &dest)
+        .context("Failed to copy file to organized destination")?;
 
     // Step 7: Index in database
     let photo_id = crate::index_photo(conn, &dest, photos_base, &content_type)?;
@@ -129,6 +144,18 @@ pub fn process_library_drop_file(
 
     info!(file = %filename, "Processing library-drop file");
 
+    // Dedup: skip files already processed
+    let sha256 = crate::compute_sha256(file_path)?;
+    let already_processed: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM photos WHERE original_sha256 = ?1",
+        rusqlite::params![sha256],
+        |row| row.get(0),
+    )?;
+    if already_processed {
+        debug!(file = %filename, "Library-drop file already processed, skipping");
+        return Ok(IngestResult::AlreadyProcessed);
+    }
+
     // Validate magic bytes
     let content_type = match validate_magic_bytes(file_path) {
         Some(ct) => ct.to_string(),
@@ -137,7 +164,7 @@ pub fn process_library_drop_file(
             if is_photo_ext(ext) || is_video_ext(ext) {
                 format!("image/{}", ext.to_lowercase())
             } else {
-                return move_to_errors(file_path, photos_base, "Unsupported file type");
+                return copy_to_errors(file_path, photos_base, "Unsupported file type");
             }
         }
     };
@@ -153,7 +180,8 @@ pub fn process_library_drop_file(
     }
 
     let dest = unique_path(&dest);
-    atomic_move(file_path, &dest)?;
+    std::fs::copy(file_path, &dest)
+        .context("Failed to copy library-drop file")?;
 
     let photo_id = crate::index_photo(conn, &dest, photos_base, &content_type)?;
 
@@ -165,8 +193,8 @@ pub fn process_library_drop_file(
     })
 }
 
-/// Move a file to the _errors/ directory with an error description sidecar
-fn move_to_errors(file_path: &Path, photos_base: &Path, error_msg: &str) -> Result<IngestResult> {
+/// Copy a file to the _errors/ directory with an error description sidecar
+fn copy_to_errors(file_path: &Path, photos_base: &Path, error_msg: &str) -> Result<IngestResult> {
     let errors_dir = photos_base.join("_errors");
     std::fs::create_dir_all(&errors_dir)?;
 
@@ -176,7 +204,8 @@ fn move_to_errors(file_path: &Path, photos_base: &Path, error_msg: &str) -> Resu
         .unwrap_or_else(|| "unknown".to_string());
 
     let dest = unique_path(&errors_dir.join(&filename));
-    atomic_move(file_path, &dest)?;
+    std::fs::copy(file_path, &dest)
+        .context("Failed to copy file to errors")?;
 
     // Write error sidecar
     let sidecar_path = dest.with_extension(format!(
@@ -222,6 +251,7 @@ pub enum IngestResult {
         destination: PathBuf,
         error: String,
     },
+    AlreadyProcessed,
 }
 
 /// Scan and process all files in _inbox/
@@ -270,7 +300,7 @@ fn process_dir_recursive(
             Ok(result) => results.push(result),
             Err(e) => {
                 error!(file = %path.display(), error = %e, "Failed to process inbox file");
-                if let Ok(r) = move_to_errors(&path, photos_base, &e.to_string()) {
+                if let Ok(r) = copy_to_errors(&path, photos_base, &e.to_string()) {
                     results.push(r);
                 }
             }
@@ -320,7 +350,7 @@ fn process_library_drop_recursive(
             Ok(result) => results.push(result),
             Err(e) => {
                 error!(file = %path.display(), error = %e, "Failed to process library-drop file");
-                if let Ok(r) = move_to_errors(&path, photos_base, &e.to_string()) {
+                if let Ok(r) = copy_to_errors(&path, photos_base, &e.to_string()) {
                     results.push(r);
                 }
             }

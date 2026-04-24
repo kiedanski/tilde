@@ -22,3 +22,5 @@ image = { workspace = true }
 libheif-rs = { workspace = true, optional = true }
 notify = { workspace = true }
 tokio = { workspace = true }
+nom-exif = { workspace = true }
+xmp_toolkit = { workspace = true }

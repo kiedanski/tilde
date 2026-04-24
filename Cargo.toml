@@ -85,6 +85,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # HEIC/HEIF decoding
 libheif-rs = "2.7"
 
+# Photo/video metadata
+nom-exif = "2"
+xmp_toolkit = "1"
+
 # Signatures
 minisign-verify = "0.2"
 

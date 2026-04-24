@@ -1,7 +1,7 @@
 //! tilde-photos: photo ingestion, metadata, thumbnails, organization
 
-pub mod exiftool;
 pub mod ingest;
+pub mod metadata;
 pub mod organize;
 pub mod thumbnail;
 pub mod watcher;
@@ -139,22 +139,12 @@ pub fn store_blob(
 }
 
 /// Index a single photo file into the database, reading metadata via ExifTool
-pub fn index_photo(
-    conn: &Connection,
-    file_path: &Path,
-    photos_base: &Path,
-    content_type: &str,
-) -> anyhow::Result<String> {
+/// Compute the SHA-256 hash of a file
+pub fn compute_sha256(path: &Path) -> anyhow::Result<String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
 
-    let rel_path = file_path
-        .strip_prefix(photos_base)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| file_path.file_name().unwrap().to_string_lossy().to_string());
-
-    // Compute SHA-256
-    let mut file = std::fs::File::open(file_path)?;
+    let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 8192];
     loop {
@@ -164,7 +154,21 @@ pub fn index_photo(
         }
         hasher.update(&buf[..n]);
     }
-    let sha256 = format!("{:x}", hasher.finalize());
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub fn index_photo(
+    conn: &Connection,
+    file_path: &Path,
+    photos_base: &Path,
+    content_type: &str,
+) -> anyhow::Result<String> {
+    let rel_path = file_path
+        .strip_prefix(photos_base)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| file_path.file_name().unwrap().to_string_lossy().to_string());
+
+    let sha256 = compute_sha256(file_path)?;
 
     let meta = file_path.metadata()?;
     let size = meta.len() as i64;
@@ -197,7 +201,7 @@ pub fn index_photo(
 
     // Read EXIF metadata via ExifTool (if available and not encrypted)
     let exif = if !encrypted {
-        exiftool::read_metadata(file_path).ok()
+        metadata::read_metadata(file_path).ok()
     } else {
         None
     };
@@ -261,7 +265,7 @@ pub fn index_photo(
     // Insert tags
     if let Some(ref exif_data) = exif {
         for tag_str in &exif_data.tags {
-            let prefix = exiftool::classify_tag_prefix(tag_str);
+            let prefix = metadata::classify_tag_prefix(tag_str);
             conn.execute(
                 "INSERT OR IGNORE INTO photo_tags (photo_id, tag, prefix) VALUES (?1, ?2, ?3)",
                 rusqlite::params![photo_id, tag_str, prefix],

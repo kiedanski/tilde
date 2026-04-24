@@ -2,7 +2,7 @@
 //!
 //! Computes destination paths from photo metadata using configurable patterns.
 
-use crate::exiftool::PhotoMetadata;
+use crate::metadata::PhotoMetadata;
 use crate::ingest::atomic_move;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
