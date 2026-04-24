@@ -6,7 +6,7 @@ mod commands;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info".into());
+        .unwrap_or_else(|_| "info,nom_exif=warn,xmp_toolkit=warn".into());
 
     // Use JSON format when running under systemd (detected by JOURNAL_STREAM or INVOCATION_ID)
     // This produces structured logs that journald can parse and filter by fields
