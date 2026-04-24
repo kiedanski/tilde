@@ -128,7 +128,6 @@ pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
         data_dir.join("collections"),
         data_dir.join("uploads"),
         data_dir.join("backup"),
-        data_dir.join("blobs/by-id"),
         cache_dir.join("thumbnails"),
         cache_dir.join("fts"),
     ];
@@ -350,7 +349,6 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         data_dir.join("collections"),
         data_dir.join("uploads"),
         data_dir.join("backup"),
-        data_dir.join("blobs/by-id"),
         cache_dir.join("thumbnails"),
         cache_dir.join("fts"),
     ] {
