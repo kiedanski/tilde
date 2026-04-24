@@ -498,11 +498,12 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     // Start background job processor for thumbnail generation etc.
     {
         let job_db = state.db.clone();
+        let job_photos_base = data_dir.join("photos");
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 if let Ok(conn) = job_db.lock() {
-                    match tilde_photos::process_pending_jobs(&conn, 5) {
+                    match tilde_photos::process_pending_jobs(&conn, 5, &job_photos_base) {
                         Ok(0) => {} // No pending jobs
                         Ok(n) => info!(count = n, "Processed background jobs"),
                         Err(e) => tracing::debug!(error = %e, "Job processor error"),

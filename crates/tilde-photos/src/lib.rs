@@ -280,6 +280,7 @@ pub fn create_thumbnail_job(
 pub fn process_pending_jobs(
     conn: &Connection,
     max_jobs: usize,
+    photos_base: &Path,
 ) -> anyhow::Result<usize> {
     let now = jiff::Zoned::now()
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
@@ -315,7 +316,7 @@ pub fn process_pending_jobs(
         )?;
 
         let result = match job_type.as_str() {
-            "thumbnail" => process_thumbnail_job(&payload_json),
+            "thumbnail" => process_thumbnail_job(&payload_json, conn, photos_base),
             _ => Err(anyhow::anyhow!("Unknown job type: {}", job_type)),
         };
 
@@ -348,7 +349,11 @@ pub fn process_pending_jobs(
     Ok(processed)
 }
 
-fn process_thumbnail_job(payload_json: &str) -> anyhow::Result<()> {
+fn process_thumbnail_job(
+    payload_json: &str,
+    conn: &Connection,
+    photos_base: &Path,
+) -> anyhow::Result<()> {
     let payload: serde_json::Value = serde_json::from_str(payload_json)?;
     let photo_id = payload.get("photo_id").and_then(|v| v.as_str()).unwrap_or("");
     let file_path = payload.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
@@ -364,6 +369,10 @@ fn process_thumbnail_job(payload_json: &str) -> anyhow::Result<()> {
     } else if is_video_ext(ext) {
         thumbnail::generate_video_thumbnail(file, photo_id, cache, quality, 60)?;
     }
+
+    // Mark as generated and create browseable symlink
+    let _ = thumbnail::mark_thumbnails_generated(conn, photo_id, true, true);
+    let _ = thumbnail::create_thumbnail_symlink(conn, photo_id, photos_base, cache);
 
     Ok(())
 }
