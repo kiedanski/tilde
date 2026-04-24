@@ -116,7 +116,7 @@ pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
 
     // Step 9: Create data directories
     let dirs = [
-        data_dir.join("files/notes"),
+        data_dir.join("notes"),
         data_dir.join("files/documents"),
         data_dir.join("photos/_inbox"),
         data_dir.join("photos/_library-drop"),
@@ -340,7 +340,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     // Ensure all data directories exist
     for dir in &[
         files_root.clone(),
-        files_root.join("notes"),
+        data_dir.join("notes"),
         files_root.join("documents"),
         data_dir.join("photos/_inbox"),
         data_dir.join("photos/_library-drop"),
@@ -1188,7 +1188,7 @@ pub async fn run_notes(config_path: Option<&str>, command: NotesCommands) -> any
     let migrations_dir = tilde_cli::find_migrations_dir();
     db::run_migrations(&conn, &migrations_dir)?;
 
-    let notes_dir = config.data_dir().join("files/notes");
+    let notes_dir = config.data_dir().join("notes");
 
     match command {
         NotesCommands::Search { query } => {
@@ -2593,7 +2593,7 @@ pub async fn run_reindex(config_path: Option<&str>, index_type: &str) -> anyhow:
     let migrations_dir = tilde_cli::find_migrations_dir();
     db::run_migrations(&conn, &migrations_dir)?;
 
-    let notes_dir = config.data_dir().join("files/notes");
+    let notes_dir = config.data_dir().join("notes");
 
     match index_type {
         "notes" | "all" => {

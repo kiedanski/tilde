@@ -872,7 +872,7 @@ pub fn handle_mcp_request(
 
             let start = Instant::now();
 
-            let notes_dir = state.data_dir.join("files/notes");
+            let notes_dir = state.data_dir.join("notes");
             let files_dir = state.data_dir.join("files");
 
             let result = {

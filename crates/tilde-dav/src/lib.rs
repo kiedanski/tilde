@@ -374,7 +374,12 @@ async fn handle_put(
         HeaderValue::from_str(&content_type)
             .unwrap_or(HeaderValue::from_static("application/octet-stream")),
     );
-    if !exists && let Ok(loc) = HeaderValue::from_str(&format!("/dav/files/{}", rel_path)) {
+    let dav_mount = if state.db_path_prefix.is_empty() {
+        "/dav/files"
+    } else {
+        &format!("/dav/{}", state.db_path_prefix.trim_end_matches('/'))
+    };
+    if !exists && let Ok(loc) = HeaderValue::from_str(&format!("{}/{}", dav_mount, rel_path)) {
         resp_headers.insert(header::LOCATION, loc);
     }
 

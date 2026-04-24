@@ -72,10 +72,15 @@ pub fn build_router(
     let dav_router = tilde_dav::build_dav_router(dav_state.clone());
     let uploads_router = tilde_dav::build_uploads_router(dav_state.clone());
 
-    // Notes DAV — separate DavState pointing to notes directory
+    // Notes DAV — separate DavState pointing to notes directory (sibling of files, like photos)
+    let notes_root = dav_state
+        .files_root
+        .parent()
+        .map(|p| p.join("notes"))
+        .unwrap_or_else(|| dav_state.files_root.join("../notes"));
     let notes_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
         db: dav_state.db.clone(),
-        files_root: dav_state.files_root.join("notes"),
+        files_root: notes_root,
         uploads_root: dav_state.uploads_root.clone(),
         db_path_prefix: "notes/".to_string(),
         session_ttl_hours: dav_state.session_ttl_hours,

@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn test_load_defaults() {
-        let config = Config::load(None).unwrap();
+        let config = Config::default();
         assert_eq!(config.server.listen_port, 443);
         assert_eq!(config.tls.mode, "acme");
     }
