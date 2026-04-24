@@ -628,6 +628,12 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             Err(e) => tracing::warn!(error = %e, "Failed to reprocess untriaged on startup"),
             _ => {}
         }
+        match tilde_photos::thumbnail::rebuild_thumbnail_mirror(&db, &photos_base, &state.config.cache_dir()) {
+            Ok(n) => {
+                info!(count = n, "Thumbnail mirror rebuilt");
+            }
+            Err(e) => tracing::warn!(error = %e, "Failed to rebuild thumbnail mirror"),
+        }
     }
 
     // Start email IMAP sync if email is enabled

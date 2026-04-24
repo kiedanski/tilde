@@ -200,10 +200,13 @@ pub fn start_watcher(
                     };
 
                     if let Some(Ok(_)) = thumb_result {
-                        // Brief lock to mark completion
+                        // Brief lock to mark completion and create symlink
                         if let Ok(c) = debounce_conn.lock() {
                             let _ = crate::thumbnail::mark_thumbnails_generated(
                                 &c, &photo_id, true, true,
+                            );
+                            let _ = crate::thumbnail::create_thumbnail_symlink(
+                                &c, &photo_id, &debounce_photos, &debounce_cache,
                             );
                             let _ = c.execute(
                                 "UPDATE jobs SET status = 'completed', completed_at = ?1 WHERE job_type = 'thumbnail' AND payload_json LIKE ?2 AND status = 'pending'",

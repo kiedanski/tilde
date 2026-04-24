@@ -418,6 +418,104 @@ mod tests {
     }
 }
 
+/// Create a symlink for a single photo's thumbnail in the browseable mirror directory.
+/// Maps organized path (e.g. photos/2026/04/IMG.jpg) → _thumbnails/2026/04/IMG.webp
+pub fn create_thumbnail_symlink(
+    conn: &rusqlite::Connection,
+    photo_id: &str,
+    photos_base: &Path,
+    cache_dir: &Path,
+) -> Result<()> {
+    // Get the organized file path from the DB
+    let rel_path: String = conn
+        .query_row(
+            "SELECT f.path FROM photos p JOIN files f ON p.file_id = f.id WHERE p.id = ?1",
+            [photo_id],
+            |row| row.get(0),
+        )
+        .context("Photo not found in DB")?;
+
+    // Strip the "photos/" prefix to get the path within photos_base
+    let within_photos = rel_path.strip_prefix("photos/").unwrap_or(&rel_path);
+
+    // Skip inbox/untriaged/errors — only mirror organized files
+    if within_photos.starts_with('_') {
+        return Ok(());
+    }
+
+    // Build the thumbnail source path
+    let thumb_source = cache_dir
+        .join("thumbnails")
+        .join(photo_id)
+        .join("1920.webp");
+    if !thumb_source.exists() {
+        return Ok(()); // No thumbnail generated yet
+    }
+
+    // Build the symlink destination: _thumbnails/<year>/<month>/filename.webp
+    let original = Path::new(within_photos);
+    let stem = original
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let parent = original.parent().unwrap_or(Path::new(""));
+    let symlink_path = photos_base
+        .join("_thumbnails")
+        .join(parent)
+        .join(format!("{}.webp", stem));
+
+    // Create parent directories
+    if let Some(dir) = symlink_path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    // Create symlink (remove existing if present)
+    if symlink_path.exists() || symlink_path.symlink_metadata().is_ok() {
+        let _ = std::fs::remove_file(&symlink_path);
+    }
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&thumb_source, &symlink_path)
+        .context("Failed to create thumbnail symlink")?;
+
+    Ok(())
+}
+
+/// Rebuild the entire _thumbnails/ mirror directory from the database.
+pub fn rebuild_thumbnail_mirror(
+    conn: &rusqlite::Connection,
+    photos_base: &Path,
+    cache_dir: &Path,
+) -> Result<u32> {
+    let thumbnails_dir = photos_base.join("_thumbnails");
+
+    // Clean existing mirror
+    if thumbnails_dir.exists() {
+        std::fs::remove_dir_all(&thumbnails_dir)?;
+    }
+    std::fs::create_dir_all(&thumbnails_dir)?;
+
+    // Query all photos with 1920px thumbnails generated
+    let mut stmt = conn.prepare(
+        "SELECT p.id FROM photos p WHERE p.thumbnail_1920_generated = 1",
+    )?;
+    let photo_ids: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut count = 0u32;
+    for photo_id in &photo_ids {
+        match create_thumbnail_symlink(conn, photo_id, photos_base, cache_dir) {
+            Ok(()) => count += 1,
+            Err(e) => debug!(photo_id = %photo_id, error = %e, "Skipped thumbnail symlink"),
+        }
+    }
+
+    info!(count = count, "Thumbnail mirror rebuilt");
+    Ok(count)
+}
+
 /// Mark thumbnails as generated in the database
 pub fn mark_thumbnails_generated(
     conn: &rusqlite::Connection,
