@@ -209,9 +209,11 @@ fn fetch_new_messages(
 }
 
 /// Run one sync cycle: connect, list folders, fetch new messages, store.
+/// Takes Arc<Mutex<Connection>> and only locks briefly for DB operations,
+/// keeping the lock released during slow IMAP I/O.
 fn sync_cycle(
     config: &ImapAccountConfig,
-    conn: &rusqlite::Connection,
+    db: &Arc<Mutex<rusqlite::Connection>>,
     maildir_base: &std::path::Path,
 ) -> Result<()> {
     let mut session = connect_and_login(config)?;
@@ -224,7 +226,13 @@ fn sync_cycle(
             continue;
         }
 
-        let last_uid = get_last_uid(conn, &config.name, folder);
+        // Brief lock to read last UID
+        let last_uid = {
+            let conn = db.lock().unwrap();
+            get_last_uid(&conn, &config.name, folder)
+        };
+
+        // IMAP fetch — no DB lock held
         let messages = fetch_new_messages(&mut session, folder, last_uid)?;
 
         if messages.is_empty() {
@@ -234,11 +242,14 @@ fn sync_cycle(
         let mut max_uid = last_uid.unwrap_or(0);
 
         for (uid, raw) in &messages {
+            // Write to disk — no DB lock needed
             let writer = crate::MaildirWriter::new(maildir_base)?;
             let maildir_path = writer.write_message(&config.name, folder, *uid, raw)?;
 
+            // Brief lock to index in DB
             if let Ok(parsed) = crate::ParsedEmail::parse(raw) {
-                let _ = crate::index_email(conn, &config.name, folder, *uid, &maildir_path, &parsed);
+                let conn = db.lock().unwrap();
+                let _ = crate::index_email(&conn, &config.name, folder, *uid, &maildir_path, &parsed);
             }
 
             if *uid > max_uid {
@@ -246,8 +257,10 @@ fn sync_cycle(
             }
         }
 
+        // Brief lock to update last UID
         if max_uid > last_uid.unwrap_or(0) {
-            set_last_uid(conn, &config.name, folder, max_uid)?;
+            let conn = db.lock().unwrap();
+            set_last_uid(&conn, &config.name, folder, max_uid)?;
         }
 
         info!(
@@ -258,7 +271,10 @@ fn sync_cycle(
         );
     }
 
-    record_sync(conn, &config.name)?;
+    {
+        let conn = db.lock().unwrap();
+        record_sync(&conn, &config.name)?;
+    }
     let _ = session.logout();
 
     Ok(())
@@ -281,8 +297,7 @@ pub async fn run_sync_loop(
         let maildir_clone = maildir_base.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            let conn = db_clone.lock().unwrap();
-            sync_cycle(&config_clone, &conn, &maildir_clone)
+            sync_cycle(&config_clone, &db_clone, &maildir_clone)
         })
         .await;
 
