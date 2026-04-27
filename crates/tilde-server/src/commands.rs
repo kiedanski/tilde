@@ -3766,13 +3766,23 @@ pub async fn run_restore(
     snapshot_id: &str,
     target_path: &str,
 ) -> anyhow::Result<()> {
+    let target_dir = std::path::Path::new(target_path);
+
+    // If --from is a file path, restore directly without needing a DB
+    let from_path = std::path::Path::new(from);
+    if from_path.is_file() {
+        println!("Restoring from archive {} to {}...", from, target_path);
+        tilde_backup::restore_from_archive(from_path, target_dir)?;
+        println!("Restore completed successfully to {}", target_path);
+        return Ok(());
+    }
+
     let config = Config::load(config_path)?;
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
     let migrations_dir = tilde_cli::find_migrations_dir();
     db::run_migrations(&conn, &migrations_dir)?;
 
     if from != "local" {
-        // Offsite restore: download from S3 then restore locally
         let offsite_cfg = config.backup.offsite.iter()
             .find(|d| d.name == from)
             .ok_or_else(|| anyhow::anyhow!("Offsite destination '{}' not found in config", from))?;
@@ -3782,9 +3792,7 @@ pub async fn run_restore(
         return Ok(());
     }
 
-    let target_dir = std::path::Path::new(target_path);
     println!("Restoring snapshot {} to {}...", snapshot_id, target_path);
-
     tilde_backup::restore_snapshot(&conn, snapshot_id, target_dir)?;
     println!("Restore completed successfully to {}", target_path);
 

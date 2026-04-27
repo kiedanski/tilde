@@ -70,7 +70,7 @@ pub fn create_snapshot_with_encryption(
 
     // Back up key directories and files
     let items_to_backup = [
-        "files", "photos", "calendars", "contacts", "mail",
+        "files", "notes", "photos", "calendars", "contacts", "mail",
         "collections", "tilde.db",
     ];
 
@@ -298,6 +298,29 @@ pub fn restore_snapshot(conn: &Connection, snapshot_id: &str, target_dir: &Path)
     Ok(())
 }
 
+/// Restore directly from an archive file (no DB required).
+/// Use this for migration or disaster recovery when the DB is inside the archive.
+pub fn restore_from_archive(archive_path: &Path, target_dir: &Path) -> Result<()> {
+    if !archive_path.exists() {
+        bail!("Archive file not found: {}", archive_path.display());
+    }
+
+    std::fs::create_dir_all(target_dir)?;
+
+    let archive_file = std::fs::File::open(archive_path)?;
+    let decoder = GzDecoder::new(archive_file);
+    let mut archive = tar::Archive::new(decoder);
+    archive.unpack(target_dir).context("Failed to extract archive")?;
+
+    info!(
+        archive = %archive_path.display(),
+        target = %target_dir.display(),
+        "Archive restored"
+    );
+
+    Ok(())
+}
+
 /// Apply retention policy: keep the specified number of snapshots per time class,
 /// prune the rest (unless pinned).
 pub fn apply_retention(
@@ -375,7 +398,17 @@ fn append_dir_to_tar<W: Write>(
         let src_path = entry.path();
         let archive_name = archive_prefix.join(entry.file_name());
 
+        // Skip symlinks (e.g., _thumbnails/ mirror — rebuilt on startup)
+        if src_path.symlink_metadata()?.file_type().is_symlink() {
+            continue;
+        }
+
         if src_path.is_dir() {
+            // Skip _thumbnails directory entirely (rebuilt on startup from cache)
+            let name_str = entry.file_name().to_string_lossy().to_string();
+            if name_str == "_thumbnails" {
+                continue;
+            }
             count += append_dir_to_tar(builder, &src_path, &archive_name)?;
         } else {
             // Skip WAL/journal files (they're transient)
