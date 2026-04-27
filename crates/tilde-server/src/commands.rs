@@ -516,6 +516,25 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         info!("Background job processor started");
     }
 
+    // Start trash purge scheduler (daily, purges entries older than 30 days)
+    {
+        let trash_data_dir = data_dir.clone();
+        tokio::spawn(async move {
+            loop {
+                // Run daily
+                tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
+                let roots = [
+                    trash_data_dir.join("files"),
+                    trash_data_dir.join("notes"),
+                    trash_data_dir.join("photos"),
+                ];
+                for root in &roots {
+                    tilde_dav::purge_trash(root, 30);
+                }
+            }
+        });
+    }
+
     // Start backup scheduler if backup is enabled
     if state.config.backup.enabled {
         let backup_schedule = state.config.backup.schedule.clone();

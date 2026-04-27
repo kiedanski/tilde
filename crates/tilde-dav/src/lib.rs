@@ -396,12 +396,38 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
     }
 
     let db_path = state.db_path(rel_path);
-    if disk_path.is_dir() {
-        if let Err(e) = tokio::fs::remove_dir_all(&disk_path).await {
-            warn!(error = %e, "Failed to remove directory");
+
+    // Move to .trash/ instead of deleting permanently
+    let trash_dir = state.files_root.join(".trash");
+    let timestamp = jiff::Zoned::now().strftime("%Y%m%d-%H%M%S").to_string();
+    let trash_dest = trash_dir.join(&timestamp).join(rel_path);
+
+    if let Some(parent) = trash_dest.parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            warn!(error = %e, "Failed to create trash directory");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-        // Remove from DB recursively
+    }
+
+    if let Err(e) = tokio::fs::rename(&disk_path, &trash_dest).await {
+        // Cross-filesystem fallback: copy + delete
+        if disk_path.is_dir() {
+            if let Err(e) = copy_dir_async(&disk_path, &trash_dest).await {
+                warn!(error = %e, "Failed to move directory to trash");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            let _ = tokio::fs::remove_dir_all(&disk_path).await;
+        } else {
+            if let Err(e) = tokio::fs::copy(&disk_path, &trash_dest).await {
+                warn!(error = %e, "Failed to copy file to trash: {}", e);
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            let _ = tokio::fs::remove_file(&disk_path).await;
+        }
+    }
+
+    // Remove from DB (file disappears from listings)
+    if disk_path.is_dir() {
         let db = state.db.lock().unwrap();
         let pattern = format!("{}%", db_path);
         db.execute(
@@ -410,17 +436,64 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
         )
         .ok();
     } else {
-        if let Err(e) = tokio::fs::remove_file(&disk_path).await {
-            warn!(error = %e, "Failed to remove file");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
         let db = state.db.lock().unwrap();
         db.execute("DELETE FROM files WHERE path = ?1", [&db_path])
             .ok();
     }
 
-    info!(path = rel_path, "WebDAV DELETE");
+    info!(path = rel_path, trash = %trash_dest.display(), "WebDAV DELETE (moved to trash)");
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// Recursively copy a directory (async)
+async fn copy_dir_async(src: &std::path::Path, dst: &std::path::Path) -> Result<(), std::io::Error> {
+    tokio::fs::create_dir_all(dst).await?;
+    let mut entries = tokio::fs::read_dir(src).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type().await?.is_dir() {
+            Box::pin(copy_dir_async(&src_path, &dst_path)).await?;
+        } else {
+            tokio::fs::copy(&src_path, &dst_path).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Purge trash entries older than the given number of days.
+/// Called periodically from the server's background tasks.
+pub fn purge_trash(files_root: &std::path::Path, retention_days: u32) -> usize {
+    let trash_dir = files_root.join(".trash");
+    if !trash_dir.exists() {
+        return 0;
+    }
+
+    let cutoff = jiff::Zoned::now()
+        .checked_sub(jiff::SignedDuration::from_hours(retention_days as i64 * 24))
+        .unwrap_or_else(|_| jiff::Zoned::now());
+    let cutoff_str = cutoff.strftime("%Y%m%d-%H%M%S").to_string();
+
+    let mut purged = 0;
+    if let Ok(entries) = std::fs::read_dir(&trash_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Trash directories are named by timestamp: 20260427-104829
+            if name <= cutoff_str {
+                if let Ok(meta) = entry.metadata() {
+                    if meta.is_dir() {
+                        let _ = std::fs::remove_dir_all(entry.path());
+                        purged += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if purged > 0 {
+        info!(count = purged, root = %files_root.display(), "Purged old trash entries");
+    }
+    purged
 }
 
 /// MKCOL — create a collection (directory)
