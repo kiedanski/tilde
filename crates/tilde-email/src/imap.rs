@@ -242,15 +242,9 @@ fn sync_cycle(
         let mut max_uid = last_uid.unwrap_or(0);
 
         for (uid, raw) in &messages {
-            // Write to disk — no DB lock needed
+            // Write to Maildir on disk — no DB lock needed
             let writer = crate::MaildirWriter::new(maildir_base)?;
-            let maildir_path = writer.write_message(&config.name, folder, *uid, raw)?;
-
-            // Brief lock to index in DB
-            if let Ok(parsed) = crate::ParsedEmail::parse(raw) {
-                let conn = db.lock().unwrap();
-                let _ = crate::index_email(&conn, &config.name, folder, *uid, &maildir_path, &parsed);
-            }
+            let _ = writer.write_message(&config.name, folder, *uid, raw)?;
 
             if *uid > max_uid {
                 max_uid = *uid;

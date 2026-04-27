@@ -2930,8 +2930,6 @@ dependencies = [
  "openssl",
  "rusqlite",
  "serde",
- "serde_json",
- "sha2",
  "tilde-core",
  "tokio",
  "tracing",
