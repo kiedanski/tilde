@@ -69,14 +69,14 @@ pub fn process_inbox_file(
             std::fs::copy(file_path, &dest)
                 .context("Failed to copy encrypted file")?;
         }
-        let photo_id = crate::index_photo(conn, &dest, photos_base, &content_type)?;
+        let photo_id = crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
         return Ok(IngestResult::Indexed {
             photo_id,
             destination: dest,
         });
     }
 
-    // Step 3: Read metadata via ExifTool
+    // Step 3: Read metadata
     let metadata = match metadata::read_metadata(file_path) {
         Ok(m) => m,
         Err(e) => {
@@ -94,7 +94,7 @@ pub fn process_inbox_file(
         let dest = unique_path(&dest);
         std::fs::copy(file_path, &dest)
             .context("Failed to copy file to untriaged")?;
-        let photo_id = crate::index_photo(conn, &dest, photos_base, &content_type)?;
+        let photo_id = crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
         return Ok(IngestResult::Untriaged {
             photo_id,
             destination: dest,
@@ -117,8 +117,8 @@ pub fn process_inbox_file(
     std::fs::copy(file_path, &dest)
         .context("Failed to copy file to organized destination")?;
 
-    // Step 7: Index in database
-    let photo_id = crate::index_photo(conn, &dest, photos_base, &content_type)?;
+    // Step 7: Index in database (pass precomputed SHA-256 to avoid re-reading)
+    let photo_id = crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
 
     info!(file = %filename, dest = %dest.display(), photo_id = %photo_id, "Photo organized and indexed");
 
@@ -180,10 +180,9 @@ pub fn process_library_drop_file(
     }
 
     let dest = unique_path(&dest);
-    std::fs::copy(file_path, &dest)
-        .context("Failed to copy library-drop file")?;
+    atomic_move(file_path, &dest)?;
 
-    let photo_id = crate::index_photo(conn, &dest, photos_base, &content_type)?;
+    let photo_id = crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
 
     info!(file = %filename, dest = %dest.display(), "Library-drop file indexed");
 

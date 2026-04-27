@@ -618,44 +618,56 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         info!(schedule = %state.config.backup.schedule, "Backup scheduler enabled");
     }
 
-    // Process any existing files in _inbox/ on startup
+    // Process existing files in background (doesn't block server startup)
     {
-        let photos_base = data_dir.join("photos");
-        let pattern = state.config.photos.organization_pattern.clone();
-        let db = state.db.lock().unwrap();
-        match tilde_photos::ingest::process_inbox(&db, &photos_base, &pattern) {
-            Ok(results) if !results.is_empty() => {
-                info!(
-                    count = results.len(),
-                    "Processed existing inbox files on startup"
-                );
-            }
-            Err(e) => tracing::warn!(error = %e, "Failed to process inbox on startup"),
-            _ => {}
-        }
-        match tilde_photos::ingest::process_library_drop(&db, &photos_base) {
-            Ok(results) if !results.is_empty() => {
-                info!(
-                    count = results.len(),
-                    "Processed existing library-drop files on startup"
-                );
-            }
-            Err(e) => tracing::warn!(error = %e, "Failed to process library-drop on startup"),
-            _ => {}
-        }
-        match tilde_photos::ingest::reprocess_untriaged(&db, &photos_base, &pattern) {
-            Ok(n) if n > 0 => {
-                info!(count = n, "Re-organized untriaged files on startup");
-            }
-            Err(e) => tracing::warn!(error = %e, "Failed to reprocess untriaged on startup"),
-            _ => {}
-        }
-        match tilde_photos::thumbnail::rebuild_thumbnail_mirror(&db, &photos_base, &state.config.cache_dir()) {
-            Ok(n) => {
-                info!(count = n, "Thumbnail mirror rebuilt");
-            }
-            Err(e) => tracing::warn!(error = %e, "Failed to rebuild thumbnail mirror"),
-        }
+        let scan_db = state.db.clone();
+        let scan_photos_base = data_dir.join("photos");
+        let scan_pattern = state.config.photos.organization_pattern.clone();
+        let scan_cache_dir = state.config.cache_dir();
+        tokio::spawn(async move {
+            // Small delay to let the server finish binding
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+            tokio::task::spawn_blocking(move || {
+                let conn = scan_db.lock().unwrap();
+                match tilde_photos::ingest::process_inbox(&conn, &scan_photos_base, &scan_pattern) {
+                    Ok(results) if !results.is_empty() => {
+                        info!(count = results.len(), "Processed existing inbox files");
+                    }
+                    Err(e) => tracing::warn!(error = %e, "Failed to process inbox"),
+                    _ => {}
+                }
+                drop(conn);
+
+                let conn = scan_db.lock().unwrap();
+                match tilde_photos::ingest::process_library_drop(&conn, &scan_photos_base) {
+                    Ok(results) if !results.is_empty() => {
+                        info!(count = results.len(), "Processed existing library-drop files");
+                    }
+                    Err(e) => tracing::warn!(error = %e, "Failed to process library-drop"),
+                    _ => {}
+                }
+                drop(conn);
+
+                let conn = scan_db.lock().unwrap();
+                match tilde_photos::ingest::reprocess_untriaged(&conn, &scan_photos_base, &scan_pattern) {
+                    Ok(n) if n > 0 => {
+                        info!(count = n, "Re-organized untriaged files");
+                    }
+                    Err(e) => tracing::warn!(error = %e, "Failed to reprocess untriaged"),
+                    _ => {}
+                }
+
+                match tilde_photos::thumbnail::rebuild_thumbnail_mirror(&conn, &scan_photos_base, &scan_cache_dir) {
+                    Ok(n) if n > 0 => {
+                        info!(count = n, "Thumbnail mirror rebuilt");
+                    }
+                    Err(e) => tracing::warn!(error = %e, "Failed to rebuild thumbnail mirror"),
+                    _ => {}
+                }
+            }).await.ok();
+        });
+        info!("Photo scan scheduled (runs in background)");
     }
 
     // Start email IMAP sync if email is enabled

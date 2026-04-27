@@ -128,12 +128,27 @@ pub fn index_photo(
     photos_base: &Path,
     content_type: &str,
 ) -> anyhow::Result<String> {
+    index_photo_with_hash(conn, file_path, photos_base, content_type, None)
+}
+
+/// Index a photo with an optional pre-computed SHA-256 hash.
+/// If `precomputed_sha256` is None, the hash is computed from the file.
+pub fn index_photo_with_hash(
+    conn: &Connection,
+    file_path: &Path,
+    photos_base: &Path,
+    content_type: &str,
+    precomputed_sha256: Option<&str>,
+) -> anyhow::Result<String> {
     let rel_path = file_path
         .strip_prefix(photos_base)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| file_path.file_name().unwrap().to_string_lossy().to_string());
 
-    let sha256 = compute_sha256(file_path)?;
+    let sha256 = match precomputed_sha256 {
+        Some(h) => h.to_string(),
+        None => compute_sha256(file_path)?,
+    };
 
     let meta = file_path.metadata()?;
     let size = meta.len() as i64;
