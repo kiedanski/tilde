@@ -216,8 +216,13 @@ async fn handle_get(state: &SharedDavState, rel_path: &str, head_only: bool) -> 
         return (StatusCode::OK, headers).into_response();
     }
 
-    match tokio::fs::read(&disk_path).await {
-        Ok(content) => (StatusCode::OK, headers, content).into_response(),
+    // Stream the file instead of reading it all into memory
+    match tokio::fs::File::open(&disk_path).await {
+        Ok(file) => {
+            let stream = tokio_util::io::ReaderStream::with_capacity(file, 64 * 1024);
+            let body = Body::from_stream(stream);
+            (StatusCode::OK, headers, body).into_response()
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -260,7 +265,7 @@ async fn handle_put(
         }
     };
 
-    let mut writer = tokio::io::BufWriter::new(tmp_file);
+    let mut writer = tokio::io::BufWriter::with_capacity(64 * 1024, tmp_file);
     let mut hasher = Sha256::new();
     let mut total_bytes: u64 = 0;
 
@@ -677,35 +682,39 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
-    // Create new DB record with new UUID
+    // Create new DB record — stream SHA-256 instead of reading entire file into memory
     {
+        let size = tokio::fs::metadata(&dst_disk).await.map(|m| m.len()).unwrap_or(0);
+        let sha256 = {
+            let hash_path = dst_disk.clone();
+            tokio::task::spawn_blocking(move || compute_file_sha256(&hash_path))
+                .await
+                .unwrap_or_else(|_| Ok(String::new()))
+                .unwrap_or_default()
+        };
+
         let db = state.db.lock().unwrap();
         let dst_db_path = state.db_path(&dest);
-        if let Ok(content) = std::fs::read(&dst_disk) {
-            let mut hasher = Sha256::new();
-            hasher.update(&content);
-            let sha256 = format!("{:x}", hasher.finalize());
-            let etag = sha256[..16].to_string();
-            let content_type = mime_from_path(&dest);
-            let now = jiff::Zoned::now()
-                .strftime("%Y-%m-%dT%H:%M:%S%:z")
-                .to_string();
-            let id = Uuid::new_v4().to_string();
-            let name = std::path::Path::new(&dest)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let db_parent = std::path::Path::new(&dst_db_path)
-                .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
+        let etag = if sha256.len() >= 16 { sha256[..16].to_string() } else { sha256.clone() };
+        let content_type = mime_from_path(&dest);
+        let now = jiff::Zoned::now()
+            .strftime("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string();
+        let id = Uuid::new_v4().to_string();
+        let name = std::path::Path::new(&dest)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let db_parent = std::path::Path::new(&dst_db_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
 
-            db.execute(
-                "INSERT OR REPLACE INTO files (id, path, parent_path, name, size_bytes, content_type, etag, sha256, is_directory, created_at, modified_at, hlc)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11)",
-                rusqlite::params![id, dst_db_path, db_parent, name, content.len(), content_type, etag, sha256, now, now, now],
-            ).ok();
-        }
+        db.execute(
+            "INSERT OR REPLACE INTO files (id, path, parent_path, name, size_bytes, content_type, etag, sha256, is_directory, created_at, modified_at, hlc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11)",
+            rusqlite::params![id, dst_db_path, db_parent, name, size as i64, content_type, etag, sha256, now, now, now],
+        ).ok();
     }
 
     info!(from = rel_path, to = %dest, "WebDAV COPY");
@@ -1566,6 +1575,20 @@ fn escape_xml(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+/// Compute SHA-256 of a file using streaming reads (no full-file allocation)
+fn compute_file_sha256(path: &std::path::Path) -> Result<String, std::io::Error> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {

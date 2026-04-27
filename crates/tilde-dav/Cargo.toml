@@ -11,6 +11,7 @@ anyhow = { workspace = true }
 axum = { workspace = true }
 http-body-util = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["io"] }
 rusqlite = { workspace = true }
 uuid = { workspace = true }
 sha2 = "0.10"
