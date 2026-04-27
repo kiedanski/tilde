@@ -628,40 +628,70 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             // Small delay to let the server finish binding
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
+            // Collect file lists (fast, no DB lock)
+            let inbox = scan_photos_base.join("_inbox");
+            let library_drop = scan_photos_base.join("_library-drop");
+
+            let inbox_files = if inbox.exists() { walkdir_media(&inbox) } else { vec![] };
+            let lib_files = if library_drop.exists() { walkdir_media(&library_drop) } else { vec![] };
+
+            // Process inbox files one at a time with brief DB locks
+            if !inbox_files.is_empty() {
+                let total = inbox_files.len();
+                let mut processed = 0;
+                for path in &inbox_files {
+                    let db = scan_db.clone();
+                    let photos = scan_photos_base.clone();
+                    let pat = scan_pattern.clone();
+                    let p = path.clone();
+                    let r = tokio::task::spawn_blocking(move || {
+                        let conn = db.lock().unwrap();
+                        tilde_photos::ingest::process_inbox_file(&conn, &p, &photos, &pat)
+                    }).await;
+                    if matches!(r, Ok(Ok(_))) { processed += 1; }
+                }
+                if processed > 0 {
+                    info!(processed, total, "Processed inbox files");
+                }
+            }
+
+            // Process library-drop files
+            if !lib_files.is_empty() {
+                let total = lib_files.len();
+                let mut processed = 0;
+                for (i, path) in lib_files.iter().enumerate() {
+                    let db = scan_db.clone();
+                    let photos = scan_photos_base.clone();
+                    let lib = library_drop.clone();
+                    let p = path.clone();
+                    let r = tokio::task::spawn_blocking(move || {
+                        let conn = db.lock().unwrap();
+                        tilde_photos::ingest::process_library_drop_file(&conn, &p, &photos, &lib)
+                    }).await;
+                    if matches!(r, Ok(Ok(_))) { processed += 1; }
+                    if (i + 1) % 1000 == 0 {
+                        info!(progress = i + 1, total, "Library-drop scan progress");
+                    }
+                }
+                if processed > 0 {
+                    info!(processed, total, "Processed library-drop files");
+                }
+            }
+
+            // Reprocess untriaged + rebuild thumbnail mirror
+            let db = scan_db.clone();
+            let photos = scan_photos_base.clone();
+            let pat = scan_pattern.clone();
+            let cache = scan_cache_dir.clone();
             tokio::task::spawn_blocking(move || {
-                let conn = scan_db.lock().unwrap();
-                match tilde_photos::ingest::process_inbox(&conn, &scan_photos_base, &scan_pattern) {
-                    Ok(results) if !results.is_empty() => {
-                        info!(count = results.len(), "Processed existing inbox files");
-                    }
-                    Err(e) => tracing::warn!(error = %e, "Failed to process inbox"),
-                    _ => {}
-                }
-                drop(conn);
-
-                let conn = scan_db.lock().unwrap();
-                match tilde_photos::ingest::process_library_drop(&conn, &scan_photos_base) {
-                    Ok(results) if !results.is_empty() => {
-                        info!(count = results.len(), "Processed existing library-drop files");
-                    }
-                    Err(e) => tracing::warn!(error = %e, "Failed to process library-drop"),
-                    _ => {}
-                }
-                drop(conn);
-
-                let conn = scan_db.lock().unwrap();
-                match tilde_photos::ingest::reprocess_untriaged(&conn, &scan_photos_base, &scan_pattern) {
-                    Ok(n) if n > 0 => {
-                        info!(count = n, "Re-organized untriaged files");
-                    }
+                let conn = db.lock().unwrap();
+                match tilde_photos::ingest::reprocess_untriaged(&conn, &photos, &pat) {
+                    Ok(n) if n > 0 => info!(count = n, "Re-organized untriaged files"),
                     Err(e) => tracing::warn!(error = %e, "Failed to reprocess untriaged"),
                     _ => {}
                 }
-
-                match tilde_photos::thumbnail::rebuild_thumbnail_mirror(&conn, &scan_photos_base, &scan_cache_dir) {
-                    Ok(n) if n > 0 => {
-                        info!(count = n, "Thumbnail mirror rebuilt");
-                    }
+                match tilde_photos::thumbnail::rebuild_thumbnail_mirror(&conn, &photos, &cache) {
+                    Ok(n) if n > 0 => info!(count = n, "Thumbnail mirror rebuilt"),
                     Err(e) => tracing::warn!(error = %e, "Failed to rebuild thumbnail mirror"),
                     _ => {}
                 }
@@ -2095,6 +2125,33 @@ pub async fn run_email(config_path: Option<&str>, command: EmailCommands) -> any
         }
     }
     Ok(())
+}
+
+/// Recursively collect media files from a directory
+fn walkdir_media(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    walkdir_media_inner(dir, &mut files);
+    files
+}
+
+fn walkdir_media_inner(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                walkdir_media_inner(&path, files);
+            } else {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if tilde_photos::is_media_ext(ext) {
+                    files.push(path);
+                }
+            }
+        }
+    }
 }
 
 fn count_files_recursive(dir: &std::path::Path) -> usize {
