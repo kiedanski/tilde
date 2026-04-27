@@ -499,11 +499,13 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     {
         let job_db = state.db.clone();
         let job_photos_base = data_dir.join("photos");
+        let job_cache_dir = state.config.cache_dir();
+        let job_thumb_quality = state.config.photos.thumbnail_quality;
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 if let Ok(conn) = job_db.lock() {
-                    match tilde_photos::process_pending_jobs(&conn, 5, &job_photos_base) {
+                    match tilde_photos::process_pending_jobs(&conn, 5, &job_photos_base, &job_cache_dir, job_thumb_quality) {
                         Ok(0) => {} // No pending jobs
                         Ok(n) => info!(count = n, "Processed background jobs"),
                         Err(e) => tracing::debug!(error = %e, "Job processor error"),
@@ -3478,6 +3480,7 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             let retention = &config.backup.local_retention;
             let pruned = tilde_backup::apply_retention(
                 &conn,
+                &backup_dir,
                 retention.hourly,
                 retention.daily,
                 retention.weekly,
@@ -3572,7 +3575,7 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             }
 
             println!("Verifying {} snapshot(s)...", snapshots.len());
-            let (passed, failed) = tilde_backup::verify_all_snapshots(&conn)?;
+            let (passed, failed) = tilde_backup::verify_all_snapshots(&conn, &backup_dir)?;
             println!("Results: {} passed, {} failed", passed, failed);
 
             if failed > 0 {
@@ -3626,7 +3629,8 @@ pub async fn run_restore(
     }
 
     println!("Restoring snapshot {} to {}...", snapshot_id, target_path);
-    tilde_backup::restore_snapshot(&conn, snapshot_id, target_dir)?;
+    let backup_dir = config.data_dir().join("backup");
+    tilde_backup::restore_snapshot(&conn, snapshot_id, &backup_dir, target_dir)?;
     println!("Restore completed successfully to {}", target_path);
 
     Ok(())

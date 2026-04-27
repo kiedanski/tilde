@@ -125,17 +125,10 @@ pub fn start_watcher(
 
                     // Create thumbnail job while we have the lock
                     if let Ok(ingest::IngestResult::Indexed {
-                        ref photo_id,
-                        ref destination,
+                        ref photo_id, ..
                     }) = r
                     {
-                        let _ = crate::create_thumbnail_job(
-                            &conn,
-                            photo_id,
-                            &destination.to_string_lossy(),
-                            &debounce_cache.to_string_lossy(),
-                            thumbnail_quality,
-                        );
+                        let _ = crate::create_thumbnail_job(&conn, photo_id);
                     }
 
                     r

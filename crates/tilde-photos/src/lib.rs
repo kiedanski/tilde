@@ -6,6 +6,7 @@ pub mod organize;
 pub mod thumbnail;
 pub mod watcher;
 
+use anyhow::Context;
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -250,23 +251,16 @@ pub fn index_photo(
 }
 
 /// Create a thumbnail generation job in the jobs queue.
-/// Returns the job ID.
+/// Only stores photo_id — file path is resolved from DB at execution time,
+/// making jobs portable across backup/restore to different machines.
 pub fn create_thumbnail_job(
     conn: &Connection,
     photo_id: &str,
-    file_path: &str,
-    cache_dir: &str,
-    quality: u8,
 ) -> anyhow::Result<i64> {
     let now = jiff::Zoned::now()
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
-    let payload = serde_json::json!({
-        "photo_id": photo_id,
-        "file_path": file_path,
-        "cache_dir": cache_dir,
-        "quality": quality,
-    });
+    let payload = serde_json::json!({ "photo_id": photo_id });
     conn.execute(
         "INSERT INTO jobs (job_type, payload_json, status, created_at) VALUES ('thumbnail', ?1, 'pending', ?2)",
         rusqlite::params![payload.to_string(), now],
@@ -281,6 +275,8 @@ pub fn process_pending_jobs(
     conn: &Connection,
     max_jobs: usize,
     photos_base: &Path,
+    cache_dir: &Path,
+    thumbnail_quality: u8,
 ) -> anyhow::Result<usize> {
     let now = jiff::Zoned::now()
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
@@ -316,7 +312,7 @@ pub fn process_pending_jobs(
         )?;
 
         let result = match job_type.as_str() {
-            "thumbnail" => process_thumbnail_job(&payload_json, conn, photos_base),
+            "thumbnail" => process_thumbnail_job(&payload_json, conn, photos_base, cache_dir, thumbnail_quality),
             _ => Err(anyhow::anyhow!("Unknown job type: {}", job_type)),
         };
 
@@ -349,30 +345,52 @@ pub fn process_pending_jobs(
     Ok(processed)
 }
 
+/// Process a thumbnail job. Resolves file path from DB (not from payload),
+/// so jobs are portable across backup/restore.
 fn process_thumbnail_job(
     payload_json: &str,
     conn: &Connection,
     photos_base: &Path,
+    cache_dir: &Path,
+    quality: u8,
 ) -> anyhow::Result<()> {
     let payload: serde_json::Value = serde_json::from_str(payload_json)?;
-    let photo_id = payload.get("photo_id").and_then(|v| v.as_str()).unwrap_or("");
-    let file_path = payload.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-    let cache_dir = payload.get("cache_dir").and_then(|v| v.as_str()).unwrap_or("");
-    let quality = payload.get("quality").and_then(|v| v.as_u64()).unwrap_or(80) as u8;
+    let photo_id = payload
+        .get("photo_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing photo_id in job payload"))?;
 
-    let file = std::path::Path::new(file_path);
-    let cache = std::path::Path::new(cache_dir);
-    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+    // Resolve file path from DB
+    let rel_path: String = conn
+        .query_row(
+            "SELECT f.path FROM photos p JOIN files f ON p.file_id = f.id WHERE p.id = ?1",
+            [photo_id],
+            |row| row.get(0),
+        )
+        .context("Photo not found in DB")?;
+
+    // files.path is like "photos/2026/04/IMG.jpg" — strip "photos/" prefix to get path within photos_base
+    let within_photos = rel_path.strip_prefix("photos/").unwrap_or(&rel_path);
+    let file = photos_base.join(within_photos);
+
+    if !file.exists() {
+        anyhow::bail!("Photo file not found: {}", file.display());
+    }
+
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
 
     if is_photo_ext(ext) {
-        thumbnail::generate_thumbnails(file, photo_id, cache, quality)?;
+        thumbnail::generate_thumbnails(&file, photo_id, cache_dir, quality)?;
     } else if is_video_ext(ext) {
-        thumbnail::generate_video_thumbnail(file, photo_id, cache, quality, 60)?;
+        thumbnail::generate_video_thumbnail(&file, photo_id, cache_dir, quality, 60)?;
     }
 
     // Mark as generated and create browseable symlink
     let _ = thumbnail::mark_thumbnails_generated(conn, photo_id, true, true);
-    let _ = thumbnail::create_thumbnail_symlink(conn, photo_id, photos_base, cache);
+    let _ = thumbnail::create_thumbnail_symlink(conn, photo_id, photos_base, cache_dir);
 
     Ok(())
 }

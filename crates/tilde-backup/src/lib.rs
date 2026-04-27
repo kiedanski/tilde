@@ -133,7 +133,7 @@ pub fn create_snapshot_with_encryption(
         created_at: created_at.clone(),
         size_bytes,
         file_count,
-        archive_path: final_path.to_string_lossy().to_string(),
+        archive_path: filename.clone(),
         checksum: checksum.clone(),
         pinned: false,
         pin_reason: None,
@@ -198,16 +198,27 @@ pub fn list_snapshots(conn: &Connection) -> Result<Vec<Snapshot>> {
     Ok(snapshots)
 }
 
+/// Resolve a snapshot's archive path. Handles both relative filenames
+/// (new format) and absolute paths (legacy backups).
+fn resolve_archive_path(snapshot: &Snapshot, backup_dir: &Path) -> std::path::PathBuf {
+    let p = Path::new(&snapshot.archive_path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        backup_dir.join(p)
+    }
+}
+
 /// Verify a snapshot's integrity by recomputing its checksum.
-pub fn verify_snapshot(conn: &Connection, snapshot_id: &str) -> Result<bool> {
+pub fn verify_snapshot(conn: &Connection, snapshot_id: &str, backup_dir: &Path) -> Result<bool> {
     let snapshot = get_snapshot(conn, snapshot_id)?;
-    let path = Path::new(&snapshot.archive_path);
+    let path = resolve_archive_path(&snapshot, backup_dir);
 
     if !path.exists() {
-        bail!("Archive file not found: {}", snapshot.archive_path);
+        bail!("Archive file not found: {}", path.display());
     }
 
-    let current_checksum = compute_file_sha256(path)?;
+    let current_checksum = compute_file_sha256(&path)?;
     let valid = current_checksum == snapshot.checksum;
 
     if valid {
@@ -225,19 +236,19 @@ pub fn verify_snapshot(conn: &Connection, snapshot_id: &str) -> Result<bool> {
 }
 
 /// Verify all snapshots. Returns (passed, failed) counts.
-pub fn verify_all_snapshots(conn: &Connection) -> Result<(usize, usize)> {
+pub fn verify_all_snapshots(conn: &Connection, backup_dir: &Path) -> Result<(usize, usize)> {
     let snapshots = list_snapshots(conn)?;
     let mut passed = 0;
     let mut failed = 0;
 
     for snapshot in &snapshots {
-        let path = Path::new(&snapshot.archive_path);
+        let path = resolve_archive_path(snapshot, backup_dir);
         if !path.exists() {
             warn!(snapshot_id = %snapshot.id, "Archive file missing");
             failed += 1;
             continue;
         }
-        let current_checksum = compute_file_sha256(path)?;
+        let current_checksum = compute_file_sha256(&path)?;
         if current_checksum == snapshot.checksum {
             passed += 1;
         } else {
@@ -264,16 +275,16 @@ pub fn pin_snapshot(conn: &Connection, snapshot_id: &str, reason: &str) -> Resul
 }
 
 /// Restore a snapshot to the given directory.
-pub fn restore_snapshot(conn: &Connection, snapshot_id: &str, target_dir: &Path) -> Result<()> {
+pub fn restore_snapshot(conn: &Connection, snapshot_id: &str, backup_dir: &Path, target_dir: &Path) -> Result<()> {
     let snapshot = get_snapshot(conn, snapshot_id)?;
-    let archive_path = Path::new(&snapshot.archive_path);
+    let archive_path = resolve_archive_path(&snapshot, backup_dir);
 
     if !archive_path.exists() {
-        bail!("Archive file not found: {}", snapshot.archive_path);
+        bail!("Archive file not found: {}", archive_path.display());
     }
 
     // Verify integrity before restore
-    let checksum = compute_file_sha256(archive_path)?;
+    let checksum = compute_file_sha256(&archive_path)?;
     if checksum != snapshot.checksum {
         bail!(
             "Checksum mismatch — archive may be corrupted (expected {}, got {})",
@@ -284,7 +295,7 @@ pub fn restore_snapshot(conn: &Connection, snapshot_id: &str, target_dir: &Path)
 
     std::fs::create_dir_all(target_dir)?;
 
-    let archive_file = std::fs::File::open(archive_path)?;
+    let archive_file = std::fs::File::open(&archive_path)?;
     let decoder = GzDecoder::new(archive_file);
     let mut archive = tar::Archive::new(decoder);
     archive.unpack(target_dir).context("Failed to extract archive")?;
@@ -325,6 +336,7 @@ pub fn restore_from_archive(archive_path: &Path, target_dir: &Path) -> Result<()
 /// prune the rest (unless pinned).
 pub fn apply_retention(
     conn: &Connection,
+    backup_dir: &Path,
     hourly: u32,
     daily: u32,
     weekly: u32,
@@ -341,10 +353,10 @@ pub fn apply_retention(
         }
         if i >= total as usize {
             // Prune this snapshot
-            let path = Path::new(&snapshot.archive_path);
+            let path = resolve_archive_path(snapshot, backup_dir);
             if path.exists() {
-                std::fs::remove_file(path)
-                    .with_context(|| format!("Failed to delete archive {}", snapshot.archive_path))?;
+                std::fs::remove_file(&path)
+                    .with_context(|| format!("Failed to delete archive {}", path.display()))?;
             }
             conn.execute(
                 "DELETE FROM backup_snapshots WHERE id = ?1",
