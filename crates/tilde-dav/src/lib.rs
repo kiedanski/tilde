@@ -29,6 +29,8 @@ pub struct DavState {
     pub session_ttl_hours: u32,
     /// The scope prefix used for app-password authorization (e.g., "/dav/")
     pub scope_prefix: String,
+    /// Photo organization pattern (only used by photos mount)
+    pub organization_pattern: String,
 }
 
 pub type SharedDavState = Arc<DavState>;
@@ -389,7 +391,100 @@ async fn handle_put(
     }
 
     info!(path = rel_path, size = total_bytes, "WebDAV PUT");
+
+    // For photos: if an existing file was overwritten, check if metadata (date) changed
+    // and queue a reorganization if needed
+    if exists && state.db_path_prefix == "photos/" {
+        let ext = disk_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        if is_media_ext(&ext) && !rel_path.starts_with("_") {
+            let db = state.db.clone();
+            let files_root = state.files_root.clone();
+            let pattern = state.organization_pattern.clone();
+            let rel = rel_path.to_string();
+            tokio::task::spawn_blocking(move || {
+                check_and_queue_reorganize(&db, &files_root, &pattern, &rel);
+            });
+        }
+    }
+
     (status, resp_headers).into_response()
+}
+
+/// Check if a photo's metadata date changed after a PUT overwrite,
+/// and reorganize it if the current path doesn't match the new date.
+fn check_and_queue_reorganize(
+    db: &Arc<Mutex<rusqlite::Connection>>,
+    photos_base: &std::path::Path,
+    organization_pattern: &str,
+    rel_path: &str,
+) {
+    use tilde_photos::metadata;
+    use tilde_photos::organize;
+
+    let disk_path = photos_base.join(rel_path);
+    let meta = match metadata::read_metadata(&disk_path) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    let date_str = match &meta.date_time_original {
+        Some(d) => d,
+        None => return,
+    };
+
+    let filename = disk_path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let new_rel = match organize::compute_destination(organization_pattern, &meta, &filename) {
+        Some(p) => p,
+        None => return,
+    };
+
+    let new_rel_str = new_rel.to_string_lossy().to_string();
+
+    // If the file is already at the correct path, nothing to do
+    if rel_path == new_rel_str {
+        return;
+    }
+
+    let new_dest = photos_base.join(&new_rel);
+    if let Some(parent) = new_dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // Move the file
+    if let Err(e) = std::fs::rename(&disk_path, &new_dest) {
+        tracing::warn!(error = %e, from = rel_path, to = %new_rel_str, "Failed to reorganize photo after metadata change");
+        return;
+    }
+
+    // Update DB
+    let conn = db.lock().unwrap();
+    let old_db_path = format!("photos/{}", rel_path);
+    let new_db_path = format!("photos/{}", new_rel_str);
+    let new_parent = std::path::Path::new(&new_db_path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    conn.execute(
+        "UPDATE files SET path = ?1, parent_path = ?2 WHERE path = ?3",
+        rusqlite::params![new_db_path, new_parent, old_db_path],
+    ).ok();
+
+    // Update photos.taken_at
+    conn.execute(
+        "UPDATE photos SET taken_at = ?1, updated_at = ?2 WHERE file_id = (SELECT id FROM files WHERE path = ?3)",
+        rusqlite::params![date_str, jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string(), new_db_path],
+    ).ok();
+
+    tracing::info!(from = rel_path, to = %new_rel_str, "Photo reorganized after metadata change");
+}
+
+fn is_media_ext(ext: &str) -> bool {
+    matches!(ext, "jpg" | "jpeg" | "png" | "webp" | "heic" | "heif" | "tiff" | "tif" |
+             "raw" | "cr2" | "nef" | "arw" | "mp4" | "mov" | "avi" | "mkv" | "webm")
 }
 
 /// DELETE — remove a file or collection

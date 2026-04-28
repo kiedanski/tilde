@@ -85,6 +85,7 @@ pub fn build_router(
         db_path_prefix: "notes/".to_string(),
         session_ttl_hours: dav_state.session_ttl_hours,
         scope_prefix: "/dav/".to_string(),
+        organization_pattern: String::new(),
     });
     let notes_router = tilde_dav::build_dav_router(notes_state);
 
@@ -101,6 +102,7 @@ pub fn build_router(
         db_path_prefix: "photos/".to_string(),
         session_ttl_hours: dav_state.session_ttl_hours,
         scope_prefix: "/dav/".to_string(),
+        organization_pattern: state.config.photos.organization_pattern.clone(),
     });
     let photos_router = tilde_dav::build_dav_router(photos_state);
 

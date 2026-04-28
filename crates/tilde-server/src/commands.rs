@@ -451,6 +451,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         db_path_prefix: String::new(),
         session_ttl_hours: session_ttl,
         scope_prefix: "/dav/".to_string(),
+        organization_pattern: String::new(),
     });
 
     let caldav_state: tilde_cal::SharedCalDavState = Arc::new(tilde_cal::CalDavState {
