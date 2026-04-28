@@ -877,13 +877,13 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
     }
 
     let xml = build_multistatus_xml(&responses);
+    let xml_bytes = xml.into_bytes();
 
-    (
-        StatusCode::MULTI_STATUS,
-        [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
-        xml,
-    )
-        .into_response()
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/xml; charset=utf-8"));
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(xml_bytes.len()));
+
+    (StatusCode::MULTI_STATUS, headers, xml_bytes).into_response()
 }
 
 /// PROPPATCH — set/remove custom properties
