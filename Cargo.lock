@@ -2913,7 +2913,9 @@ dependencies = [
  "serde_json",
  "sha2",
  "tilde-core",
+ "tilde-photos",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
