@@ -1464,16 +1464,22 @@ fn get_destination(headers: &HeaderMap) -> Option<String> {
         .map(|dest| {
             // Extract relative path from full URL or path
             // Support all DAV mount points: /dav/files/, /dav/photos/, /dav/notes/
-            for prefix in &["/dav/files/", "/dav/photos/", "/dav/notes/"] {
-                if let Some(idx) = dest.find(prefix) {
-                    return dest[idx + prefix.len()..]
-                        .trim_end_matches('/')
-                        .to_string();
+            let path = {
+                let mut result = None;
+                for prefix in &["/dav/files/", "/dav/photos/", "/dav/notes/"] {
+                    if let Some(idx) = dest.find(prefix) {
+                        result = Some(dest[idx + prefix.len()..].trim_end_matches('/').to_string());
+                        break;
+                    }
                 }
-            }
-            dest.trim_start_matches('/')
-                .trim_end_matches('/')
-                .to_string()
+                result.unwrap_or_else(|| {
+                    dest.trim_start_matches('/').trim_end_matches('/').to_string()
+                })
+            };
+            // URL-decode the path (spaces, special characters)
+            urlencoding::decode(&path)
+                .map(|s| s.into_owned())
+                .unwrap_or(path)
         })
 }
 
