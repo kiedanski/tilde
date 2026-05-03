@@ -647,6 +647,8 @@ fn handle_report(state: &SharedCardDavState, path: &str, body: &str) -> axum::re
         handle_multiget(state, ab_name, principal, body)
     } else if body.contains("sync-collection") {
         handle_sync_collection(state, ab_name, principal, body)
+    } else if body.contains("addressbook-query") {
+        handle_addressbook_query(state, ab_name, principal, body)
     } else {
         StatusCode::BAD_REQUEST.into_response()
     }
@@ -702,6 +704,81 @@ fn handle_multiget(
 </d:response>"#, escape_xml(href)));
             }
         }
+    }
+
+    xml_response(
+        StatusCode::MULTI_STATUS,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
+{}</d:multistatus>"#,
+            responses
+        ),
+    )
+}
+
+fn handle_addressbook_query(
+    state: &SharedCardDavState,
+    ab_name: &str,
+    principal: &str,
+    body: &str,
+) -> axum::response::Response {
+    let db = state.db.lock().unwrap();
+    let ab_id: String = match db.query_row(
+        "SELECT id FROM addressbooks WHERE name = ?1",
+        [ab_name],
+        |row| row.get(0),
+    ) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    // Extract prop-filter names (e.g. <card:prop-filter name="BDAY">)
+    let prop_filters = extract_prop_filter_names(body);
+
+    let mut stmt = db
+        .prepare("SELECT uid, etag, vcard_data FROM contacts WHERE addressbook_id = ?1 AND deleted = 0")
+        .unwrap();
+    let contacts: Vec<(String, String, String)> = stmt
+        .query_map([&ab_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .flatten()
+        .collect();
+
+    let mut responses = String::new();
+    for (uid, etag, vcard) in &contacts {
+        // Apply prop-filters: contact must have all filtered properties
+        if !prop_filters.is_empty()
+            && !prop_filters
+                .iter()
+                .all(|prop| extract_vcard_field(vcard, prop).is_some())
+        {
+            continue;
+        }
+
+        responses.push_str(&format!(
+            r#"<d:response>
+  <d:href>/carddav/{}/{}/{}.vcf</d:href>
+  <d:propstat>
+    <d:prop>
+      <d:getetag>"{}"</d:getetag>
+      <card:address-data>{}</card:address-data>
+    </d:prop>
+    <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+</d:response>"#,
+            principal,
+            ab_name,
+            uid,
+            etag,
+            escape_xml(vcard)
+        ));
     }
 
     xml_response(
@@ -885,6 +962,25 @@ fn extract_hrefs(xml: &str) -> Vec<String> {
         }
     }
     hrefs
+}
+
+fn extract_prop_filter_names(xml: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut search_from = 0;
+    while let Some(pos) = xml[search_from..].find("prop-filter") {
+        let abs_pos = search_from + pos;
+        // Find name="..." attribute after this
+        if let Some(name_pos) = xml[abs_pos..].find("name=\"") {
+            let val_start = abs_pos + name_pos + 6;
+            if let Some(end) = xml[val_start..].find('"') {
+                names.push(&xml[val_start..val_start + end]);
+            }
+            search_from = val_start;
+        } else {
+            search_from = abs_pos + 11;
+        }
+    }
+    names
 }
 
 fn extract_vcard_field(vcard: &str, field: &str) -> Option<String> {
