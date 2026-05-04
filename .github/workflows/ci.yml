@@ -60,6 +60,21 @@ jobs:
           name: tilde-macos-aarch64
           path: target/release/tilde
 
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --no-default-features
+      - name: Run security tests
+        run: bash tests/integration/test_security.sh
+      - name: Run CalDAV tests
+        run: bash tests/integration/test_caldav.sh
+      - name: Run CardDAV tests
+        run: bash tests/integration/test_carddav.sh
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
