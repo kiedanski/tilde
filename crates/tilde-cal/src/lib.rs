@@ -146,6 +146,17 @@ async fn handle_caldav_request(
         .get(header::IF_MATCH)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim_matches('"').to_string());
+    let if_none_match = req
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let content_type = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
 
     let body = match axum::body::to_bytes(req.into_body(), 10_485_760).await {
         Ok(b) => String::from_utf8_lossy(&b).to_string(),
@@ -168,7 +179,7 @@ async fn handle_caldav_request(
         "PROPFIND" => handle_propfind(state, path, &depth),
         "PROPPATCH" => handle_proppatch(state, path, &body),
         "MKCALENDAR" | "MKCOL" => handle_mkcalendar(state, path, &body),
-        "PUT" => handle_put(state, path, &body, if_match.as_deref()),
+        "PUT" => handle_put(state, path, &body, if_match.as_deref(), if_none_match.as_deref(), content_type.as_deref()),
         "GET" => handle_get(state, path),
         "DELETE" => handle_delete(state, path),
         "REPORT" => handle_report(state, path, &body),
@@ -512,7 +523,16 @@ fn handle_put(
     path: &str,
     body: &str,
     if_match: Option<&str>,
+    if_none_match: Option<&str>,
+    content_type: Option<&str>,
 ) -> axum::response::Response {
+    // Validate Content-Type
+    if let Some(ct) = content_type {
+        if !ct.contains("text/calendar") && !ct.contains("application/octet-stream") {
+            return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Content-Type must be text/calendar").into_response();
+        }
+    }
+
     let db = state.db.get().unwrap();
     let (_principal, cal_name, obj_name) = parse_path(path);
 
@@ -541,6 +561,13 @@ fn handle_put(
         |row| row.get::<_, String>(0),
     );
 
+    // If-None-Match: * means "only create, don't overwrite" (DAVx5 sends this)
+    if let Some(inm) = if_none_match {
+        if inm.trim() == "*" && existing.is_ok() {
+            return StatusCode::PRECONDITION_FAILED.into_response();
+        }
+    }
+
     if let Some(expected) = if_match {
         match &existing {
             Ok(current_etag) => {
@@ -559,6 +586,8 @@ fn handle_put(
 
     let component_type = if body.contains("VTODO") {
         "VTODO"
+    } else if body.contains("VJOURNAL") {
+        "VJOURNAL"
     } else {
         "VEVENT"
     };
@@ -608,6 +637,11 @@ fn handle_put(
 
     let change_type = if is_new { "created" } else { "modified" };
     let object_uri = format!("{}.ics", uid);
+    // Deduplicate: keep only the latest change per object_uri
+    db.execute(
+        "DELETE FROM sync_changes WHERE collection_type = 'calendar' AND collection_id = ?1 AND object_uri = ?2",
+        rusqlite::params![cal_id, &object_uri],
+    ).ok();
     db.execute(
         "INSERT INTO sync_changes (collection_type, collection_id, object_uri, change_type, sync_token, created_at)
          VALUES ('calendar', ?1, ?2, ?3, ?4, ?5)",
@@ -710,6 +744,11 @@ fn handle_delete(state: &SharedCalDavState, path: &str) -> axum::response::Respo
             ).unwrap();
 
             let object_uri = format!("{}.ics", uid);
+            // Deduplicate sync_changes for this object
+            db.execute(
+                "DELETE FROM sync_changes WHERE collection_type = 'calendar' AND collection_id = ?1 AND object_uri = ?2",
+                rusqlite::params![cal_id, &object_uri],
+            ).ok();
             db.execute(
                 "INSERT INTO sync_changes (collection_type, collection_id, object_uri, change_type, sync_token, created_at)
                  VALUES ('calendar', ?1, ?2, 'deleted', ?3, ?4)",

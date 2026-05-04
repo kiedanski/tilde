@@ -140,6 +140,16 @@ async fn handle_request(
         .get(header::IF_MATCH)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim_matches('"').to_string());
+    let if_none_match = req
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let content_type = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
     let body = match axum::body::to_bytes(req.into_body(), 10_485_760).await {
         Ok(b) => String::from_utf8_lossy(&b).to_string(),
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
@@ -163,7 +173,7 @@ async fn handle_request(
         "PROPFIND" => handle_propfind(state, path, &depth),
         "PROPPATCH" => handle_proppatch(state, path, &body),
         "MKCOL" => handle_mkcol(state, path, &body),
-        "PUT" => handle_put(state, path, &body, if_match.as_deref()),
+        "PUT" => handle_put(state, path, &body, if_match.as_deref(), if_none_match.as_deref(), content_type.as_deref()),
         "GET" => handle_get(state, path),
         "DELETE" => handle_delete(state, path),
         "REPORT" => handle_report(state, path, &body),
@@ -453,7 +463,16 @@ fn handle_put(
     path: &str,
     body: &str,
     if_match: Option<&str>,
+    if_none_match: Option<&str>,
+    content_type: Option<&str>,
 ) -> axum::response::Response {
+    // Validate Content-Type
+    if let Some(ct) = content_type {
+        if !ct.contains("text/vcard") && !ct.contains("application/octet-stream") {
+            return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Content-Type must be text/vcard").into_response();
+        }
+    }
+
     let db = state.db.get().unwrap();
     let (_, ab_name, contact_name) = parse_path(path);
     let ab_name = match ab_name {
@@ -480,6 +499,13 @@ fn handle_put(
         rusqlite::params![ab_id, uid],
         |row| row.get::<_, String>(0),
     );
+
+    // If-None-Match: * means "only create, don't overwrite" (DAVx5 sends this)
+    if let Some(inm) = if_none_match {
+        if inm.trim() == "*" && existing.is_ok() {
+            return StatusCode::PRECONDITION_FAILED.into_response();
+        }
+    }
 
     if let Some(expected) = if_match {
         match &existing {
@@ -527,10 +553,15 @@ fn handle_put(
     db.execute("UPDATE addressbooks SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![new_st, now, ab_id]).unwrap();
 
     let change_type = if is_new { "created" } else { "modified" };
+    let object_uri = format!("{}.vcf", uid);
+    db.execute(
+        "DELETE FROM sync_changes WHERE collection_type = 'addressbook' AND collection_id = ?1 AND object_uri = ?2",
+        rusqlite::params![ab_id, &object_uri],
+    ).ok();
     db.execute(
         "INSERT INTO sync_changes (collection_type, collection_id, object_uri, change_type, sync_token, created_at)
          VALUES ('addressbook', ?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![ab_id, format!("{}.vcf", uid), change_type, new_st, now],
+        rusqlite::params![ab_id, &object_uri, change_type, new_st, now],
     ).unwrap();
 
     let status = if is_new {
@@ -616,10 +647,15 @@ fn handle_delete(state: &SharedCardDavState, path: &str) -> axum::response::Resp
                 .unwrap_or(0)
                 + 1;
             db.execute("UPDATE addressbooks SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![new_st, now, ab_id]).unwrap();
+            let del_uri = format!("{}.vcf", uid);
+            db.execute(
+                "DELETE FROM sync_changes WHERE collection_type = 'addressbook' AND collection_id = ?1 AND object_uri = ?2",
+                rusqlite::params![ab_id, &del_uri],
+            ).ok();
             db.execute(
                 "INSERT INTO sync_changes (collection_type, collection_id, object_uri, change_type, sync_token, created_at)
                  VALUES ('addressbook', ?1, ?2, 'deleted', ?3, ?4)",
-                rusqlite::params![ab_id, format!("{}.vcf", uid), new_st, now],
+                rusqlite::params![ab_id, &del_uri, new_st, now],
             ).unwrap();
             StatusCode::NO_CONTENT.into_response()
         }
