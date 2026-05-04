@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tilde_core::{
-    auth,
     config::Config,
     db::{self, DbPool},
 };
@@ -22,13 +21,6 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         let conn = db::init_db(db_path.to_str().unwrap())?;
         let migrations_dir = tilde_cli::find_migrations_dir();
         db::run_migrations(&conn, &migrations_dir)?;
-
-        if let Ok(pw) = std::env::var("TILDE_ADMIN_PASSWORD")
-            && auth::get_admin_password_hash(&conn)?.is_none()
-        {
-            auth::store_admin_password(&conn, &pw)?;
-            info!("Admin password set from environment variable");
-        }
     }
 
     let pool: DbPool = db::init_pool(db_path.to_str().unwrap())?;
@@ -113,36 +105,11 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         rate_limits: Mutex::new(std::collections::HashMap::new()),
     });
 
-    // Initialize WebAuthn if enabled
-    let webauthn = if config.auth.webauthn_enabled {
-        let hostname = if config.server.hostname.is_empty() {
-            "localhost"
-        } else {
-            &config.server.hostname
-        };
-        match tilde_core::auth::create_webauthn(&config.auth.webauthn_rp_id, hostname) {
-            Ok(w) => {
-                tracing::info!("WebAuthn enabled");
-                Some(w)
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to initialize WebAuthn, continuing without it");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     let state: SharedState = Arc::new(AppState {
         config: arc_swap::ArcSwap::new(Arc::new(config)),
         db: pool.clone(),
         start_time: Instant::now(),
-        login_attempts: Mutex::new(std::collections::HashMap::new()),
         mcp_state,
-        webauthn,
-        webauthn_reg_state: Mutex::new(std::collections::HashMap::new()),
-        webauthn_auth_state: Mutex::new(std::collections::HashMap::new()),
         tunnel_status: if tunnel_config.enabled {
             info!("Tunnel configured — starting newt subprocess");
             let (status, _handle) = tilde_server::tunnel::spawn_tunnel_supervisor(tunnel_config);
@@ -152,27 +119,20 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         },
     });
 
-    let session_ttl = state.config().auth.session_ttl_hours;
-
     let dav_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
         db: pool.clone(),
         files_root,
         uploads_root,
         db_path_prefix: String::new(),
-        session_ttl_hours: session_ttl,
         scope_prefix: "/dav/".to_string(),
         organization_pattern: String::new(),
     });
 
-    let caldav_state: tilde_cal::SharedCalDavState = Arc::new(tilde_cal::CalDavState {
-        db: pool.clone(),
-        session_ttl_hours: session_ttl,
-    });
+    let caldav_state: tilde_cal::SharedCalDavState =
+        Arc::new(tilde_cal::CalDavState { db: pool.clone() });
 
-    let carddav_state: tilde_card::SharedCardDavState = Arc::new(tilde_card::CardDavState {
-        db: pool.clone(),
-        session_ttl_hours: session_ttl,
-    });
+    let carddav_state: tilde_card::SharedCardDavState =
+        Arc::new(tilde_card::CardDavState { db: pool.clone() });
 
     // Ensure default calendar and addressbook exist
     {

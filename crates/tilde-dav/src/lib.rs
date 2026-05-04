@@ -25,8 +25,6 @@ pub struct DavState {
     pub uploads_root: PathBuf,
     /// Prefix to add to rel_path for DB lookups (e.g., "photos/" for the photos router)
     pub db_path_prefix: String,
-    /// Session TTL for auth validation
-    pub session_ttl_hours: u32,
     /// The scope prefix used for app-password authorization (e.g., "/dav/")
     pub scope_prefix: String,
     /// Photo organization pattern (only used by photos mount)
@@ -54,15 +52,6 @@ fn check_auth(state: &SharedDavState, headers: &HeaderMap) -> bool {
         .map(|s| s.to_string());
 
     match auth_header {
-        Some(ref h) if h.starts_with("Bearer ") => {
-            let token = &h[7..];
-            let db = state.db.get().unwrap();
-            if token.starts_with("tilde_session_") {
-                auth::validate_session(&db, token, state.session_ttl_hours).unwrap_or(false)
-            } else {
-                false
-            }
-        }
         Some(ref h) if h.starts_with("Basic ") => {
             let decoded =
                 base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &h[6..])

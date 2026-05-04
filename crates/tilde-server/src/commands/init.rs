@@ -1,4 +1,4 @@
-use tilde_core::{auth, config::Config, db};
+use tilde_core::{config::Config, db};
 
 use super::{generate_recovery_code, prompt_with_default};
 
@@ -98,14 +98,9 @@ pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
     db::run_migrations(&conn, &migrations_dir)?;
     println!("[OK] Database migrations applied");
 
-    // Step 6: Store admin password (hashed)
+    // Auth is app-password-only; admin password is no longer stored
     if !admin_password.is_empty() {
-        auth::store_admin_password(&conn, &admin_password)?;
-        println!("[OK] Admin password hashed and stored");
-    } else {
-        println!(
-            "[WARN] No admin password set. Set TILDE_ADMIN_PASSWORD env var or run init again."
-        );
+        println!("[INFO] Admin password ignored — use `tilde auth app-password create` instead.");
     }
 
     // Step 7-8: Generate backup encryption keypair and recovery code
@@ -180,14 +175,7 @@ mode = "acme"
 # key_path = "/path/to/key.pem"
 
 [auth]
-# Session sliding TTL in hours
-session_ttl_hours = 24
-# Max failed login attempts per IP per 15 minutes
-max_login_attempts = 5
-# Lockout duration after max attempts exceeded
-lockout_duration_minutes = 15
-# Optional WebAuthn second factor
-webauthn_enabled = false
+# Auth is app-password-only. Use `tilde auth app-password create` to manage credentials.
 
 [files]
 # Maximum upload size in MB (default: 10GB)

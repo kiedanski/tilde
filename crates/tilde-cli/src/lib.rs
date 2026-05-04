@@ -163,30 +163,9 @@ impl Cli {
 
 #[derive(clap::Subcommand)]
 pub enum AuthCommands {
-    ResetPassword,
     AppPassword {
         #[command(subcommand)]
         command: AppPasswordCommands,
-    },
-    Session {
-        #[command(subcommand)]
-        command: SessionCommands,
-    },
-    /// WebAuthn credential management
-    Webauthn {
-        #[command(subcommand)]
-        command: WebauthnCommands,
-    },
-}
-
-#[derive(clap::Subcommand)]
-pub enum WebauthnCommands {
-    /// List registered WebAuthn credentials
-    List,
-    /// Remove a WebAuthn credential by ID
-    Remove {
-        /// Credential ID to remove
-        id: String,
     },
 }
 
@@ -202,12 +181,6 @@ pub enum AppPasswordCommands {
     Revoke {
         id: String,
     },
-}
-
-#[derive(clap::Subcommand)]
-pub enum SessionCommands {
-    List,
-    Revoke { id: String },
 }
 
 #[derive(clap::Subcommand)]

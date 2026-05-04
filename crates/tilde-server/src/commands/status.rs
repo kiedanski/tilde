@@ -1,4 +1,4 @@
-use tilde_core::{auth, config::Config, db};
+use tilde_core::{config::Config, db};
 
 use super::{check_dep, walkdir};
 
@@ -21,11 +21,9 @@ pub async fn run_status(config_path: Option<&str>, json_output: bool) -> anyhow:
         if db_path.exists() {
             let conn = db::init_db(db_path.to_str().unwrap())?;
             let migrations = db::get_applied_migrations(&conn)?;
-            let has_password = auth::get_admin_password_hash(&conn)?.is_some();
             let db_size = db_path.metadata().map(|m| m.len()).unwrap_or(0);
 
             status["migrations_applied"] = serde_json::json!(migrations.len());
-            status["admin_auth_configured"] = serde_json::json!(has_password);
             status["database_size_bytes"] = serde_json::json!(db_size);
         }
 
@@ -62,16 +60,6 @@ pub async fn run_status(config_path: Option<&str>, json_output: bool) -> anyhow:
         let conn = db::init_db(db_path.to_str().unwrap())?;
         let migrations = db::get_applied_migrations(&conn)?;
         println!("Migrations: {} applied", migrations.len());
-
-        let has_password = auth::get_admin_password_hash(&conn)?.is_some();
-        println!(
-            "Admin auth: {}",
-            if has_password {
-                "configured"
-            } else {
-                "NOT SET"
-            }
-        );
 
         if let Ok(meta) = db_path.metadata() {
             let size_mb = meta.len() as f64 / 1024.0 / 1024.0;

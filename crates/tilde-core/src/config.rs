@@ -211,31 +211,9 @@ impl Default for TlsConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AuthConfig {
-    #[serde(default = "default_session_ttl")]
-    pub session_ttl_hours: u32,
-    #[serde(default = "default_max_login_attempts")]
-    pub max_login_attempts: u32,
-    #[serde(default = "default_lockout_duration")]
-    pub lockout_duration_minutes: u32,
-    // admin_password removed: secrets must come from env (TILDE_ADMIN_PASSWORD), not config files
-    #[serde(default)]
-    pub webauthn_enabled: bool,
-    #[serde(default)]
-    pub webauthn_rp_id: String,
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            session_ttl_hours: default_session_ttl(),
-            max_login_attempts: default_max_login_attempts(),
-            lockout_duration_minutes: default_lockout_duration(),
-            webauthn_enabled: false,
-            webauthn_rp_id: String::new(),
-        }
-    }
+    // All auth is app-password-only now; no session/WebAuthn fields remain.
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -633,15 +611,6 @@ fn default_listen_port() -> u16 {
 fn default_tls_mode() -> String {
     "acme".to_string()
 }
-fn default_session_ttl() -> u32 {
-    24
-}
-fn default_max_login_attempts() -> u32 {
-    5
-}
-fn default_lockout_duration() -> u32 {
-    15
-}
 fn default_log_level() -> String {
     "info".to_string()
 }
@@ -694,8 +663,6 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.server.listen_addr, "0.0.0.0");
         assert_eq!(config.server.listen_port, 443);
-        assert_eq!(config.auth.session_ttl_hours, 24);
-        assert_eq!(config.auth.max_login_attempts, 5);
     }
 
     #[test]

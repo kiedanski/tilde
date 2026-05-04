@@ -24,7 +24,6 @@ pub const PRINCIPAL: &str = "admin";
 
 pub struct CalDavState {
     pub db: DbPool,
-    pub session_ttl_hours: u32,
 }
 
 pub type SharedCalDavState = Arc<CalDavState>;
@@ -90,15 +89,6 @@ fn check_auth(state: &SharedCalDavState, req: &axum::extract::Request, scope_pre
         .map(|s| s.to_string());
 
     match auth_header {
-        Some(ref h) if h.starts_with("Bearer ") => {
-            let token = &h[7..];
-            let db = state.db.get().unwrap();
-            if token.starts_with("tilde_session_") {
-                auth::validate_session(&db, token, state.session_ttl_hours).unwrap_or(false)
-            } else {
-                false
-            }
-        }
         Some(ref h) if h.starts_with("Basic ") => {
             let decoded =
                 base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &h[6..])
