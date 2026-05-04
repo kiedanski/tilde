@@ -428,7 +428,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     };
 
     let state: SharedState = Arc::new(AppState {
-        config,
+        config: arc_swap::ArcSwap::new(Arc::new(config)),
         db: pool.clone(),
         start_time: Instant::now(),
         login_attempts: Mutex::new(std::collections::HashMap::new()),
@@ -446,7 +446,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         },
     });
 
-    let session_ttl = state.config.auth.session_ttl_hours;
+    let session_ttl = state.config().auth.session_ttl_hours;
 
     let dav_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
         db: pool.clone(),
@@ -478,9 +478,9 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     // Start photo file watcher for _inbox/ and _library-drop/
     let _photo_watcher = {
         let photos_base = data_dir.join("photos");
-        let pattern = state.config.photos.organization_pattern.clone();
-        let debounce = state.config.photos.watch_debounce_seconds;
-        let quality = state.config.photos.thumbnail_quality;
+        let pattern = state.config().photos.organization_pattern.clone();
+        let debounce = state.config().photos.watch_debounce_seconds;
+        let quality = state.config().photos.thumbnail_quality;
         match tilde_photos::watcher::start_watcher(
             state.db.clone(),
             photos_base,
@@ -508,8 +508,8 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     {
         let job_db = state.db.clone();
         let job_photos_base = data_dir.join("photos");
-        let job_cache_dir = state.config.cache_dir();
-        let job_thumb_quality = state.config.photos.thumbnail_quality;
+        let job_cache_dir = state.config().cache_dir();
+        let job_thumb_quality = state.config().photos.thumbnail_quality;
         let token = shutdown.clone();
         tasks.spawn(async move {
             loop {
@@ -554,11 +554,11 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     }
 
     // Start backup scheduler if backup is enabled
-    if state.config.backup.enabled {
-        let backup_schedule = state.config.backup.schedule.clone();
+    if state.config().backup.enabled {
+        let backup_schedule = state.config().backup.schedule.clone();
         let backup_db = state.db.clone();
         let backup_data_dir = data_dir.clone();
-        let backup_encrypt_recipient = state.config.backup.encrypt_recipient.clone();
+        let backup_encrypt_recipient = state.config().backup.encrypt_recipient.clone();
         let token = shutdown.clone();
         tasks.spawn(async move {
             let interval_secs = parse_schedule_interval(&backup_schedule);
@@ -640,15 +640,15 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 }
             }
         });
-        info!(schedule = %state.config.backup.schedule, "Backup scheduler enabled");
+        info!(schedule = %state.config().backup.schedule, "Backup scheduler enabled");
     }
 
     // Process existing files in background (doesn't block server startup)
     {
         let scan_db = state.db.clone();
         let scan_photos_base = data_dir.join("photos");
-        let scan_pattern = state.config.photos.organization_pattern.clone();
-        let scan_cache_dir = state.config.cache_dir();
+        let scan_pattern = state.config().photos.organization_pattern.clone();
+        let scan_cache_dir = state.config().cache_dir();
         let token = shutdown.clone();
         tasks.spawn(async move {
             // Small delay to let the server finish binding
@@ -730,9 +730,9 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     }
 
     // Start email IMAP sync if email is enabled
-    if state.config.email.enabled {
+    if state.config().email.enabled {
         let mail_dir = data_dir.join("mail");
-        let mut accounts = state.config.email.accounts.clone();
+        let mut accounts = state.config().email.accounts.clone();
 
         // If no accounts configured but env vars are set, create a default account
         if accounts.is_empty() {
@@ -775,6 +775,10 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         }
     }
 
+    // Clone state for SIGHUP handler before build_router consumes it
+    #[cfg(unix)]
+    let sighup_state = state.clone();
+
     let app = build_router(state, dav_state, caldav_state, carddav_state);
 
     // Set up SIGHUP handler for config hot-reload
@@ -793,15 +797,12 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 info!("Received SIGHUP, reloading configuration...");
                 match Config::load(config_path_for_reload.as_deref()) {
                     Ok(new_config) => {
-                        // SIGHUP reload: log new config values but note that
-                        // AppState.config is by-value — most changes require restart.
-                        // TODO: use ArcSwap<Config> to make reload actually effective
-                        let level = &new_config.logging.level;
-                        warn!(
-                            level = %level,
-                            "SIGHUP: config file re-read, but runtime config is NOT updated \
-                             (AppState holds config by value). Most changes require a restart."
+                        info!(
+                            logging_level = %new_config.logging.level,
+                            mcp_rate_limit = new_config.mcp.default_rate_limit,
+                            "SIGHUP: configuration reloaded successfully"
                         );
+                        sighup_state.config.store(Arc::new(new_config));
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to reload configuration on SIGHUP");

@@ -101,6 +101,9 @@ rust-embed = "8"
 # File watching
 notify = "7"
 
+# Atomic config swap
+arc-swap = "1"
+
 # Error handling
 thiserror = "2"
 anyhow = "1"

@@ -37,7 +37,7 @@ pub struct LoginFlowSession {
 
 /// Shared application state
 pub struct AppState {
-    pub config: Config,
+    pub config: arc_swap::ArcSwap<Config>,
     pub db: DbPool,
     pub start_time: Instant,
     pub login_attempts: Mutex<HashMap<String, RateLimitEntry>>,
@@ -47,6 +47,14 @@ pub struct AppState {
     pub webauthn_reg_state: Mutex<HashMap<String, (webauthn_rs::prelude::PasskeyRegistration, Instant)>>,
     pub webauthn_auth_state: Mutex<HashMap<String, (webauthn_rs::prelude::PasskeyAuthentication, Instant)>>,
     pub tunnel_status: Option<tunnel::SharedTunnelStatus>,
+}
+
+impl AppState {
+    /// Load the current configuration snapshot.
+    /// The returned guard auto-derefs to `Config`.
+    pub fn config(&self) -> arc_swap::Guard<Arc<Config>> {
+        self.config.load()
+    }
 }
 
 pub type SharedState = Arc<AppState>;
@@ -101,7 +109,7 @@ pub fn build_router(
         db_path_prefix: "photos/".to_string(),
         session_ttl_hours: dav_state.session_ttl_hours,
         scope_prefix: "/dav/".to_string(),
-        organization_pattern: state.config.photos.organization_pattern.clone(),
+        organization_pattern: state.config().photos.organization_pattern.clone(),
     });
     let photos_router = tilde_dav::build_dav_router(photos_state);
 
@@ -282,7 +290,7 @@ async fn metrics_handler(
     let uptime = state.start_time.elapsed().as_secs();
 
     let db_size = state
-        .config
+        .config()
         .db_path()
         .metadata()
         .map(|m| m.len())
@@ -429,10 +437,11 @@ async fn well_known_carddav() -> impl IntoResponse {
 async fn apple_mobileconfig_handler(
     State(state): State<SharedState>,
 ) -> axum::response::Response {
-    let hostname = if state.config.server.hostname.is_empty() {
+    let cfg = state.config();
+    let hostname = if cfg.server.hostname.is_empty() {
         "localhost".to_string()
     } else {
-        state.config.server.hostname.clone()
+        cfg.server.hostname.clone()
     };
 
     let profile_uuid = uuid::Uuid::new_v4().to_string().to_uppercase();
@@ -557,7 +566,8 @@ async fn login_handler(
     // Use X-Forwarded-For only when the direct connection is from a trusted proxy.
     // Without this gate, direct-exposed deployments would allow trivial IP spoofing.
     let raw_ip = addr.ip();
-    let is_trusted_proxy = state.config.server.trusted_proxies.iter().any(|cidr| {
+    let cfg = state.config();
+    let is_trusted_proxy = cfg.server.trusted_proxies.iter().any(|cidr| {
         // Simple prefix match: "127.0.0.1" or "10.0.0.0/8" etc.
         let prefix = cidr.split('/').next().unwrap_or(cidr);
         prefix.parse::<std::net::IpAddr>().map(|p| p == raw_ip).unwrap_or(false)
@@ -574,8 +584,8 @@ async fn login_handler(
         raw_ip.to_string()
     };
 
-    let max_attempts = state.config.auth.max_login_attempts;
-    let lockout_minutes = state.config.auth.lockout_duration_minutes;
+    let max_attempts = cfg.auth.max_login_attempts;
+    let lockout_minutes = cfg.auth.lockout_duration_minutes;
     let window = std::time::Duration::from_secs(lockout_minutes as u64 * 60);
 
     // Check rate limit
@@ -611,14 +621,14 @@ async fn login_handler(
                 &db,
                 user_agent,
                 Some(&client_ip),
-                state.config.auth.session_ttl_hours,
+                cfg.auth.session_ttl_hours,
             ) {
                 Ok(token) => (
                     StatusCode::OK,
                     Json(json!({
                         "token": token,
                         "token_prefix": &token[..std::cmp::min(22, token.len())],
-                        "expires_in_hours": state.config.auth.session_ttl_hours,
+                        "expires_in_hours": cfg.auth.session_ttl_hours,
                     })),
                 )
                     .into_response(),
@@ -670,7 +680,7 @@ async fn auth_middleware(
             let token = &h[7..];
             let db = state.db.get().unwrap();
             if token.starts_with("tilde_session_") {
-                auth::validate_session(&db, token, state.config.auth.session_ttl_hours)
+                auth::validate_session(&db, token, state.config().auth.session_ttl_hours)
                     .unwrap_or(false)
             } else if token.starts_with("mcp_prod_") {
                 // MCP tokens should only be accepted for /mcp endpoints, not general /api/*
@@ -845,7 +855,8 @@ async fn host_filter_middleware(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<axum::response::Response, StatusCode> {
-    let configured_hostname = &state.config.server.hostname;
+    let cfg = state.config();
+    let configured_hostname = &cfg.server.hostname;
 
     // Skip host filtering if no hostname is configured
     if configured_hostname.is_empty() {
@@ -893,7 +904,7 @@ async fn login_flow_initiate(
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost");
-    let scheme = if state.config.tls.mode == "upstream" { "https" } else { "http" };
+    let scheme = if state.config().tls.mode == "upstream" { "https" } else { "http" };
     let login_url = format!("{}://{}/login/v2/auth?token={}", scheme, host, poll_token);
     let poll_endpoint = format!("{}://{}/login/v2/poll", scheme, host);
 
@@ -968,11 +979,11 @@ async fn login_flow_poll(
             session.consumed = true;
             flows.insert(token, session);
 
-            let hostname = &state.config.server.hostname;
-            let server_url = if hostname.is_empty() {
+            let cfg = state.config();
+            let server_url = if cfg.server.hostname.is_empty() {
                 "http://localhost".to_string()
             } else {
-                format!("https://{}", hostname)
+                format!("https://{}", cfg.server.hostname)
             };
 
             Json(json!({
@@ -1183,11 +1194,11 @@ fn render_login_error(flow_token: &str, csrf_token: &str, error: &str) -> axum::
 
 /// GET /.well-known/oauth-protected-resource — OAuth Protected Resource Metadata (RFC 9728 stub)
 async fn oauth_protected_resource(State(state): State<SharedState>) -> impl IntoResponse {
-    let hostname = &state.config.server.hostname;
-    let resource = if hostname.is_empty() {
+    let cfg = state.config();
+    let resource = if cfg.server.hostname.is_empty() {
         "http://localhost".to_string()
     } else {
-        format!("https://{}", hostname)
+        format!("https://{}", cfg.server.hostname)
     };
 
     Json(json!({
@@ -1229,7 +1240,7 @@ async fn mcp_handler(
                             [&auth::hash_token(token)],
                             |row| row.get::<_, u32>(0),
                         )
-                        .unwrap_or(state.config.mcp.default_rate_limit);
+                        .unwrap_or(state.config().mcp.default_rate_limit);
                     (name, scopes, rl)
                 }
                 _ => {
@@ -1278,7 +1289,7 @@ async fn mcp_handler(
         &token_scopes,
         rate_limit,
         &source_ip,
-        state.config.mcp.audit_log_retention_days,
+        state.config().mcp.audit_log_retention_days,
     );
 
     (StatusCode::OK, Json(json!(response))).into_response()
@@ -1458,7 +1469,7 @@ async fn webauthn_register_start(
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "authentication required"}))).into_response();
     }
 
-    if !state.config.auth.webauthn_enabled {
+    if !state.config().auth.webauthn_enabled {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "WebAuthn is not enabled"}))).into_response();
     }
 
@@ -1509,7 +1520,7 @@ async fn webauthn_register_finish(
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "authentication required"}))).into_response();
     }
 
-    if !state.config.auth.webauthn_enabled {
+    if !state.config().auth.webauthn_enabled {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "WebAuthn is not enabled"}))).into_response();
     }
 
@@ -1578,7 +1589,7 @@ async fn webauthn_register_finish(
 async fn webauthn_auth_start(
     State(state): State<SharedState>,
 ) -> axum::response::Response {
-    if !state.config.auth.webauthn_enabled {
+    if !state.config().auth.webauthn_enabled {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "WebAuthn is not enabled"}))).into_response();
     }
 
@@ -1626,7 +1637,7 @@ async fn webauthn_auth_finish(
     State(state): State<SharedState>,
     Json(params): Json<serde_json::Value>,
 ) -> axum::response::Response {
-    if !state.config.auth.webauthn_enabled {
+    if !state.config().auth.webauthn_enabled {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "WebAuthn is not enabled"}))).into_response();
     }
 
@@ -1672,18 +1683,19 @@ async fn webauthn_auth_finish(
             }
 
             // Create a real session token so the client is actually authenticated
+            let cfg = state.config();
             match auth::create_session(
                 &db,
                 Some("webauthn"),
                 None,
-                state.config.auth.session_ttl_hours,
+                cfg.auth.session_ttl_hours,
             ) {
                 Ok(token) => {
                     (StatusCode::OK, Json(json!({
                         "status": "authenticated",
                         "token": token,
                         "token_prefix": &token[..std::cmp::min(22, token.len())],
-                        "expires_in_hours": state.config.auth.session_ttl_hours,
+                        "expires_in_hours": cfg.auth.session_ttl_hours,
                         "needs_update": auth_result.needs_update(),
                     }))).into_response()
                 }
@@ -1763,7 +1775,7 @@ fn is_session_authenticated_from_headers(headers: &axum::http::HeaderMap, state:
         Some(h) if h.starts_with("Bearer tilde_session_") => {
             let token = &h[7..];
             let db = state.db.get().unwrap();
-            auth::validate_session(&db, token, state.config.auth.session_ttl_hours).unwrap_or(false)
+            auth::validate_session(&db, token, state.config().auth.session_ttl_hours).unwrap_or(false)
         }
         _ => false,
     }

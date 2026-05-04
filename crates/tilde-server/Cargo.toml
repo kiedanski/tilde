@@ -56,3 +56,4 @@ sd-notify = { workspace = true }
 tokio-util = { workspace = true }
 webauthn-rs = { workspace = true }
 webauthn-rs-proto = { workspace = true }
+arc-swap = { workspace = true }
