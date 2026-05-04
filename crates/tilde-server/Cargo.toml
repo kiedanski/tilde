@@ -53,5 +53,6 @@ rustls-pemfile = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 sd-notify = { workspace = true }
+tokio-util = { workspace = true }
 webauthn-rs = { workspace = true }
 webauthn-rs-proto = { workspace = true }

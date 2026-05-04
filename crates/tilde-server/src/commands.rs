@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tilde_cli::{
     AppPasswordCommands, AuthCommands, BackupCommands, BookmarksCommands,
     CalendarCommands, CollectionCommands, ContactsCommands, EmailCommands, ExportCommands,
@@ -499,20 +500,29 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         }
     };
 
+    // Graceful-shutdown coordination
+    let shutdown = CancellationToken::new();
+    let mut tasks = tokio::task::JoinSet::new();
+
     // Start background job processor for thumbnail generation etc.
     {
         let job_db = state.db.clone();
         let job_photos_base = data_dir.join("photos");
         let job_cache_dir = state.config.cache_dir();
         let job_thumb_quality = state.config.photos.thumbnail_quality;
-        tokio::spawn(async move {
+        let token = shutdown.clone();
+        tasks.spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                if let Ok(conn) = job_db.get() {
-                    match tilde_photos::process_pending_jobs(&conn, 5, &job_photos_base, &job_cache_dir, job_thumb_quality) {
-                        Ok(0) => {} // No pending jobs
-                        Ok(n) => info!(count = n, "Processed background jobs"),
-                        Err(e) => tracing::debug!(error = %e, "Job processor error"),
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                        if let Ok(conn) = job_db.get() {
+                            match tilde_photos::process_pending_jobs(&conn, 5, &job_photos_base, &job_cache_dir, job_thumb_quality) {
+                                Ok(0) => {}
+                                Ok(n) => info!(count = n, "Processed background jobs"),
+                                Err(e) => tracing::debug!(error = %e, "Job processor error"),
+                            }
+                        }
                     }
                 }
             }
@@ -523,17 +533,21 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     // Start trash purge scheduler (daily, purges entries older than 30 days)
     {
         let trash_data_dir = data_dir.clone();
-        tokio::spawn(async move {
+        let token = shutdown.clone();
+        tasks.spawn(async move {
             loop {
-                // Run daily
-                tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
-                let roots = [
-                    trash_data_dir.join("files"),
-                    trash_data_dir.join("notes"),
-                    trash_data_dir.join("photos"),
-                ];
-                for root in &roots {
-                    tilde_dav::purge_trash(root, 30);
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(86400)) => {
+                        let roots = [
+                            trash_data_dir.join("files"),
+                            trash_data_dir.join("notes"),
+                            trash_data_dir.join("photos"),
+                        ];
+                        for root in &roots {
+                            tilde_dav::purge_trash(root, 30);
+                        }
+                    }
                 }
             }
         });
@@ -545,7 +559,8 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         let backup_db = state.db.clone();
         let backup_data_dir = data_dir.clone();
         let backup_encrypt_recipient = state.config.backup.encrypt_recipient.clone();
-        tokio::spawn(async move {
+        let token = shutdown.clone();
+        tasks.spawn(async move {
             let interval_secs = parse_schedule_interval(&backup_schedule);
             let first_wait = secs_until_next_run(&backup_schedule);
             info!(
@@ -568,7 +583,10 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             }
 
             // First wait: until the scheduled time (e.g., 4:00 AM)
-            tokio::time::sleep(std::time::Duration::from_secs(first_wait)).await;
+            tokio::select! {
+                _ = token.cancelled() => return,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(first_wait)) => {}
+            }
 
             loop {
                 info!("Backup scheduler: triggering scheduled backup");
@@ -616,7 +634,10 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 }
 
                 // Wait for next interval
-                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
+                }
             }
         });
         info!(schedule = %state.config.backup.schedule, "Backup scheduler enabled");
@@ -628,9 +649,13 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         let scan_photos_base = data_dir.join("photos");
         let scan_pattern = state.config.photos.organization_pattern.clone();
         let scan_cache_dir = state.config.cache_dir();
-        tokio::spawn(async move {
+        let token = shutdown.clone();
+        tasks.spawn(async move {
             // Small delay to let the server finish binding
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            tokio::select! {
+                _ = token.cancelled() => return,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            }
 
             // Collect file lists (fast, no DB lock)
             let inbox = scan_photos_base.join("_inbox");
@@ -737,8 +762,12 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             let email_db = state.db.clone();
             let email_mail_dir = mail_dir.clone();
             info!(account = %imap_config.name, host = %imap_config.imap_host, "Starting email sync");
-            tokio::spawn(async move {
-                tilde_email::imap::run_sync_loop(imap_config, email_db, email_mail_dir).await;
+            let token = shutdown.clone();
+            tasks.spawn(async move {
+                tokio::select! {
+                    _ = token.cancelled() => {},
+                    _ = tilde_email::imap::run_sync_loop(imap_config, email_db, email_mail_dir) => {},
+                }
             });
         }
         if !accounts.is_empty() {
@@ -752,11 +781,15 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         let config_path_for_reload = config_path.map(|s| s.to_string());
-        tokio::spawn(async move {
+        let token = shutdown.clone();
+        tasks.spawn(async move {
             use tokio::signal::unix::{SignalKind, signal};
             let mut sighup = signal(SignalKind::hangup()).expect("Failed to register SIGHUP handler");
             loop {
-                sighup.recv().await;
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = sighup.recv() => {}
+                }
                 info!("Received SIGHUP, reloading configuration...");
                 match Config::load(config_path_for_reload.as_deref()) {
                     Ok(new_config) => {
@@ -789,14 +822,43 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         && let Ok(usec) = watchdog_usec.parse::<u64>()
     {
         let interval = std::time::Duration::from_micros(usec / 2);
-        tokio::spawn(async move {
+        let token = shutdown.clone();
+        tasks.spawn(async move {
             loop {
-                tokio::time::sleep(interval).await;
-                let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = tokio::time::sleep(interval) => {
+                        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+                    }
+                }
             }
         });
         info!(interval_ms = usec / 2000, "sd-notify: watchdog pinger started");
     }
+
+    // Build a future that resolves on SIGTERM or SIGINT for graceful shutdown
+    let shutdown_signal = {
+        let token = shutdown.clone();
+        async move {
+            let ctrl_c = tokio::signal::ctrl_c();
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                let mut sigterm =
+                    signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+                tokio::select! {
+                    _ = ctrl_c => info!("Received SIGINT, shutting down..."),
+                    _ = sigterm.recv() => info!("Received SIGTERM, shutting down..."),
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                ctrl_c.await.ok();
+                info!("Received SIGINT, shutting down...");
+            }
+            token.cancel();
+        }
+    };
 
     match state_config_tls_mode.as_str() {
         "manual" => {
@@ -834,35 +896,41 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
             let make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
 
+            tokio::pin!(shutdown_signal);
             loop {
-                let (tcp_stream, addr) = listener.accept().await?;
-                let acceptor = tls_acceptor.clone();
-                let mut make_svc = make_service.clone();
+                tokio::select! {
+                    _ = &mut shutdown_signal => break,
+                    result = listener.accept() => {
+                        let (tcp_stream, addr) = result?;
+                        let acceptor = tls_acceptor.clone();
+                        let mut make_svc = make_service.clone();
 
-                tokio::spawn(async move {
-                    match acceptor.accept(tcp_stream).await {
-                        Ok(tls_stream) => {
-                            use tower::Service;
-                            let svc = match make_svc.call(addr).await {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    tracing::debug!(error = %e, "Failed to create service for connection");
-                                    return;
+                        tokio::spawn(async move {
+                            match acceptor.accept(tcp_stream).await {
+                                Ok(tls_stream) => {
+                                    use tower::Service;
+                                    let svc = match make_svc.call(addr).await {
+                                        Ok(s) => s,
+                                        Err(e) => {
+                                            tracing::debug!(error = %e, "Failed to create service for connection");
+                                            return;
+                                        }
+                                    };
+                                    let hyper_svc = hyper_util::service::TowerToHyperService::new(svc);
+                                    let io = hyper_util::rt::TokioIo::new(tls_stream);
+                                    let _ = hyper_util::server::conn::auto::Builder::new(
+                                        hyper_util::rt::TokioExecutor::new(),
+                                    )
+                                    .serve_connection(io, hyper_svc)
+                                    .await;
                                 }
-                            };
-                            let hyper_svc = hyper_util::service::TowerToHyperService::new(svc);
-                            let io = hyper_util::rt::TokioIo::new(tls_stream);
-                            let _ = hyper_util::server::conn::auto::Builder::new(
-                                hyper_util::rt::TokioExecutor::new(),
-                            )
-                            .serve_connection(io, hyper_svc)
-                            .await;
-                        }
-                        Err(e) => {
-                            tracing::debug!(error = %e, addr = %addr, "TLS handshake failed");
-                        }
+                                Err(e) => {
+                                    tracing::debug!(error = %e, addr = %addr, "TLS handshake failed");
+                                }
+                            }
+                        });
                     }
-                });
+                }
             }
         }
         _ => {
@@ -872,9 +940,28 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 listener,
                 app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
+            .with_graceful_shutdown(shutdown_signal)
             .await?;
         }
     }
+
+    // Drain background tasks with a timeout
+    info!("Server stopped, draining background tasks...");
+    shutdown.cancel();
+    let deadline = tokio::time::sleep(std::time::Duration::from_secs(10));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => {
+                warn!("Shutdown timeout — forcing exit");
+                break;
+            }
+            result = tasks.join_next() => {
+                if result.is_none() { break; }
+            }
+        }
+    }
+    info!("Graceful shutdown complete");
 
     Ok(())
 }
