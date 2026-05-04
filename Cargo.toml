@@ -40,6 +40,8 @@ hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "ht
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled", "modern_sqlite"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
 
 # CLI & config
 clap = { version = "4", features = ["derive"] }

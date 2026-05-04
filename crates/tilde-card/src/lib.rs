@@ -9,11 +9,12 @@ use axum::{
 };
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tilde_core::auth;
+use tilde_core::db::DbPool;
 
 pub struct CardDavState {
-    pub db: Arc<Mutex<Connection>>,
+    pub db: DbPool,
     pub session_ttl_hours: u32,
 }
 
@@ -85,7 +86,7 @@ fn check_auth(
     match auth_header {
         Some(ref h) if h.starts_with("Bearer ") => {
             let token = &h[7..];
-            let db = state.db.lock().unwrap();
+            let db = state.db.get().unwrap();
             if token.starts_with("tilde_session_") {
                 auth::validate_session(&db, token, state.session_ttl_hours).unwrap_or(false)
             } else {
@@ -99,7 +100,7 @@ fn check_auth(
                     .and_then(|bytes| String::from_utf8(bytes).ok());
             if let Some(creds) = decoded {
                 if let Some((_user, password)) = creds.split_once(':') {
-                    let db = state.db.lock().unwrap();
+                    let db = state.db.get().unwrap();
                     if auth::verify_admin_password(&db, password).unwrap_or(false) {
                         return true;
                     }
@@ -186,7 +187,7 @@ fn handle_propfind(
     path: &str,
     depth: &str,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (principal, ab_name, contact_name) = parse_path(path);
 
     if principal.is_none() || (principal.is_some() && ab_name.is_none()) {
@@ -372,7 +373,7 @@ fn handle_proppatch(
     path: &str,
     body: &str,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (_, ab_name, _) = parse_path(path);
     let ab_name = match ab_name {
         Some(n) => n,
@@ -410,7 +411,7 @@ fn handle_proppatch(
 }
 
 fn handle_mkcol(state: &SharedCardDavState, path: &str, body: &str) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (_, ab_name, _) = parse_path(path);
     let ab_name = match ab_name {
         Some(n) => n,
@@ -453,7 +454,7 @@ fn handle_put(
     body: &str,
     if_match: Option<&str>,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (_, ab_name, contact_name) = parse_path(path);
     let ab_name = match ab_name {
         Some(n) => n,
@@ -541,7 +542,7 @@ fn handle_put(
 }
 
 fn handle_get(state: &SharedCardDavState, path: &str) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (_, ab_name, contact_name) = parse_path(path);
     let ab_name = match ab_name {
         Some(n) => n,
@@ -576,7 +577,7 @@ fn handle_get(state: &SharedCardDavState, path: &str) -> axum::response::Respons
 }
 
 fn handle_delete(state: &SharedCardDavState, path: &str) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (_, ab_name, contact_name) = parse_path(path);
     let ab_name = match ab_name {
         Some(n) => n,
@@ -660,7 +661,7 @@ fn handle_multiget(
     principal: &str,
     body: &str,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let hrefs = extract_hrefs(body);
     let ab_id: String = match db.query_row(
         "SELECT id FROM addressbooks WHERE name = ?1",
@@ -723,7 +724,7 @@ fn handle_addressbook_query(
     principal: &str,
     body: &str,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let ab_id: String = match db.query_row(
         "SELECT id FROM addressbooks WHERE name = ?1",
         [ab_name],
@@ -798,7 +799,7 @@ fn handle_sync_collection(
     principal: &str,
     body: &str,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let ab_id: String = match db.query_row(
         "SELECT id FROM addressbooks WHERE name = ?1",
         [ab_name],

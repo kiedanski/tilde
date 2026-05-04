@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use tilde_core::db::DbPool;
 use tracing::{debug, error, info, warn};
 
 /// Configuration for a single IMAP email account.
@@ -208,11 +208,11 @@ fn fetch_new_messages(
 }
 
 /// Run one sync cycle: connect, list folders, fetch new messages, store.
-/// Takes Arc<Mutex<Connection>> and only locks briefly for DB operations,
-/// keeping the lock released during slow IMAP I/O.
+/// Takes DbPool and only holds a connection briefly for DB operations,
+/// releasing it during slow IMAP I/O.
 fn sync_cycle(
     config: &ImapAccountConfig,
-    db: &Arc<Mutex<rusqlite::Connection>>,
+    db: &DbPool,
     maildir_base: &std::path::Path,
 ) -> Result<()> {
     let mut session = connect_and_login(config)?;
@@ -227,7 +227,7 @@ fn sync_cycle(
 
         // Brief lock to read last UID
         let last_uid = {
-            let conn = db.lock().unwrap();
+            let conn = db.get().unwrap();
             get_last_uid(&conn, &config.name, folder)
         };
 
@@ -252,7 +252,7 @@ fn sync_cycle(
 
         // Brief lock to update last UID
         if max_uid > last_uid.unwrap_or(0) {
-            let conn = db.lock().unwrap();
+            let conn = db.get().unwrap();
             set_last_uid(&conn, &config.name, folder, max_uid)?;
         }
 
@@ -265,7 +265,7 @@ fn sync_cycle(
     }
 
     {
-        let conn = db.lock().unwrap();
+        let conn = db.get().unwrap();
         record_sync(&conn, &config.name)?;
     }
     let _ = session.logout();
@@ -277,7 +277,7 @@ fn sync_cycle(
 /// Handles IDLE, polling fallback, and retry with exponential backoff.
 pub async fn run_sync_loop(
     config: ImapAccountConfig,
-    db: Arc<Mutex<rusqlite::Connection>>,
+    db: DbPool,
     maildir_base: std::path::PathBuf,
 ) {
     let mut retry_delay = std::time::Duration::from_secs(5);

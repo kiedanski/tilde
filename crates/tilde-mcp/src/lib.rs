@@ -13,11 +13,12 @@ use std::time::Instant;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tilde_core::db::DbPool;
 use tracing::{info, warn};
 
 /// MCP server state
 pub struct McpState {
-    pub db: Arc<Mutex<Connection>>,
+    pub db: DbPool,
     pub data_dir: PathBuf,
     /// Token name → list of recent request timestamps for rate limiting
     pub rate_limits: Mutex<HashMap<String, Vec<Instant>>>,
@@ -854,7 +855,7 @@ pub fn handle_mcp_request(
             let files_dir = state.data_dir.join("files");
 
             let result = {
-                let conn = state.db.lock().unwrap();
+                let conn = state.db.get().unwrap();
                 match tool_name {
                     "notes.search" => exec_notes_search(&conn, &notes_dir, &arguments),
                     "notes.read" => exec_notes_read(&notes_dir, &arguments),
@@ -885,7 +886,7 @@ pub fn handle_mcp_request(
 
                     // Audit log
                     {
-                        let conn = state.db.lock().unwrap();
+                        let conn = state.db.get().unwrap();
                         log_audit(
                             &conn,
                             token_name,
@@ -920,7 +921,7 @@ pub fn handle_mcp_request(
 
                     // Still audit failed calls
                     {
-                        let conn = state.db.lock().unwrap();
+                        let conn = state.db.get().unwrap();
                         log_audit(
                             &conn,
                             token_name,

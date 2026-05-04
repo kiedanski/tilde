@@ -11,13 +11,12 @@ use axum::{
     routing::{any, get, post},
 };
 use base64::Engine;
-use rusqlite::Connection;
 use serde_json::json;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tilde_core::{auth, config::Config};
+use tilde_core::{auth, config::Config, db::DbPool};
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
 /// Per-IP rate limit tracking for auth endpoints
@@ -39,7 +38,7 @@ pub struct LoginFlowSession {
 /// Shared application state
 pub struct AppState {
     pub config: Config,
-    pub db: Arc<Mutex<Connection>>,
+    pub db: DbPool,
     pub start_time: Instant,
     pub login_attempts: Mutex<HashMap<String, RateLimitEntry>>,
     pub login_flows: Mutex<HashMap<String, LoginFlowSession>>,
@@ -233,7 +232,7 @@ async fn health_handler(State(state): State<SharedState>) -> impl IntoResponse {
     let uptime_secs = state.start_time.elapsed().as_secs();
 
     // Check database connectivity
-    let db_status = match state.db.lock() {
+    let db_status = match state.db.get() {
         Ok(conn) => match conn.query_row("SELECT 1", [], |_| Ok(())) {
             Ok(_) => "ok",
             Err(_) => "error",
@@ -599,7 +598,7 @@ async fn login_handler(
     }
 
     let user_agent = body.get("user_agent").and_then(|v| v.as_str());
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
 
     match auth::verify_admin_password(&db, password) {
         Ok(true) => {
@@ -669,7 +668,7 @@ async fn auth_middleware(
     let authenticated = match auth_header {
         Some(ref h) if h.starts_with("Bearer ") => {
             let token = &h[7..];
-            let db = state.db.lock().unwrap();
+            let db = state.db.get().unwrap();
             if token.starts_with("tilde_session_") {
                 auth::validate_session(&db, token, state.config.auth.session_ttl_hours)
                     .unwrap_or(false)
@@ -695,7 +694,7 @@ async fn auth_middleware(
             if let Some(creds) = decoded {
                 if let Some((_user, password)) = creds.split_once(':') {
                     let path = req.uri().path().to_string();
-                    let db = state.db.lock().unwrap();
+                    let db = state.db.get().unwrap();
                     auth::verify_app_password(&db, password, &path).unwrap_or(false)
                 } else {
                     false
@@ -739,7 +738,7 @@ async fn session_info_handler(
     {
         let token = &h[7..];
         let token_hash = auth::hash_token(token);
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         let result = db.query_row(
                 "SELECT token_prefix, created_at, last_used_at, expires_at FROM auth_sessions WHERE id = ?1",
                 [&token_hash],
@@ -1081,7 +1080,7 @@ async fn login_flow_auth_submit(
 
     // Verify password
     let password_valid = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         auth::verify_admin_password(&db, &password).unwrap_or(false)
     };
 
@@ -1091,7 +1090,7 @@ async fn login_flow_auth_submit(
 
     // Create app-password scoped to /dav/*
     let app_password = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         match auth::create_app_password(&db, "nextcloud-login-flow", "/dav/*") {
             Ok(pw) => pw,
             Err(e) => {
@@ -1220,7 +1219,7 @@ async fn mcp_handler(
     let (token_name, token_scopes, rate_limit) = match auth_header {
         Some(ref h) if h.starts_with("Bearer mcp_prod_") => {
             let token = &h[7..];
-            let db = state.db.lock().unwrap();
+            let db = state.db.get().unwrap();
             match auth::validate_mcp_token(&db, token) {
                 Ok(Some((name, scopes))) => {
                     // Get rate limit for this token
@@ -1295,7 +1294,7 @@ async fn webhook_handler(
     raw_body: axum::body::Bytes,
 ) -> axum::response::Response {
     // Look up token by prefix
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
 
     let result = db.query_row(
         "SELECT name, scopes, rate_limit, revoked, hmac_secret FROM webhook_tokens WHERE token_prefix = ?1",
@@ -1558,7 +1557,7 @@ async fn webauthn_register_finish(
 
     match auth::webauthn_finish_registration(webauthn, &reg_pub_key, &reg_state) {
         Ok(credential) => {
-            let db = state.db.lock().unwrap();
+            let db = state.db.get().unwrap();
             match auth::store_webauthn_credential(&db, &name, &credential) {
                 Ok(id) => {
                     (StatusCode::OK, Json(json!({"id": id, "name": name, "status": "registered"}))).into_response()
@@ -1589,7 +1588,7 @@ async fn webauthn_auth_start(
     };
 
     let credentials = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         match auth::load_webauthn_credentials(&db) {
             Ok(c) => c,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -1663,7 +1662,7 @@ async fn webauthn_auth_finish(
 
     match auth::webauthn_finish_authentication(webauthn, &pub_key_cred, &auth_state) {
         Ok(auth_result) => {
-            let db = state.db.lock().unwrap();
+            let db = state.db.get().unwrap();
             // Update credential counter in DB
             if let Ok(creds) = auth::load_webauthn_credentials(&db) {
                 for mut cred in creds {
@@ -1710,7 +1709,7 @@ async fn webauthn_list_credentials(
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "authentication required"}))).into_response();
     }
 
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     match auth::list_webauthn_credentials(&db) {
         Ok(credentials) => {
             let creds: Vec<serde_json::Value> = credentials.iter().map(|(id, name, created_at, last_used_at)| {
@@ -1742,7 +1741,7 @@ async fn webauthn_remove_credential(
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "authentication required"}))).into_response();
     }
 
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     match auth::remove_webauthn_credential(&db, cred_id) {
         Ok(true) => (StatusCode::OK, Json(json!({"status": "removed"}))).into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "credential not found"}))).into_response(),
@@ -1763,7 +1762,7 @@ fn is_session_authenticated_from_headers(headers: &axum::http::HeaderMap, state:
     match auth_header {
         Some(h) if h.starts_with("Bearer tilde_session_") => {
             let token = &h[7..];
-            let db = state.db.lock().unwrap();
+            let db = state.db.get().unwrap();
             auth::validate_session(&db, token, state.config.auth.session_ttl_hours).unwrap_or(false)
         }
         _ => false,

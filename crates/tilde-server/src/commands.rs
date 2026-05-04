@@ -9,7 +9,7 @@ use tilde_cli::{
     TokenCommands, TrackersCommands, UpdateCommands, WebauthnCommands, WebhookCommands,
     WebhookTokenCommands,
 };
-use tilde_core::{auth, config::Config, db};
+use tilde_core::{auth, config::Config, db::{self, DbPool}};
 use tilde_server::{AppState, SharedState, build_router};
 use tracing::{info, warn};
 
@@ -313,16 +313,21 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let db_path = config.db_path();
 
-    let conn = db::init_db(db_path.to_str().unwrap())?;
-    let migrations_dir = tilde_cli::find_migrations_dir();
-    db::run_migrations(&conn, &migrations_dir)?;
-
-    if let Ok(pw) = std::env::var("TILDE_ADMIN_PASSWORD")
-        && auth::get_admin_password_hash(&conn)?.is_none()
+    // Run migrations on a single connection first, then create the pool
     {
-        auth::store_admin_password(&conn, &pw)?;
-        info!("Admin password set from environment variable");
+        let conn = db::init_db(db_path.to_str().unwrap())?;
+        let migrations_dir = tilde_cli::find_migrations_dir();
+        db::run_migrations(&conn, &migrations_dir)?;
+
+        if let Ok(pw) = std::env::var("TILDE_ADMIN_PASSWORD")
+            && auth::get_admin_password_hash(&conn)?.is_none()
+        {
+            auth::store_admin_password(&conn, &pw)?;
+            info!("Admin password set from environment variable");
+        }
     }
+
+    let pool: DbPool = db::init_pool(db_path.to_str().unwrap())?;
 
     let listen_addr = format!(
         "{}:{}",
@@ -357,6 +362,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     // Cleanup expired upload sessions on startup
     {
+        let conn = pool.get()?;
         let now_str = jiff::Zoned::now()
             .strftime("%Y-%m-%dT%H:%M:%S%:z")
             .to_string();
@@ -382,6 +388,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     // Crash recovery: reset any 'running' jobs back to 'pending'
     {
+        let conn = pool.get()?;
         let reset_count = conn.execute(
             "UPDATE jobs SET status = 'pending', started_at = NULL WHERE status = 'running'",
             [],
@@ -391,15 +398,13 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         }
     }
 
-    let db_arc: std::sync::Arc<Mutex<rusqlite::Connection>> = Arc::new(Mutex::new(conn));
-
     // Extract TLS config before config moves into state
     let state_config_tls = config.tls.clone();
     let state_config_tls_mode = state_config_tls.mode.clone();
     let tunnel_config = config.tunnel.clone();
 
     let mcp_state: tilde_mcp::SharedMcpState = Arc::new(tilde_mcp::McpState {
-        db: db_arc.clone(),
+        db: pool.clone(),
         data_dir: data_dir.clone(),
         rate_limits: Mutex::new(std::collections::HashMap::new()),
     });
@@ -423,7 +428,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     let state: SharedState = Arc::new(AppState {
         config,
-        db: db_arc.clone(),
+        db: pool.clone(),
         start_time: Instant::now(),
         login_attempts: Mutex::new(std::collections::HashMap::new()),
         login_flows: Mutex::new(std::collections::HashMap::new()),
@@ -443,7 +448,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     let session_ttl = state.config.auth.session_ttl_hours;
 
     let dav_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
-        db: db_arc.clone(),
+        db: pool.clone(),
         files_root,
         uploads_root,
         db_path_prefix: String::new(),
@@ -453,18 +458,18 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     });
 
     let caldav_state: tilde_cal::SharedCalDavState = Arc::new(tilde_cal::CalDavState {
-        db: db_arc.clone(),
+        db: pool.clone(),
         session_ttl_hours: session_ttl,
     });
 
     let carddav_state: tilde_card::SharedCardDavState = Arc::new(tilde_card::CardDavState {
-        db: db_arc,
+        db: pool.clone(),
         session_ttl_hours: session_ttl,
     });
 
     // Ensure default calendar and addressbook exist
     {
-        let db = caldav_state.db.lock().unwrap();
+        let db = caldav_state.db.get().unwrap();
         tilde_cal::ensure_default_calendar(&db);
         tilde_card::ensure_default_addressbook(&db);
     }
@@ -503,7 +508,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                if let Ok(conn) = job_db.lock() {
+                if let Ok(conn) = job_db.get() {
                     match tilde_photos::process_pending_jobs(&conn, 5, &job_photos_base, &job_cache_dir, job_thumb_quality) {
                         Ok(0) => {} // No pending jobs
                         Ok(n) => info!(count = n, "Processed background jobs"),
@@ -551,7 +556,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             );
 
             // Record next scheduled time
-            if let Ok(conn) = backup_db.lock() {
+            if let Ok(conn) = backup_db.get() {
                 let next_run = jiff::Zoned::now()
                     .checked_add(jiff::SignedDuration::from_secs(first_wait as i64))
                     .unwrap_or_else(|_| jiff::Zoned::now());
@@ -569,7 +574,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 info!("Backup scheduler: triggering scheduled backup");
 
                 // Record the backup attempt
-                if let Ok(conn) = backup_db.lock() {
+                if let Ok(conn) = backup_db.get() {
                     let now_str = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
                     let _ = conn.execute(
                         "INSERT OR REPLACE INTO kv_meta (key, value, updated_at) VALUES ('backup:last_run', ?1, ?2)",
@@ -588,7 +593,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 }
 
                 // Run actual backup
-                if let Ok(conn) = backup_db.lock() {
+                if let Ok(conn) = backup_db.get() {
                     let backup_dir = backup_data_dir.join("backup");
                     let encrypt = if backup_encrypt_recipient.is_empty() {
                         None
@@ -644,7 +649,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     let pat = scan_pattern.clone();
                     let p = path.clone();
                     let r = tokio::task::spawn_blocking(move || {
-                        let conn = db.lock().unwrap();
+                        let conn = db.get().unwrap();
                         tilde_photos::ingest::process_inbox_file(&conn, &p, &photos, &pat)
                     }).await;
                     if matches!(r, Ok(Ok(_))) { processed += 1; }
@@ -664,7 +669,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     let lib = library_drop.clone();
                     let p = path.clone();
                     let r = tokio::task::spawn_blocking(move || {
-                        let conn = db.lock().unwrap();
+                        let conn = db.get().unwrap();
                         tilde_photos::ingest::process_library_drop_file(&conn, &p, &photos, &lib)
                     }).await;
                     if matches!(r, Ok(Ok(_))) { processed += 1; }
@@ -683,7 +688,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             let pat = scan_pattern.clone();
             let cache = scan_cache_dir.clone();
             tokio::task::spawn_blocking(move || {
-                let conn = db.lock().unwrap();
+                let conn = db.get().unwrap();
                 match tilde_photos::ingest::reprocess_untriaged(&conn, &photos, &pat) {
                     Ok(n) if n > 0 => info!(count = n, "Re-organized untriaged files"),
                     Err(e) => tracing::warn!(error = %e, "Failed to reprocess untriaged"),

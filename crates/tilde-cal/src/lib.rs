@@ -15,11 +15,12 @@ use axum::{
 };
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tilde_core::auth;
+use tilde_core::db::DbPool;
 
 pub struct CalDavState {
-    pub db: Arc<Mutex<Connection>>,
+    pub db: DbPool,
     pub session_ttl_hours: u32,
 }
 
@@ -88,7 +89,7 @@ fn check_auth(state: &SharedCalDavState, req: &axum::extract::Request, scope_pre
     match auth_header {
         Some(ref h) if h.starts_with("Bearer ") => {
             let token = &h[7..];
-            let db = state.db.lock().unwrap();
+            let db = state.db.get().unwrap();
             if token.starts_with("tilde_session_") {
                 auth::validate_session(&db, token, state.session_ttl_hours).unwrap_or(false)
             } else {
@@ -102,7 +103,7 @@ fn check_auth(state: &SharedCalDavState, req: &axum::extract::Request, scope_pre
                     .and_then(|bytes| String::from_utf8(bytes).ok());
             if let Some(creds) = decoded {
                 if let Some((_user, password)) = creds.split_once(':') {
-                    let db = state.db.lock().unwrap();
+                    let db = state.db.get().unwrap();
                     if auth::verify_admin_password(&db, password).unwrap_or(false) {
                         return true;
                     }
@@ -189,7 +190,7 @@ fn parse_path(path: &str) -> (Option<&str>, Option<&str>, Option<&str>) {
 }
 
 fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (principal, cal_name, obj_name) = parse_path(path);
 
     // Root or principal level: list calendars
@@ -419,7 +420,7 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
 }
 
 fn handle_proppatch(state: &SharedCalDavState, path: &str, body: &str) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (_principal, cal_name, _) = parse_path(path);
 
     let cal_name = match cal_name {
@@ -462,7 +463,7 @@ fn handle_mkcalendar(
     path: &str,
     body: &str,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (_principal, cal_name, _) = parse_path(path);
 
     let cal_name = match cal_name {
@@ -512,7 +513,7 @@ fn handle_put(
     body: &str,
     if_match: Option<&str>,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (_principal, cal_name, obj_name) = parse_path(path);
 
     let cal_name = match cal_name {
@@ -625,7 +626,7 @@ fn handle_put(
 }
 
 fn handle_get(state: &SharedCalDavState, path: &str) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (_principal, cal_name, obj_name) = parse_path(path);
 
     let cal_name = match cal_name {
@@ -663,7 +664,7 @@ fn handle_get(state: &SharedCalDavState, path: &str) -> axum::response::Response
 }
 
 fn handle_delete(state: &SharedCalDavState, path: &str) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (_principal, cal_name, obj_name) = parse_path(path);
     let cal_name = match cal_name {
         Some(n) => n,
@@ -758,7 +759,7 @@ fn handle_calendar_query_report(
     principal: &str,
     body: &str,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let cal_id: String = match db.query_row(
         "SELECT id FROM calendars WHERE name = ?1",
         [cal_name],
@@ -838,7 +839,7 @@ fn handle_multiget_report(
     principal: &str,
     body: &str,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let hrefs = extract_hrefs(body);
 
     let cal_id: String = match db.query_row(
@@ -902,7 +903,7 @@ fn handle_sync_collection_report(
     principal: &str,
     body: &str,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let cal_id: String = match db.query_row(
         "SELECT id FROM calendars WHERE name = ?1",
         [cal_name],
@@ -1026,7 +1027,7 @@ fn handle_freebusy_report(
     _principal: &str,
     body: &str,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let cal_id: String = match db.query_row(
         "SELECT id FROM calendars WHERE name = ?1",
         [cal_name],
@@ -1178,7 +1179,7 @@ fn handle_push_subscribe(
     path: &str,
     body: &str,
 ) -> axum::response::Response {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let (_principal, cal_name, obj_name) = parse_path(path);
 
     // Push subscribe only works on calendar collections, not individual objects

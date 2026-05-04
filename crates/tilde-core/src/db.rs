@@ -1,11 +1,17 @@
 //! SQLite database initialization and migration runner
 
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use tracing::info;
 
-/// Initialize SQLite database with required PRAGMAs
+/// Connection pool type for the application.
+/// Each pooled connection is configured with the same PRAGMAs as `init_db`.
+pub type DbPool = r2d2::Pool<SqliteConnectionManager>;
+
+/// Initialize SQLite database with required PRAGMAs (single connection).
+/// Kept for `:memory:` databases in tests and one-shot CLI commands.
 pub fn init_db(path: &str) -> anyhow::Result<Connection> {
     // Ensure parent directory exists
     if let Some(parent) = Path::new(path).parent() {
@@ -24,6 +30,33 @@ pub fn init_db(path: &str) -> anyhow::Result<Connection> {
 
     info!(path = path, "Database initialized with WAL mode");
     Ok(conn)
+}
+
+/// Create a connection pool with ~4 connections, each configured with
+/// the same PRAGMAs as `init_db`. WAL mode supports concurrent readers
+/// while writes serialize on SQLite's internal lock.
+pub fn init_pool(path: &str) -> anyhow::Result<DbPool> {
+    // Ensure parent directory exists
+    if let Some(parent) = Path::new(path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let manager = SqliteConnectionManager::file(path).with_init(|conn| {
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA busy_timeout=5000;
+             PRAGMA foreign_keys=ON;
+             PRAGMA mmap_size=33554432;",
+        )
+    });
+
+    let pool = r2d2::Pool::builder()
+        .max_size(4)
+        .build(manager)?;
+
+    info!(path = path, pool_size = 4, "Database pool initialized with WAL mode");
+    Ok(pool)
 }
 
 /// A single migration with version, name, and SQL content

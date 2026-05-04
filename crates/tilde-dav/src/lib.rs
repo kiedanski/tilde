@@ -10,17 +10,17 @@ use axum::{
     response::{IntoResponse, Response},
     routing::any,
 };
-use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tilde_core::auth;
+use tilde_core::db::DbPool;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 /// State needed by DAV handlers
 pub struct DavState {
-    pub db: Arc<Mutex<Connection>>,
+    pub db: DbPool,
     pub files_root: PathBuf,
     pub uploads_root: PathBuf,
     /// Prefix to add to rel_path for DB lookups (e.g., "photos/" for the photos router)
@@ -56,7 +56,7 @@ fn check_auth(state: &SharedDavState, headers: &HeaderMap) -> bool {
     match auth_header {
         Some(ref h) if h.starts_with("Bearer ") => {
             let token = &h[7..];
-            let db = state.db.lock().unwrap();
+            let db = state.db.get().unwrap();
             if token.starts_with("tilde_session_") {
                 auth::validate_session(&db, token, state.session_ttl_hours).unwrap_or(false)
             } else {
@@ -70,7 +70,7 @@ fn check_auth(state: &SharedDavState, headers: &HeaderMap) -> bool {
                     .and_then(|bytes| String::from_utf8(bytes).ok());
             if let Some(creds) = decoded {
                 if let Some((_user, password)) = creds.split_once(':') {
-                    let db = state.db.lock().unwrap();
+                    let db = state.db.get().unwrap();
                     if auth::verify_admin_password(&db, password).unwrap_or(false) {
                         return true;
                     }
@@ -381,7 +381,7 @@ async fn handle_put(
 
     // Upsert into files table
     {
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         let db_path = state.db_path(rel_path);
         let file_name = std::path::Path::new(rel_path)
             .file_name()
@@ -461,7 +461,7 @@ async fn handle_put(
 /// Check if a photo's metadata date changed after a PUT overwrite,
 /// and reorganize it if the current path doesn't match the new date.
 fn check_and_queue_reorganize(
-    db: &Arc<Mutex<rusqlite::Connection>>,
+    db: &DbPool,
     photos_base: &std::path::Path,
     organization_pattern: &str,
     rel_path: &str,
@@ -508,7 +508,7 @@ fn check_and_queue_reorganize(
     }
 
     // Update DB
-    let conn = db.lock().unwrap();
+    let conn = db.get().unwrap();
     let old_db_path = format!("photos/{}", rel_path);
     let new_db_path = format!("photos/{}", new_rel_str);
     let new_parent = std::path::Path::new(&new_db_path)
@@ -582,7 +582,7 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
 
     // Remove from DB (file disappears from listings)
     if disk_path.is_dir() {
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         let pattern = format!("{}%", escape_like(&db_path));
         db.execute(
             "DELETE FROM files WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
@@ -590,7 +590,7 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
         )
         .ok();
     } else {
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         db.execute("DELETE FROM files WHERE path = ?1", [&db_path])
             .ok();
     }
@@ -692,7 +692,7 @@ async fn handle_mkcol(state: &SharedDavState, rel_path: &str) -> Response {
         .unwrap_or_default();
 
     {
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         db.execute(
             "INSERT INTO files (id, path, parent_path, name, size_bytes, content_type, etag, is_directory, created_at, modified_at, hlc)
              VALUES (?1, ?2, ?3, ?4, 0, 'httpd/unix-directory', ?5, 1, ?6, ?7, ?8)",
@@ -744,7 +744,7 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
 
     // Update DB — preserve the UUID (oc:id)
     {
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         let src_db_path = state.db_path(rel_path);
         let dst_db_path = state.db_path(&dest);
         let dest_name = std::path::Path::new(&dest)
@@ -869,7 +869,7 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
                 .unwrap_or_default()
         };
 
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         let dst_db_path = state.db_path(&dest);
         let etag = if sha256.len() >= 16 { sha256[..16].to_string() } else { sha256.clone() };
         let content_type = mime_from_path(&dest);
@@ -1013,7 +1013,7 @@ async fn handle_proppatch(state: &SharedDavState, rel_path: &str, body: Body) ->
 
     let db_path = state.db_path(rel_path);
     {
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         for op in &ops {
             match op {
                 PropPatchOp::Set {
@@ -1329,7 +1329,7 @@ async fn uploads_handler(
                 .and_then(|v| v.parse().ok());
 
             {
-                let db = state.db.lock().unwrap();
+                let db = state.db.get().unwrap();
                 db.execute(
                     "INSERT OR REPLACE INTO chunked_uploads (session_id, destination_path, total_size, bytes_received, chunk_count, created_at, expires_at, staging_dir)
                      VALUES (?1, '', ?2, 0, 0, ?3, ?4, ?5)",
@@ -1397,7 +1397,7 @@ async fn uploads_handler(
 
             // Update session tracking
             {
-                let db = state.db.lock().unwrap();
+                let db = state.db.get().unwrap();
                 db.execute(
                     "UPDATE chunked_uploads SET bytes_received = bytes_received + ?1, chunk_count = chunk_count + 1 WHERE session_id = ?2",
                     rusqlite::params![chunk_size, session_id],
@@ -1512,7 +1512,7 @@ async fn uploads_handler(
 
             // Record in files table
             {
-                let db = state.db.lock().unwrap();
+                let db = state.db.get().unwrap();
                 let file_name = std::path::Path::new(&dest)
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -1570,7 +1570,7 @@ async fn uploads_handler(
 // ---- Helper functions ----
 
 fn get_etag_for_file(state: &SharedDavState, rel_path: &str) -> Option<String> {
-    let db = state.db.lock().unwrap();
+    let db = state.db.get().unwrap();
     let db_path = state.db_path(rel_path);
     db.query_row(
         "SELECT etag FROM files WHERE path = ?1",
@@ -1674,7 +1674,7 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
     // Try to get oc:id and etag from DB
     let db_path = state.db_path(rel_path);
     let (oc_id, etag) = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         db.query_row(
             "SELECT id, etag FROM files WHERE path = ?1",
             [&db_path],
@@ -1685,7 +1685,7 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
 
     // Load custom properties
     let custom_properties = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.get().unwrap();
         let mut stmt = db
             .prepare("SELECT namespace, name, value FROM file_properties WHERE file_path = ?1")
             .ok();

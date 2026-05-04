@@ -4,16 +4,16 @@
 
 use crate::ingest;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
-use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tilde_core::db::DbPool;
 use tracing::{debug, error, info, warn};
 
 /// Start watching the photos directories for new files.
 /// This function spawns a background thread that watches _inbox/ and _library-drop/.
 pub fn start_watcher(
-    conn: Arc<Mutex<Connection>>,
+    conn: DbPool,
     photos_base: PathBuf,
     cache_dir: PathBuf,
     organization_pattern: String,
@@ -82,7 +82,7 @@ pub fn start_watcher(
 
                 // Handle untriaged files separately — re-check metadata and organize if possible
                 if path.starts_with(&debounce_untriaged) {
-                    let conn = debounce_conn.lock().unwrap();
+                    let conn = debounce_conn.get().unwrap();
                     match ingest::reprocess_untriaged_file(
                         &conn,
                         &path,
@@ -108,7 +108,7 @@ pub fn start_watcher(
                 let process_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     // Process inbox/library-drop files with a short-lived DB lock
                     let result = {
-                        let conn = debounce_conn.lock().unwrap();
+                        let conn = debounce_conn.get().unwrap();
                         let r = if catch_path.starts_with(&debounce_inbox) {
                             ingest::process_inbox_file(
                                 &conn,
@@ -198,7 +198,7 @@ pub fn start_watcher(
 
                         if let Some(Ok(_)) = thumb_result {
                             // Brief lock to mark completion and create symlink
-                            if let Ok(c) = debounce_conn.lock() {
+                            if let Ok(c) = debounce_conn.get() {
                                 let _ = crate::thumbnail::mark_thumbnails_generated(
                                     &c, &photo_id, true, true,
                                 );
