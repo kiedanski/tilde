@@ -734,8 +734,9 @@ fn handle_addressbook_query(
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    // Extract prop-filter names (e.g. <card:prop-filter name="BDAY">)
-    let prop_filters = extract_prop_filter_names(body);
+    // Parse prop-filters including text-match children and filter test mode
+    let prop_filters = extract_prop_filters(body);
+    let filter_test = extract_filter_test(body);
 
     let mut stmt = db
         .prepare("SELECT uid, etag, vcard_data FROM contacts WHERE addressbook_id = ?1 AND deleted = 0")
@@ -754,13 +755,19 @@ fn handle_addressbook_query(
 
     let mut responses = String::new();
     for (uid, etag, vcard) in &contacts {
-        // Apply prop-filters: contact must have all filtered properties
-        if !prop_filters.is_empty()
-            && !prop_filters
-                .iter()
-                .all(|prop| extract_vcard_field(vcard, prop).is_some())
-        {
-            continue;
+        // Apply prop-filters with anyof/allof logic
+        if !prop_filters.is_empty() {
+            let passes = match filter_test {
+                FilterTest::AnyOf => prop_filters
+                    .iter()
+                    .any(|pf| vcard_matches_prop_filter(vcard, pf)),
+                FilterTest::AllOf => prop_filters
+                    .iter()
+                    .all(|pf| vcard_matches_prop_filter(vcard, pf)),
+            };
+            if !passes {
+                continue;
+            }
         }
 
         responses.push_str(&format!(
@@ -970,23 +977,237 @@ fn extract_hrefs(xml: &str) -> Vec<String> {
     hrefs
 }
 
-fn extract_prop_filter_names(xml: &str) -> Vec<&str> {
-    let mut names = Vec::new();
+// ─── Prop-filter types for addressbook-query ─────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+enum MatchType {
+    Contains,
+    StartsWith,
+    EndsWith,
+    Equals,
+}
+
+#[derive(Debug, Clone)]
+struct TextMatch {
+    value: String,
+    match_type: MatchType,
+    negate: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PropFilter {
+    name: String,
+    text_match: Option<TextMatch>,
+}
+
+/// Whether prop-filters combine with anyof (OR) or allof (AND).
+#[derive(Debug, Clone, PartialEq)]
+enum FilterTest {
+    AnyOf,
+    AllOf,
+}
+
+/// Extract the `test` attribute from the `<filter>` element.
+fn extract_filter_test(xml: &str) -> FilterTest {
+    // Look for <...filter ... test="anyof" ...>
+    // We search for a `filter` tag (could be `card:filter` or `CR:filter`)
+    // that is NOT `prop-filter` or `param-filter`.
+    let lower = xml.to_lowercase();
+    // Find occurrences of "filter" that are not preceded by "prop-" or "param-"
+    let mut search_from = 0;
+    while let Some(pos) = lower[search_from..].find("filter") {
+        let abs = search_from + pos;
+        // Check this isn't prop-filter or param-filter
+        let prefix = if abs >= 5 { &lower[abs - 5..abs] } else { "" };
+        let is_prop = prefix.ends_with("prop-");
+        let is_param = if abs >= 6 {
+            lower[abs - 6..abs].ends_with("param-")
+        } else {
+            false
+        };
+        if !is_prop && !is_param {
+            // Find the end of this tag
+            if let Some(tag_end) = xml[abs..].find('>') {
+                let tag_content = &xml[abs..abs + tag_end];
+                if let Some(test_pos) = tag_content.to_lowercase().find("test=\"") {
+                    let val_start = test_pos + 6;
+                    if let Some(end) = tag_content[val_start..].find('"') {
+                        let val = &tag_content[val_start..val_start + end];
+                        if val.eq_ignore_ascii_case("anyof") {
+                            return FilterTest::AnyOf;
+                        }
+                    }
+                }
+            }
+        }
+        search_from = abs + 6;
+    }
+    FilterTest::AllOf
+}
+
+/// Parse `<prop-filter name="...">` elements including optional `<text-match>` children.
+fn extract_prop_filters(xml: &str) -> Vec<PropFilter> {
+    let mut filters = Vec::new();
     let mut search_from = 0;
     while let Some(pos) = xml[search_from..].find("prop-filter") {
         let abs_pos = search_from + pos;
-        // Find name="..." attribute after this
-        if let Some(name_pos) = xml[abs_pos..].find("name=\"") {
+
+        // Find name="..." attribute after "prop-filter"
+        let name = if let Some(name_pos) = xml[abs_pos..].find("name=\"") {
             let val_start = abs_pos + name_pos + 6;
             if let Some(end) = xml[val_start..].find('"') {
-                names.push(&xml[val_start..val_start + end]);
+                xml[val_start..val_start + end].to_string()
+            } else {
+                search_from = abs_pos + 11;
+                continue;
             }
-            search_from = val_start;
         } else {
             search_from = abs_pos + 11;
+            continue;
+        };
+
+        // Determine the span of this prop-filter element to look for text-match children.
+        // Find the closing </...prop-filter> or a self-closing />
+        let after_tag = abs_pos + 11; // skip past "prop-filter"
+        let prop_filter_end = xml[after_tag..]
+            .find("prop-filter>")
+            .map(|p| after_tag + p + 12)
+            .unwrap_or(xml.len());
+        let self_close = xml[after_tag..prop_filter_end].find("/>");
+        let element_span = if let Some(sc) = self_close {
+            // Check if self-close comes before any child elements
+            let child_start = xml[after_tag..prop_filter_end].find('<');
+            if child_start.map_or(true, |cs| sc < cs) {
+                &xml[after_tag..after_tag + sc]
+            } else {
+                &xml[after_tag..prop_filter_end]
+            }
+        } else {
+            &xml[after_tag..prop_filter_end]
+        };
+
+        // Look for <text-match ...>value</text-match> inside this prop-filter
+        let text_match = parse_text_match(element_span);
+
+        filters.push(PropFilter { name, text_match });
+        search_from = after_tag + element_span.len();
+    }
+    filters
+}
+
+/// Parse a `<text-match>` element within a given XML fragment.
+fn parse_text_match(xml_fragment: &str) -> Option<TextMatch> {
+    let tm_marker = xml_fragment.find("text-match")?;
+    let tm_start = tm_marker;
+
+    // Find the opening tag's closing >
+    let tag_end = xml_fragment[tm_start..].find('>')?;
+    let tag_content = &xml_fragment[tm_start..tm_start + tag_end];
+
+    // Parse match-type attribute (default: "contains")
+    let match_type = if let Some(mt_pos) = tag_content.to_lowercase().find("match-type=\"") {
+        let val_start = mt_pos + 12;
+        if let Some(end) = tag_content[val_start..].find('"') {
+            match tag_content[val_start..val_start + end]
+                .to_lowercase()
+                .as_str()
+            {
+                "starts-with" => MatchType::StartsWith,
+                "ends-with" => MatchType::EndsWith,
+                "equals" => MatchType::Equals,
+                _ => MatchType::Contains,
+            }
+        } else {
+            MatchType::Contains
+        }
+    } else {
+        MatchType::Contains
+    };
+
+    // Parse negate-condition attribute (default: false)
+    let negate = if let Some(nc_pos) = tag_content.to_lowercase().find("negate-condition=\"") {
+        let val_start = nc_pos + 18;
+        if let Some(end) = tag_content[val_start..].find('"') {
+            tag_content[val_start..val_start + end].eq_ignore_ascii_case("yes")
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // Extract text content between > and </...text-match>
+    let content_start = tm_start + tag_end + 1;
+    let content_end = xml_fragment[content_start..]
+        .find("text-match>")
+        .map(|p| {
+            // Back up past the `</` or `</card:` etc. before `text-match>`
+            let before = &xml_fragment[..content_start + p];
+            before.rfind('<').unwrap_or(content_start + p)
+        })
+        .unwrap_or(xml_fragment.len());
+
+    let value = xml_fragment[content_start..content_end].trim().to_string();
+    if value.is_empty() {
+        return None;
+    }
+
+    Some(TextMatch {
+        value,
+        match_type,
+        negate,
+    })
+}
+
+/// Extract all values for a given vCard property name (case-insensitive).
+///
+/// Handles both `PROP:value` and `PROP;params:value` forms.
+fn extract_vcard_property(vcard: &str, prop_name: &str) -> Vec<String> {
+    let prop_upper = prop_name.to_uppercase();
+    vcard
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_end_matches('\r');
+            let upper = line.to_uppercase();
+            if upper.starts_with(&prop_upper) {
+                let rest = &line[prop_upper.len()..];
+                if rest.starts_with(':') {
+                    Some(rest[1..].trim().to_string())
+                } else if rest.starts_with(';') {
+                    rest.find(':').map(|i| rest[i + 1..].trim().to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Check if a contact's vCard matches a single prop-filter.
+fn vcard_matches_prop_filter(vcard: &str, pf: &PropFilter) -> bool {
+    let values = extract_vcard_property(vcard, &pf.name);
+
+    match &pf.text_match {
+        None => {
+            // No text-match child: filter is a presence test (property must exist)
+            !values.is_empty()
+        }
+        Some(tm) => {
+            let needle = tm.value.to_lowercase();
+            let matched = values.iter().any(|val| {
+                let haystack = val.to_lowercase();
+                match tm.match_type {
+                    MatchType::Contains => haystack.contains(&needle),
+                    MatchType::StartsWith => haystack.starts_with(&needle),
+                    MatchType::EndsWith => haystack.ends_with(&needle),
+                    MatchType::Equals => haystack == needle,
+                }
+            });
+            if tm.negate { !matched } else { matched }
         }
     }
-    names
 }
 
 fn extract_vcard_field(vcard: &str, field: &str) -> Option<String> {
@@ -1069,4 +1290,372 @@ pub fn list_addressbooks(db: &Connection) -> Vec<(String, String, Option<String>
     .unwrap()
     .flatten()
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VCARD_JOHN: &str = "\
+BEGIN:VCARD\r\n\
+VERSION:3.0\r\n\
+FN:John Doe\r\n\
+EMAIL;TYPE=WORK:john@example.com\r\n\
+TEL;TYPE=CELL:+1234567890\r\n\
+ORG:Acme Corp\r\n\
+END:VCARD";
+
+    const VCARD_JANE: &str = "\
+BEGIN:VCARD\r\n\
+VERSION:3.0\r\n\
+FN:Jane Smith\r\n\
+EMAIL:jane@example.org\r\n\
+END:VCARD";
+
+    const VCARD_NO_EMAIL: &str = "\
+BEGIN:VCARD\r\n\
+VERSION:3.0\r\n\
+FN:Bob NoEmail\r\n\
+TEL:+9999999999\r\n\
+END:VCARD";
+
+    // ── extract_vcard_property ──────────────────────────────────────────
+
+    #[test]
+    fn extract_vcard_property_simple() {
+        let vals = extract_vcard_property(VCARD_JOHN, "FN");
+        assert_eq!(vals, vec!["John Doe"]);
+    }
+
+    #[test]
+    fn extract_vcard_property_with_params() {
+        let vals = extract_vcard_property(VCARD_JOHN, "EMAIL");
+        assert_eq!(vals, vec!["john@example.com"]);
+    }
+
+    #[test]
+    fn extract_vcard_property_case_insensitive() {
+        let vals = extract_vcard_property(VCARD_JOHN, "fn");
+        assert_eq!(vals, vec!["John Doe"]);
+        let vals = extract_vcard_property(VCARD_JOHN, "Fn");
+        assert_eq!(vals, vec!["John Doe"]);
+    }
+
+    #[test]
+    fn extract_vcard_property_missing() {
+        let vals = extract_vcard_property(VCARD_NO_EMAIL, "EMAIL");
+        assert!(vals.is_empty());
+    }
+
+    #[test]
+    fn extract_vcard_property_tel_with_params() {
+        let vals = extract_vcard_property(VCARD_JOHN, "TEL");
+        assert_eq!(vals, vec!["+1234567890"]);
+    }
+
+    // ── extract_prop_filters ────────────────────────────────────────────
+
+    #[test]
+    fn extract_prop_filters_presence_only() {
+        let xml = r#"<card:filter><card:prop-filter name="EMAIL"/></card:filter>"#;
+        let filters = extract_prop_filters(xml);
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].name, "EMAIL");
+        assert!(filters[0].text_match.is_none());
+    }
+
+    #[test]
+    fn extract_prop_filters_with_text_match() {
+        let xml = r#"<card:filter test="anyof">
+  <card:prop-filter name="FN">
+    <card:text-match collation="i;unicode-casemap" match-type="contains">john</card:text-match>
+  </card:prop-filter>
+</card:filter>"#;
+        let filters = extract_prop_filters(xml);
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].name, "FN");
+        let tm = filters[0].text_match.as_ref().unwrap();
+        assert_eq!(tm.value, "john");
+        assert_eq!(tm.match_type, MatchType::Contains);
+        assert!(!tm.negate);
+    }
+
+    #[test]
+    fn extract_prop_filters_starts_with() {
+        let xml = r#"<card:prop-filter name="FN">
+    <card:text-match match-type="starts-with">Jo</card:text-match>
+  </card:prop-filter>"#;
+        let filters = extract_prop_filters(xml);
+        assert_eq!(filters.len(), 1);
+        let tm = filters[0].text_match.as_ref().unwrap();
+        assert_eq!(tm.match_type, MatchType::StartsWith);
+        assert_eq!(tm.value, "Jo");
+    }
+
+    #[test]
+    fn extract_prop_filters_ends_with() {
+        let xml = r#"<card:prop-filter name="EMAIL">
+    <card:text-match match-type="ends-with">example.com</card:text-match>
+  </card:prop-filter>"#;
+        let filters = extract_prop_filters(xml);
+        let tm = filters[0].text_match.as_ref().unwrap();
+        assert_eq!(tm.match_type, MatchType::EndsWith);
+        assert_eq!(tm.value, "example.com");
+    }
+
+    #[test]
+    fn extract_prop_filters_equals() {
+        let xml = r#"<card:prop-filter name="FN">
+    <card:text-match match-type="equals">John Doe</card:text-match>
+  </card:prop-filter>"#;
+        let filters = extract_prop_filters(xml);
+        let tm = filters[0].text_match.as_ref().unwrap();
+        assert_eq!(tm.match_type, MatchType::Equals);
+        assert_eq!(tm.value, "John Doe");
+    }
+
+    #[test]
+    fn extract_prop_filters_negate() {
+        let xml = r#"<card:prop-filter name="FN">
+    <card:text-match match-type="contains" negate-condition="yes">john</card:text-match>
+  </card:prop-filter>"#;
+        let filters = extract_prop_filters(xml);
+        let tm = filters[0].text_match.as_ref().unwrap();
+        assert!(tm.negate);
+    }
+
+    #[test]
+    fn extract_prop_filters_multiple() {
+        let xml = r#"<card:filter test="allof">
+  <card:prop-filter name="FN">
+    <card:text-match match-type="contains">john</card:text-match>
+  </card:prop-filter>
+  <card:prop-filter name="EMAIL">
+    <card:text-match match-type="contains">example</card:text-match>
+  </card:prop-filter>
+</card:filter>"#;
+        let filters = extract_prop_filters(xml);
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters[0].name, "FN");
+        assert_eq!(filters[1].name, "EMAIL");
+    }
+
+    // ── extract_filter_test ─────────────────────────────────────────────
+
+    #[test]
+    fn filter_test_default_allof() {
+        let xml = r#"<card:filter><card:prop-filter name="FN"/></card:filter>"#;
+        assert_eq!(extract_filter_test(xml), FilterTest::AllOf);
+    }
+
+    #[test]
+    fn filter_test_anyof() {
+        let xml = r#"<card:filter test="anyof"><card:prop-filter name="FN"/></card:filter>"#;
+        assert_eq!(extract_filter_test(xml), FilterTest::AnyOf);
+    }
+
+    #[test]
+    fn filter_test_allof_explicit() {
+        let xml = r#"<card:filter test="allof"><card:prop-filter name="FN"/></card:filter>"#;
+        assert_eq!(extract_filter_test(xml), FilterTest::AllOf);
+    }
+
+    #[test]
+    fn filter_test_not_confused_by_prop_filter() {
+        // The word "filter" also appears in "prop-filter" -- should not pick up test attr from there
+        let xml = r#"<CR:filter test="anyof"><CR:prop-filter name="FN" test="allof"/></CR:filter>"#;
+        assert_eq!(extract_filter_test(xml), FilterTest::AnyOf);
+    }
+
+    // ── vcard_matches_prop_filter ───────────────────────────────────────
+
+    #[test]
+    fn match_presence_only() {
+        let pf = PropFilter {
+            name: "EMAIL".into(),
+            text_match: None,
+        };
+        assert!(vcard_matches_prop_filter(VCARD_JOHN, &pf));
+        assert!(!vcard_matches_prop_filter(VCARD_NO_EMAIL, &pf));
+    }
+
+    #[test]
+    fn match_contains() {
+        let pf = PropFilter {
+            name: "FN".into(),
+            text_match: Some(TextMatch {
+                value: "john".into(),
+                match_type: MatchType::Contains,
+                negate: false,
+            }),
+        };
+        assert!(vcard_matches_prop_filter(VCARD_JOHN, &pf));
+        assert!(!vcard_matches_prop_filter(VCARD_JANE, &pf));
+    }
+
+    #[test]
+    fn match_starts_with() {
+        let pf = PropFilter {
+            name: "FN".into(),
+            text_match: Some(TextMatch {
+                value: "jane".into(),
+                match_type: MatchType::StartsWith,
+                negate: false,
+            }),
+        };
+        assert!(!vcard_matches_prop_filter(VCARD_JOHN, &pf));
+        assert!(vcard_matches_prop_filter(VCARD_JANE, &pf));
+    }
+
+    #[test]
+    fn match_ends_with() {
+        let pf = PropFilter {
+            name: "EMAIL".into(),
+            text_match: Some(TextMatch {
+                value: "example.com".into(),
+                match_type: MatchType::EndsWith,
+                negate: false,
+            }),
+        };
+        assert!(vcard_matches_prop_filter(VCARD_JOHN, &pf));
+        assert!(!vcard_matches_prop_filter(VCARD_JANE, &pf)); // jane@example.org
+    }
+
+    #[test]
+    fn match_equals() {
+        let pf = PropFilter {
+            name: "FN".into(),
+            text_match: Some(TextMatch {
+                value: "John Doe".into(),
+                match_type: MatchType::Equals,
+                negate: false,
+            }),
+        };
+        assert!(vcard_matches_prop_filter(VCARD_JOHN, &pf));
+        assert!(!vcard_matches_prop_filter(VCARD_JANE, &pf));
+    }
+
+    #[test]
+    fn match_negate() {
+        let pf = PropFilter {
+            name: "FN".into(),
+            text_match: Some(TextMatch {
+                value: "john".into(),
+                match_type: MatchType::Contains,
+                negate: true,
+            }),
+        };
+        // Negated: John's vCard should NOT match because it contains "john"
+        assert!(!vcard_matches_prop_filter(VCARD_JOHN, &pf));
+        // Jane's vCard should match because it does NOT contain "john"
+        assert!(vcard_matches_prop_filter(VCARD_JANE, &pf));
+    }
+
+    #[test]
+    fn match_case_insensitive() {
+        let pf = PropFilter {
+            name: "FN".into(),
+            text_match: Some(TextMatch {
+                value: "JOHN DOE".into(),
+                match_type: MatchType::Equals,
+                negate: false,
+            }),
+        };
+        assert!(vcard_matches_prop_filter(VCARD_JOHN, &pf));
+    }
+
+    #[test]
+    fn match_missing_property_with_text_match() {
+        // If property doesn't exist and we have a text-match, it shouldn't match
+        let pf = PropFilter {
+            name: "EMAIL".into(),
+            text_match: Some(TextMatch {
+                value: "anything".into(),
+                match_type: MatchType::Contains,
+                negate: false,
+            }),
+        };
+        assert!(!vcard_matches_prop_filter(VCARD_NO_EMAIL, &pf));
+    }
+
+    #[test]
+    fn match_missing_property_negated_text_match() {
+        // If property doesn't exist and text-match is negated, the values list is empty
+        // so no value matches the text => matched=false, negate => true
+        let pf = PropFilter {
+            name: "EMAIL".into(),
+            text_match: Some(TextMatch {
+                value: "anything".into(),
+                match_type: MatchType::Contains,
+                negate: true,
+            }),
+        };
+        assert!(vcard_matches_prop_filter(VCARD_NO_EMAIL, &pf));
+    }
+
+    // ── Integration: anyof vs allof ─────────────────────────────────────
+
+    #[test]
+    fn allof_requires_all_filters() {
+        let filters = vec![
+            PropFilter {
+                name: "FN".into(),
+                text_match: Some(TextMatch {
+                    value: "john".into(),
+                    match_type: MatchType::Contains,
+                    negate: false,
+                }),
+            },
+            PropFilter {
+                name: "EMAIL".into(),
+                text_match: Some(TextMatch {
+                    value: "example.com".into(),
+                    match_type: MatchType::Contains,
+                    negate: false,
+                }),
+            },
+        ];
+        // John has both FN containing "john" and EMAIL containing "example.com"
+        assert!(filters
+            .iter()
+            .all(|pf| vcard_matches_prop_filter(VCARD_JOHN, pf)));
+        // Jane has FN not containing "john" but has EMAIL containing "example" (not .com)
+        assert!(!filters
+            .iter()
+            .all(|pf| vcard_matches_prop_filter(VCARD_JANE, pf)));
+    }
+
+    #[test]
+    fn anyof_requires_any_filter() {
+        let filters = vec![
+            PropFilter {
+                name: "FN".into(),
+                text_match: Some(TextMatch {
+                    value: "john".into(),
+                    match_type: MatchType::Contains,
+                    negate: false,
+                }),
+            },
+            PropFilter {
+                name: "FN".into(),
+                text_match: Some(TextMatch {
+                    value: "jane".into(),
+                    match_type: MatchType::Contains,
+                    negate: false,
+                }),
+            },
+        ];
+        // anyof: John matches first filter
+        assert!(filters
+            .iter()
+            .any(|pf| vcard_matches_prop_filter(VCARD_JOHN, pf)));
+        // anyof: Jane matches second filter
+        assert!(filters
+            .iter()
+            .any(|pf| vcard_matches_prop_filter(VCARD_JANE, pf)));
+        // anyof: Bob matches neither
+        assert!(!filters
+            .iter()
+            .any(|pf| vcard_matches_prop_filter(VCARD_NO_EMAIL, pf)));
+    }
 }
