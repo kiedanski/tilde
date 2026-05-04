@@ -44,7 +44,7 @@ rclone() { command rclone --config "$RCLONE_CONF" "$@"; }
 
 # --- Build ---
 log "Building tilde..."
-cargo build --manifest-path "$PROJECT_ROOT/Cargo.toml" 2>&1 | tail -1
+[ -f "$TILDE_BIN" ] || cargo build --manifest-path "$PROJECT_ROOT/Cargo.toml" --no-default-features 2>&1 | tail -1
 
 # --- Generate tilde config ---
 mkdir -p "$DATA_DIR"
