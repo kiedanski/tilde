@@ -529,8 +529,10 @@ pub fn get_disk_usage_percent(path: &Path) -> Option<u8> {
             return None;
         }
         let stat = unsafe { stat.assume_init() };
-        let total = (stat.f_blocks as u64).wrapping_mul(stat.f_frsize);
-        let available = (stat.f_bavail as u64).wrapping_mul(stat.f_frsize);
+        #[allow(clippy::unnecessary_cast)]
+        let total = (stat.f_blocks as u64).wrapping_mul(stat.f_frsize as u64);
+        #[allow(clippy::unnecessary_cast)]
+        let available = (stat.f_bavail as u64).wrapping_mul(stat.f_frsize as u64);
         if total == 0 {
             return None;
         }

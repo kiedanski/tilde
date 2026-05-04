@@ -63,6 +63,8 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
