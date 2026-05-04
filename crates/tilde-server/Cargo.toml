@@ -52,3 +52,23 @@ hyper-util = { workspace = true }
 sd-notify = { workspace = true }
 tokio-util = { workspace = true }
 arc-swap = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
+arc-swap = { workspace = true }
+tilde-core = { workspace = true }
+tilde-dav = { workspace = true }
+tilde-cal = { workspace = true }
+tilde-card = { workspace = true }
+tilde-mcp = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+base64 = { workspace = true }
+serde_json = { workspace = true }
+jiff = { workspace = true }
+rusqlite = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
