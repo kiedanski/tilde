@@ -259,15 +259,13 @@ fn parse_list_objects_response(xml: &str) -> Result<Vec<S3Object>> {
                     current_tag = local;
                 }
             }
-            Ok(quick_xml::events::Event::Text(ref e)) => {
-                if in_contents {
-                    let text = e.unescape().unwrap_or_default().to_string();
-                    match current_tag.as_str() {
-                        "Key" => key = text,
-                        "Size" => size = text.parse().unwrap_or(0),
-                        "LastModified" => last_modified = text,
-                        _ => {}
-                    }
+            Ok(quick_xml::events::Event::Text(ref e)) if in_contents => {
+                let text = e.unescape().unwrap_or_default().to_string();
+                match current_tag.as_str() {
+                    "Key" => key = text,
+                    "Size" => size = text.parse().unwrap_or(0),
+                    "LastModified" => last_modified = text,
+                    _ => {}
                 }
             }
             Ok(quick_xml::events::Event::End(ref e)) => {
