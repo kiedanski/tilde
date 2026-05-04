@@ -81,7 +81,8 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
 
                 let s3_config = tilde_backup::offsite::OffsiteConfig::from_config(offsite_cfg)?;
                 println!("Uploading to offsite destination '{}'...", dest_name);
-                let remote_key = tilde_backup::offsite::upload_snapshot(&s3_config, &snapshot).await?;
+                let backup_dir = config.data_dir().join("backup");
+                let remote_key = tilde_backup::offsite::upload_snapshot(&s3_config, &snapshot, &backup_dir).await?;
                 println!("  Uploaded to: {}", remote_key);
             }
 

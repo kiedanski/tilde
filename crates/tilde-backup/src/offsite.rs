@@ -331,10 +331,11 @@ fn urlencoding(s: &str) -> String {
 pub async fn upload_snapshot(
     config: &OffsiteConfig,
     snapshot: &super::Snapshot,
+    backup_dir: &Path,
 ) -> Result<String> {
-    let local_path = Path::new(&snapshot.archive_path);
+    let local_path = super::resolve_archive_path(snapshot, backup_dir);
     if !local_path.exists() {
-        bail!("Snapshot archive not found: {} (use absolute paths in archive_path)", snapshot.archive_path);
+        bail!("Snapshot archive not found: {}", local_path.display());
     }
 
     let filename = local_path
@@ -351,7 +352,7 @@ pub async fn upload_snapshot(
         "Uploading snapshot to offsite storage"
     );
 
-    upload_file(config, local_path, &remote_key).await?;
+    upload_file(config, &local_path, &remote_key).await?;
 
     info!(
         snapshot_id = %snapshot.id,

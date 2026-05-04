@@ -218,7 +218,7 @@ pub fn list_snapshots(conn: &Connection) -> Result<Vec<Snapshot>> {
 
 /// Resolve a snapshot's archive path. Handles both relative filenames
 /// (new format) and absolute paths (legacy backups).
-fn resolve_archive_path(snapshot: &Snapshot, backup_dir: &Path) -> std::path::PathBuf {
+pub fn resolve_archive_path(snapshot: &Snapshot, backup_dir: &Path) -> std::path::PathBuf {
     let p = Path::new(&snapshot.archive_path);
     if p.is_absolute() {
         p.to_path_buf()

@@ -13,6 +13,9 @@ use std::sync::Arc;
 use tilde_core::auth;
 use tilde_core::db::DbPool;
 
+/// Single-user principal. All CardDAV paths are scoped to this user.
+pub const PRINCIPAL: &str = "admin";
+
 pub struct CardDavState {
     pub db: DbPool,
     pub session_ttl_hours: u32,
@@ -129,6 +132,12 @@ async fn handle_request(
         )
             .into_response();
     }
+    // Reject requests to wrong principal (defense-in-depth for single-user)
+    let (principal_segment, _) = path.split_once('/').unwrap_or((path, ""));
+    if !principal_segment.is_empty() && principal_segment != PRINCIPAL {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     let depth = req
         .headers()
         .get("depth")
@@ -223,7 +232,7 @@ fn handle_propfind(
         ));
 
         if depth == "1" {
-            let p = principal.unwrap_or("admin");
+            let p = principal.unwrap_or(PRINCIPAL);
             let mut stmt = db
                 .prepare(
                     "SELECT name, display_name, ctag, description, sync_token FROM addressbooks",
@@ -296,7 +305,7 @@ fn handle_propfind(
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             ) {
                 Ok((uid, etag)) => {
-                    let p = principal.unwrap_or("admin");
+                    let p = principal.unwrap_or(PRINCIPAL);
                     xml_response(StatusCode::MULTI_STATUS, format!(
                         r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
@@ -326,7 +335,7 @@ fn handle_propfind(
                 )),
             ) {
                 Ok((ab_id, display_name, ctag, desc, sync_token)) => {
-                    let p = principal.unwrap_or("admin");
+                    let p = principal.unwrap_or(PRINCIPAL);
                     let desc_xml = desc.map(|d| format!("<card:addressbook-description>{}</card:addressbook-description>", escape_xml(&d))).unwrap_or_default();
                     let mut responses = format!(
                         r#"<d:response>
@@ -678,7 +687,7 @@ fn handle_report(state: &SharedCardDavState, path: &str, body: &str) -> axum::re
         Some(n) => n,
         None => return StatusCode::BAD_REQUEST.into_response(),
     };
-    let principal = "admin";
+    let principal = PRINCIPAL;
 
     if body.contains("addressbook-multiget") {
         handle_multiget(state, ab_name, principal, body)

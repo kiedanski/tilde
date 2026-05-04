@@ -159,10 +159,24 @@ pub async fn run_collection(
                 )
                 .map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
 
-            // Validate sort field: only allow alphanumeric + underscores to prevent injection
+            // Validate sort field against the collection's schema properties
             if let Some(ref s) = sort {
-                if !s.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    anyhow::bail!("Invalid sort field: must be alphanumeric");
+                let schema_json: String = conn.query_row(
+                    "SELECT schema_json FROM collections WHERE id = ?1",
+                    [&collection_id],
+                    |row| row.get(0),
+                )?;
+                let schema: serde_json::Value = serde_json::from_str(&schema_json)?;
+                let valid = schema.get("properties")
+                    .and_then(|p| p.as_object())
+                    .map(|props| props.contains_key(s.as_str()))
+                    .unwrap_or(false);
+                if !valid {
+                    let available: Vec<&str> = schema.get("properties")
+                        .and_then(|p| p.as_object())
+                        .map(|props| props.keys().map(|k| k.as_str()).collect())
+                        .unwrap_or_default();
+                    anyhow::bail!("Unknown sort field '{}'. Available: {:?}", s, available);
                 }
             }
 
@@ -170,7 +184,7 @@ pub async fn run_collection(
                 "SELECT id, data_json, created_at FROM records WHERE collection_id = ?1",
             );
             if let Some(ref s) = sort {
-                // Sort field is validated above — safe to interpolate into json_extract path
+                // Sort field validated against schema above — safe to interpolate into json_extract path
                 sql.push_str(&format!(" ORDER BY json_extract(data_json, '$.{}') ASC", s));
             } else {
                 sql.push_str(" ORDER BY created_at DESC");

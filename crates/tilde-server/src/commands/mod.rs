@@ -2,27 +2,41 @@
 
 mod auth;
 mod backup;
+mod bookmarks;
+mod calendar;
 mod collections;
+mod contacts;
 mod email;
+mod export_import;
 mod init;
 mod mcp;
-mod misc;
 mod notes;
+mod notifications;
 mod photos;
+mod reindex;
 mod serve;
 mod status;
+mod update;
+mod webhooks;
 
 pub use auth::*;
 pub use backup::*;
+pub use bookmarks::*;
+pub use calendar::*;
 pub use collections::*;
+pub use contacts::*;
 pub use email::*;
+pub use export_import::*;
 pub use init::*;
 pub use mcp::*;
-pub use misc::*;
 pub use notes::*;
+pub use notifications::*;
 pub use photos::*;
+pub use reindex::*;
 pub use serve::*;
 pub use status::*;
+pub use update::*;
+pub use webhooks::*;
 
 /// Read a line from stdin, returning the default if empty
 pub(crate) fn prompt_with_default(prompt: &str, default: &str) -> String {

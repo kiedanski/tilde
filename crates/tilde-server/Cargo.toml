@@ -19,8 +19,6 @@ tilde-dav = { workspace = true }
 tilde-cal = { workspace = true }
 tilde-card = { workspace = true }
 tilde-photos = { workspace = true }
-tilde-notes = { workspace = true }
-tilde-collections = { workspace = true }
 tilde-email = { workspace = true }
 tilde-mcp = { workspace = true }
 tilde-backup = { workspace = true }

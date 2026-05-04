@@ -8,8 +8,6 @@ members = [
     "crates/tilde-cal",
     "crates/tilde-card",
     "crates/tilde-photos",
-    "crates/tilde-notes",
-    "crates/tilde-collections",
     "crates/tilde-email",
     "crates/tilde-mcp",
     "crates/tilde-backup",
@@ -148,8 +146,6 @@ tilde-dav = { path = "crates/tilde-dav" }
 tilde-cal = { path = "crates/tilde-cal" }
 tilde-card = { path = "crates/tilde-card" }
 tilde-photos = { path = "crates/tilde-photos", default-features = false }
-tilde-notes = { path = "crates/tilde-notes" }
-tilde-collections = { path = "crates/tilde-collections" }
 tilde-email = { path = "crates/tilde-email" }
 tilde-mcp = { path = "crates/tilde-mcp" }
 tilde-backup = { path = "crates/tilde-backup" }

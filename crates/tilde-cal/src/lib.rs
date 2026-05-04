@@ -19,6 +19,9 @@ use std::sync::Arc;
 use tilde_core::auth;
 use tilde_core::db::DbPool;
 
+/// Single-user principal. All CalDAV/CardDAV paths are scoped to this user.
+pub const PRINCIPAL: &str = "admin";
+
 pub struct CalDavState {
     pub db: DbPool,
     pub session_ttl_hours: u32,
@@ -134,6 +137,12 @@ async fn handle_caldav_request(
             .into_response();
     }
 
+    // Reject requests to wrong principal (defense-in-depth for single-user)
+    let (principal_segment, _) = path.split_once('/').unwrap_or((path, ""));
+    if !principal_segment.is_empty() && principal_segment != PRINCIPAL {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     let depth = req
         .headers()
         .get("depth")
@@ -245,7 +254,7 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
                 })
                 .unwrap();
 
-            let p = principal.unwrap_or("admin");
+            let p = principal.unwrap_or(PRINCIPAL);
             for cal in calendars.flatten() {
                 let (name, display_name, ctag, description, color, sync_token) = cal;
                 let desc_xml = description
@@ -309,7 +318,7 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             ) {
                 Ok((uid, etag)) => {
-                    let p = principal.unwrap_or("admin");
+                    let p = principal.unwrap_or(PRINCIPAL);
                     let xml = format!(
                         r#"<?xml version="1.0" encoding="UTF-8"?>
 <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
@@ -348,7 +357,7 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
 
             match cal_result {
                 Ok((cal_id, display_name, ctag, description, color, sync_token)) => {
-                    let p = principal.unwrap_or("admin");
+                    let p = principal.unwrap_or(PRINCIPAL);
                     let desc_xml = description
                         .map(|d| {
                             format!(
@@ -779,7 +788,7 @@ fn handle_report(state: &SharedCalDavState, path: &str, body: &str) -> axum::res
         Some(n) => n,
         None => return StatusCode::BAD_REQUEST.into_response(),
     };
-    let principal = "admin";
+    let principal = PRINCIPAL;
 
     if body.contains("calendar-multiget") {
         handle_multiget_report(state, cal_name, principal, body)

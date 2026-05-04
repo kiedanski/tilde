@@ -2956,15 +2956,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilde-collections"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "tilde-core",
- "tracing",
-]
-
-[[package]]
 name = "tilde-core"
 version = "0.1.0"
 dependencies = [
@@ -3051,15 +3042,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilde-notes"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "tilde-core",
- "tracing",
-]
-
-[[package]]
 name = "tilde-notify"
 version = "0.1.0"
 dependencies = [
@@ -3125,12 +3107,10 @@ dependencies = [
  "tilde-cal",
  "tilde-card",
  "tilde-cli",
- "tilde-collections",
  "tilde-core",
  "tilde-dav",
  "tilde-email",
  "tilde-mcp",
- "tilde-notes",
  "tilde-notify",
  "tilde-photos",
  "tokio",
