@@ -432,7 +432,6 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         db: pool.clone(),
         start_time: Instant::now(),
         login_attempts: Mutex::new(std::collections::HashMap::new()),
-        login_flows: Mutex::new(std::collections::HashMap::new()),
         mcp_state,
         webauthn,
         webauthn_reg_state: Mutex::new(std::collections::HashMap::new()),
