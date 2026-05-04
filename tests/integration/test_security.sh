@@ -70,8 +70,8 @@ log "Server is up on port $PORT."
 
 log "--- Path Traversal ---"
 
-# GET with .. in path
-CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$AUTH" \
+# GET with .. in path (--path-as-is prevents curl from resolving ..)
+CODE=$(curl -s -o /dev/null -w "%{http_code}" --path-as-is -u "$AUTH" \
     "$BASE_URL/dav/files/../../../etc/passwd")
 if [ "$CODE" = "400" ] || [ "$CODE" = "403" ] || [ "$CODE" = "404" ]; then
     pass "GET with .. blocked ($CODE)"
