@@ -769,36 +769,67 @@ fn handle_calendar_query_report(
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    let start = extract_xml_attr(body, "time-range", "start");
-    let end = extract_xml_attr(body, "time-range", "end");
+    let range_start = extract_xml_attr(body, "time-range", "start")
+        .and_then(|s| parse_ical_datetime(&s));
+    let range_end = extract_xml_attr(body, "time-range", "end")
+        .and_then(|s| parse_ical_datetime(&s));
 
-    let mut query =
-        "SELECT uid, etag, ics_data FROM calendar_objects WHERE calendar_id = ?1 AND deleted = 0"
-            .to_string();
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(cal_id)];
-
-    if let Some(ref s) = start {
-        query.push_str(" AND (dtend IS NULL OR dtend >= ?2)");
-        params.push(Box::new(s.clone()));
-    }
-    if let Some(ref e) = end {
-        let idx = params.len() + 1;
-        query.push_str(&format!(" AND (dtstart IS NULL OR dtstart <= ?{})", idx));
-        params.push(Box::new(e.clone()));
-    }
-
-    let mut stmt = db.prepare(&query).unwrap();
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let objects: Vec<(String, String, String)> = stmt
-        .query_map(param_refs.as_slice(), |row| {
+    let mut stmt = db
+        .prepare(
+            "SELECT uid, etag, ics_data, dtstart, dtend \
+             FROM calendar_objects WHERE calendar_id = ?1 AND deleted = 0",
+        )
+        .unwrap();
+    let all_objects: Vec<(String, String, String, Option<String>, Option<String>)> = stmt
+        .query_map([&cal_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })
         .unwrap()
         .flatten()
+        .collect();
+
+    // Filter in Rust using parsed timestamps so different iCal formats compare
+    // correctly.  Per RFC 4791, if DTEND is absent use DTSTART + 1 day as the
+    // effective end.
+    let one_day = jiff::SignedDuration::from_hours(24);
+    let objects: Vec<(String, String, String)> = all_objects
+        .into_iter()
+        .filter(|(_, _, _, dtstart_raw, dtend_raw)| {
+            // If no time-range filter was requested, include everything.
+            if range_start.is_none() && range_end.is_none() {
+                return true;
+            }
+
+            let ev_start = dtstart_raw.as_deref().and_then(parse_ical_datetime);
+            let ev_end = dtend_raw
+                .as_deref()
+                .and_then(parse_ical_datetime)
+                .or_else(|| ev_start.map(|s| s.checked_add(one_day).unwrap_or(s)));
+
+            // Overlap test: event_end > range_start AND event_start < range_end
+            if let Some(rs) = range_start {
+                match ev_end {
+                    Some(ee) if ee <= rs => return false,
+                    None => return false,
+                    _ => {}
+                }
+            }
+            if let Some(re) = range_end {
+                match ev_start {
+                    Some(es) if es >= re => return false,
+                    None => return false,
+                    _ => {}
+                }
+            }
+            true
+        })
+        .map(|(uid, etag, ics_data, _, _)| (uid, etag, ics_data))
         .collect();
 
     let mut responses = String::new();
@@ -1077,6 +1108,59 @@ fn handle_freebusy_report(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/// Parse an iCalendar datetime string into a `jiff::Timestamp`.
+///
+/// Handles the following formats:
+/// - `20260601T100000Z`  (UTC with Z suffix)
+/// - `20260601T100000`   (floating/local — treated as UTC)
+/// - `20260601`          (date-only — start of day UTC)
+/// - `2026-06-01T10:00:00Z` (ISO 8601 with separators)
+fn parse_ical_datetime(s: &str) -> Option<jiff::Timestamp> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // Try ISO 8601 with separators first (e.g. 2026-06-01T10:00:00Z)
+    if s.contains('-') {
+        if let Ok(ts) = s.parse::<jiff::Timestamp>() {
+            return Some(ts);
+        }
+        // Try without Z (treat as UTC)
+        if let Ok(ts) = format!("{}Z", s).parse::<jiff::Timestamp>() {
+            return Some(ts);
+        }
+    }
+
+    // iCalendar compact formats: 20260601T100000Z, 20260601T100000, 20260601
+    let stripped = s.trim_end_matches('Z');
+    if stripped.len() == 8 {
+        // Date-only: YYYYMMDD -> start of day UTC
+        let iso = format!(
+            "{}-{}-{}T00:00:00Z",
+            &stripped[0..4],
+            &stripped[4..6],
+            &stripped[6..8]
+        );
+        return iso.parse::<jiff::Timestamp>().ok();
+    }
+    if stripped.len() == 15 && stripped.contains('T') {
+        // YYYYMMDDTHHMMSS -> treat as UTC
+        let iso = format!(
+            "{}-{}-{}T{}:{}:{}Z",
+            &stripped[0..4],
+            &stripped[4..6],
+            &stripped[6..8],
+            &stripped[9..11],
+            &stripped[11..13],
+            &stripped[13..15]
+        );
+        return iso.parse::<jiff::Timestamp>().ok();
+    }
+
+    None
+}
 
 fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
