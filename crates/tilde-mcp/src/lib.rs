@@ -391,52 +391,54 @@ fn prune_old_audit_logs(conn: &Connection, retention_days: u32) {
 
 // ─── Tool implementations ────────────────────────────────────────────────
 
-fn exec_notes_search(conn: &Connection, notes_dir: &Path, params: &Value) -> Result<Value, String> {
+fn exec_notes_search(_conn: &Connection, notes_dir: &Path, params: &Value) -> Result<Value, String> {
     let query = params
         .get("query")
         .and_then(|v| v.as_str())
         .ok_or("query parameter required")?;
     let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
 
-    // Rebuild FTS index
-    let _ = conn.execute("DELETE FROM notes_fts", []);
-    if notes_dir.exists() {
-        index_notes_fts_recursive(conn, notes_dir, notes_dir);
+    if !notes_dir.exists() {
+        return Ok(json!([]));
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT path, title, snippet(notes_fts, 2, '[', ']', '...', 30) FROM notes_fts WHERE notes_fts MATCH ?1 ORDER BY rank LIMIT ?2"
-    ).map_err(|e| e.to_string())?;
+    // Use grep for search — notes are plain files on disk
+    let output = std::process::Command::new("grep")
+        .args(["-rn", "--include=*.md", "--include=*.txt", "--color=never", "-l", query])
+        .arg(notes_dir)
+        .output()
+        .map_err(|e| format!("grep failed: {}", e))?;
 
-    let results: Vec<Value> = stmt
-        .query_map(rusqlite::params![query, limit], |row| {
-            let path: String = row.get(0)?;
-            let title: String = row.get(1)?;
-            let snippet: String = row.get(2)?;
-            // Get modified time from file
-            let full_path = notes_dir.join(&path);
-            let modified = full_path
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .map(|t| {
-                    let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-                    jiff::Timestamp::from_second(d.as_secs() as i64)
-                        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
-                        .strftime("%Y-%m-%dT%H:%M:%SZ")
-                        .to_string()
-                })
-                .unwrap_or_default();
-            Ok(json!({
-                "path": path,
-                "title": title,
-                "snippet": snippet,
-                "modified": modified,
-            }))
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut results: Vec<Value> = Vec::new();
+    for line in stdout.lines().take(limit as usize) {
+        let full_path = std::path::Path::new(line.trim());
+        let rel_path = full_path
+            .strip_prefix(notes_dir)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| line.trim().to_string());
+        let title = full_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let modified = full_path
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .map(|t| {
+                let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                jiff::Timestamp::from_second(d.as_secs() as i64)
+                    .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+                    .strftime("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        results.push(json!({
+            "path": rel_path,
+            "title": title,
+            "modified": modified,
+        }));
+    }
 
     Ok(json!(results))
 }
@@ -628,32 +630,39 @@ fn exec_files_read(files_dir: &Path, params: &Value) -> Result<Value, String> {
     Ok(json!({"content": content}))
 }
 
-fn exec_files_search(conn: &Connection, notes_dir: &Path, params: &Value) -> Result<Value, String> {
-    // Reuse notes FTS for now — searches note content
+fn exec_files_search(_conn: &Connection, notes_dir: &Path, params: &Value) -> Result<Value, String> {
     let query = params
         .get("query")
         .and_then(|v| v.as_str())
         .ok_or("query parameter required")?;
 
-    let _ = conn.execute("DELETE FROM notes_fts", []);
-    if notes_dir.exists() {
-        index_notes_fts_recursive(conn, notes_dir, notes_dir);
+    if !notes_dir.exists() {
+        return Ok(json!([]));
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT path, snippet(notes_fts, 2, '[', ']', '...', 30) FROM notes_fts WHERE notes_fts MATCH ?1 ORDER BY rank LIMIT 20"
-    ).map_err(|e| e.to_string())?;
+    // Use grep for file content search
+    let output = std::process::Command::new("grep")
+        .args(["-rn", "--include=*.md", "--include=*.txt", "--color=never", query])
+        .arg(notes_dir)
+        .output()
+        .map_err(|e| format!("grep failed: {}", e))?;
 
-    let results: Vec<Value> = stmt
-        .query_map([query], |row| {
-            Ok(json!({
-                "path": row.get::<_, String>(0)?,
-                "snippet": row.get::<_, String>(1)?,
-            }))
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut results: Vec<Value> = Vec::new();
+    for line in stdout.lines().take(20) {
+        let rel = line
+            .strip_prefix(notes_dir.to_str().unwrap_or(""))
+            .map(|s| s.trim_start_matches('/'))
+            .unwrap_or(line);
+        // Split "path:line:content" into path and snippet
+        let (path, snippet) = rel.split_once(':')
+            .and_then(|(p, rest)| rest.split_once(':').map(|(_, s)| (p, s)))
+            .unwrap_or((rel, ""));
+        results.push(json!({
+            "path": path,
+            "snippet": snippet.trim(),
+        }));
+    }
 
     Ok(json!(results))
 }
@@ -747,37 +756,6 @@ fn exec_trackers_query(conn: &Connection, params: &Value) -> Result<Value, Strin
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
-fn index_notes_fts_recursive(conn: &Connection, dir: &Path, base: &Path) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            index_notes_fts_recursive(conn, &path, base);
-        } else if path.extension().is_some_and(|e| e == "md") {
-            let rel_path = path
-                .strip_prefix(base)
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let content = std::fs::read_to_string(&path).unwrap_or_default();
-            let title = content
-                .lines()
-                .find(|l| l.starts_with("# "))
-                .map(|l| l.trim_start_matches("# ").to_string())
-                .unwrap_or_else(|| {
-                    path.file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                });
-            let _ = conn.execute(
-                "INSERT INTO notes_fts (path, title, content) VALUES (?1, ?2, ?3)",
-                rusqlite::params![rel_path, title, content],
-            );
-        }
-    }
-}
 
 fn basic_validate(data: &Value, schema: &Value) -> Result<(), String> {
     if let Some(required) = schema.get("required").and_then(|r| r.as_array())

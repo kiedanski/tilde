@@ -129,7 +129,6 @@ pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
         data_dir.join("uploads"),
         data_dir.join("backup"),
         cache_dir.join("thumbnails"),
-        cache_dir.join("fts"),
     ];
 
     for dir in &dirs {
@@ -350,7 +349,6 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         data_dir.join("uploads"),
         data_dir.join("backup"),
         cache_dir.join("thumbnails"),
-        cache_dir.join("fts"),
     ] {
         std::fs::create_dir_all(dir)?;
     }
@@ -757,19 +755,15 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 info!("Received SIGHUP, reloading configuration...");
                 match Config::load(config_path_for_reload.as_deref()) {
                     Ok(new_config) => {
-                        // Hot-reload: logging level
+                        // SIGHUP reload: log new config values but note that
+                        // AppState.config is by-value — most changes require restart.
+                        // TODO: use ArcSwap<Config> to make reload actually effective
                         let level = &new_config.logging.level;
-                        info!(level = %level, "Reloaded logging.level");
-
-                        // Hot-reload: MCP tool_allowlist and rate_limit
-                        info!(
-                            tool_allowlist = ?new_config.mcp.tool_allowlist,
-                            rate_limit = new_config.mcp.default_rate_limit,
-                            "Reloaded MCP configuration"
+                        warn!(
+                            level = %level,
+                            "SIGHUP: config file re-read, but runtime config is NOT updated \
+                             (AppState holds config by value). Most changes require a restart."
                         );
-
-                        // Note: server.*, tls.*, auth.* require restart
-                        info!("Configuration reloaded (hot-reloadable fields only)");
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to reload configuration on SIGHUP");
@@ -844,7 +838,13 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     match acceptor.accept(tcp_stream).await {
                         Ok(tls_stream) => {
                             use tower::Service;
-                            let svc = make_svc.call(addr).await.unwrap();
+                            let svc = match make_svc.call(addr).await {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::debug!(error = %e, "Failed to create service for connection");
+                                    return;
+                                }
+                            };
                             let hyper_svc = hyper_util::service::TowerToHyperService::new(svc);
                             let io = hyper_util::rt::TokioIo::new(tls_stream);
                             let _ = hyper_util::server::conn::auto::Builder::new(
@@ -1225,19 +1225,29 @@ pub async fn run_mcp(config_path: Option<&str>, command: McpCommands) -> anyhow:
             let mut sql = String::from(
                 "SELECT token_name, tool_name, duration_ms, created_at FROM mcp_audit_log WHERE 1=1",
             );
-            if let Some(ref s) = since {
-                sql.push_str(&format!(" AND created_at >= '{}'", s));
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            let mut param_idx = 1;
+            if since.is_some() {
+                sql.push_str(&format!(" AND created_at >= ?{}", param_idx));
+                param_idx += 1;
+                params.push(Box::new(since.clone().unwrap()));
             }
-            if let Some(ref t) = tool {
-                sql.push_str(&format!(" AND tool_name = '{}'", t));
+            if tool.is_some() {
+                sql.push_str(&format!(" AND tool_name = ?{}", param_idx));
+                param_idx += 1;
+                params.push(Box::new(tool.clone().unwrap()));
             }
-            if let Some(ref tk) = token {
-                sql.push_str(&format!(" AND token_name = '{}'", tk));
+            if token.is_some() {
+                sql.push_str(&format!(" AND token_name = ?{}", param_idx));
+                let _ = param_idx;
+                params.push(Box::new(token.clone().unwrap()));
             }
             sql.push_str(" ORDER BY created_at DESC LIMIT 50");
 
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map(param_refs.as_slice(), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -1268,35 +1278,36 @@ pub async fn run_mcp(config_path: Option<&str>, command: McpCommands) -> anyhow:
 
 pub async fn run_notes(config_path: Option<&str>, command: NotesCommands) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
-    let conn = db::init_db(config.db_path().to_str().unwrap())?;
-    let migrations_dir = tilde_cli::find_migrations_dir();
-    db::run_migrations(&conn, &migrations_dir)?;
-
     let notes_dir = config.data_dir().join("notes");
 
     match command {
         NotesCommands::Search { query } => {
-            // First, rebuild FTS index from disk
-            index_notes_fts(&conn, &notes_dir)?;
+            if !notes_dir.exists() {
+                println!("Notes directory not found: {}", notes_dir.display());
+                return Ok(());
+            }
 
-            // Search FTS
-            let mut stmt = conn.prepare(
-                "SELECT path, snippet(notes_fts, 2, '[', ']', '...', 30) FROM notes_fts WHERE notes_fts MATCH ?1 ORDER BY rank LIMIT 20"
-            )?;
-            let results: Vec<(String, String)> = stmt
-                .query_map([&query], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect();
+            // Use grep for search — notes are plain files on disk
+            let output = std::process::Command::new("grep")
+                .args(["-rn", "--include=*.md", "--include=*.txt", "--color=never", &query])
+                .arg(&notes_dir)
+                .output()?;
 
-            if results.is_empty() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.is_empty() {
                 println!("No notes found matching '{}'", query);
             } else {
-                for (path, snippet) in &results {
-                    println!("{}", path);
-                    println!("  {}", snippet);
-                    println!();
+                let mut count = 0;
+                for line in stdout.lines() {
+                    // Strip the notes_dir prefix for cleaner output
+                    let display = line
+                        .strip_prefix(notes_dir.to_str().unwrap_or(""))
+                        .map(|s| s.trim_start_matches('/'))
+                        .unwrap_or(line);
+                    println!("{}", display);
+                    count += 1;
                 }
-                println!("{} note(s) found", results.len());
+                println!("\n{} match(es) found", count);
             }
         }
         NotesCommands::List { path } => {
@@ -1317,54 +1328,6 @@ pub async fn run_notes(config_path: Option<&str>, command: NotesCommands) -> any
     Ok(())
 }
 
-fn index_notes_fts(conn: &rusqlite::Connection, notes_dir: &std::path::Path) -> anyhow::Result<()> {
-    // Clear and rebuild
-    conn.execute("DELETE FROM notes_fts", [])?;
-
-    if !notes_dir.exists() {
-        return Ok(());
-    }
-
-    fn walk_and_index(
-        conn: &rusqlite::Connection,
-        dir: &std::path::Path,
-        base: &std::path::Path,
-    ) -> anyhow::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                walk_and_index(conn, &path, base)?;
-            } else if path.extension().map(|e| e == "md").unwrap_or(false) {
-                let rel_path = path
-                    .strip_prefix(base)
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let content = std::fs::read_to_string(&path).unwrap_or_default();
-
-                // Extract title from first heading or filename
-                let title = content
-                    .lines()
-                    .find(|l| l.starts_with("# "))
-                    .map(|l| l.trim_start_matches("# ").to_string())
-                    .unwrap_or_else(|| {
-                        path.file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                    });
-
-                conn.execute(
-                    "INSERT INTO notes_fts (path, title, content) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![rel_path, title, content],
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    walk_and_index(conn, notes_dir, notes_dir)?;
-    Ok(())
-}
 
 pub async fn run_collection(
     config_path: Option<&str>,
@@ -2547,11 +2510,8 @@ pub async fn run_reindex(config_path: Option<&str>, index_type: &str) -> anyhow:
 
     match index_type {
         "notes" | "all" => {
-            print!("Rebuilding notes FTS index... ");
-            index_notes_fts(&conn, &notes_dir)?;
-            let count: i64 =
-                conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0))?;
-            println!("done ({} notes indexed)", count);
+            // Notes search uses grep — no index to rebuild
+            println!("Notes search uses grep (no index needed)");
         }
         _ => {}
     }

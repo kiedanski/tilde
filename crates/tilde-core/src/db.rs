@@ -123,18 +123,20 @@ pub fn run_migrations(conn: &Connection, migrations_dir: &Path) -> anyhow::Resul
             continue;
         }
 
-        // Apply migration
+        // Apply migration within a transaction so partial failure doesn't wedge the DB
         info!(version = migration.version, name = %migration.name, "Applying migration");
-        conn.execute_batch(&migration.sql)?;
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(&migration.sql)?;
 
-        // Record migration
+        // Record migration inside the same transaction
         let now = jiff::Zoned::now()
             .strftime("%Y-%m-%dT%H:%M:%S%:z")
             .to_string();
-        conn.execute(
+        tx.execute(
             "INSERT INTO migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![migration.version, migration.name, now, migration.checksum],
         )?;
+        tx.commit()?;
 
         info!(version = migration.version, name = %migration.name, "Migration applied successfully");
     }

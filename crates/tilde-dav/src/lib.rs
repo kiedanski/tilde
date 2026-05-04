@@ -95,6 +95,43 @@ fn is_safe_path(rel_path: &str) -> bool {
         .any(|segment| segment == "..")
 }
 
+/// Ensure a disk path resolves to within the allowed root directory.
+/// Prevents symlink escape by canonicalizing and checking the prefix.
+fn ensure_within_root(root: &std::path::Path, target: &std::path::Path) -> bool {
+    let canon_root = match root.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+
+    // If target exists, canonicalize it directly (follows symlinks)
+    if target.exists() {
+        return match target.canonicalize() {
+            Ok(p) => p.starts_with(&canon_root),
+            Err(_) => false,
+        };
+    }
+
+    // Target doesn't exist yet — canonicalize the nearest existing ancestor
+    let mut ancestor = target.to_path_buf();
+    while !ancestor.exists() {
+        if !ancestor.pop() {
+            return false;
+        }
+    }
+    match ancestor.canonicalize() {
+        Ok(p) => p.starts_with(&canon_root),
+        Err(_) => false,
+    }
+}
+
+/// Escape SQL LIKE wildcard characters so user-supplied paths
+/// don't match unrelated rows.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 fn unauthorized_response() -> Response {
     (
         StatusCode::UNAUTHORIZED,
@@ -158,8 +195,8 @@ async fn dav_handler(
         "PROPFIND" => handle_propfind(&state, rel_path, &headers).await,
         "PROPPATCH" => handle_proppatch(&state, rel_path, body).await,
         "LOCK" => {
-            // macOS Finder sends LOCK — respond 200 OK (FakeLs pattern)
-            StatusCode::OK.into_response()
+            // Class-1 server does not support locking — return 405 per RFC 4918
+            StatusCode::METHOD_NOT_ALLOWED.into_response()
         }
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
     }
@@ -186,6 +223,12 @@ async fn handle_get(state: &SharedDavState, rel_path: &str, head_only: bool) -> 
 
     if !disk_path.exists() {
         return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Symlink escape check — canonicalize and verify within root
+    if !ensure_within_root(&state.files_root, &disk_path) {
+        warn!(path = rel_path, "Symlink escape blocked on GET");
+        return StatusCode::FORBIDDEN.into_response();
     }
 
     if disk_path.is_dir() {
@@ -248,6 +291,12 @@ async fn handle_put(
 
     let disk_path = state.files_root.join(rel_path);
 
+    // Symlink escape check
+    if !ensure_within_root(&state.files_root, &disk_path) {
+        warn!(path = rel_path, "Symlink escape blocked on PUT");
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     // Ensure parent directory exists
     if let Some(parent) = disk_path.parent()
         && !parent.exists()
@@ -258,7 +307,8 @@ async fn handle_put(
     let exists = disk_path.exists();
 
     // Streaming write: stream body chunks directly to temp file (never buffer full file in memory)
-    let tmp_path = disk_path.with_extension("tmp_tilde_upload");
+    // UUID suffix prevents races between concurrent PUTs to the same path
+    let tmp_path = disk_path.with_extension(format!("tmp_tilde_{}", Uuid::new_v4().as_simple()));
     let tmp_file = match tokio::fs::File::create(&tmp_path).await {
         Ok(f) => f,
         Err(e) => {
@@ -495,6 +545,12 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     }
 
+    // Symlink escape check
+    if !ensure_within_root(&state.files_root, &disk_path) {
+        warn!(path = rel_path, "Symlink escape blocked on DELETE");
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     let db_path = state.db_path(rel_path);
 
     // Move to .trash/ instead of deleting permanently
@@ -529,9 +585,9 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
     // Remove from DB (file disappears from listings)
     if disk_path.is_dir() {
         let db = state.db.lock().unwrap();
-        let pattern = format!("{}%", db_path);
+        let pattern = format!("{}%", escape_like(&db_path));
         db.execute(
-            "DELETE FROM files WHERE path = ?1 OR path LIKE ?2",
+            "DELETE FROM files WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
             rusqlite::params![db_path, pattern],
         )
         .ok();
@@ -600,6 +656,12 @@ pub fn purge_trash(files_root: &std::path::Path, retention_days: u32) -> usize {
 async fn handle_mkcol(state: &SharedDavState, rel_path: &str) -> Response {
     let disk_path = state.files_root.join(rel_path);
 
+    // Symlink escape check (checks nearest existing ancestor)
+    if !ensure_within_root(&state.files_root, &disk_path) {
+        warn!(path = rel_path, "Symlink escape blocked on MKCOL");
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     if disk_path.exists() {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
@@ -656,6 +718,16 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
 
     if !src_disk.exists() {
         return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Symlink escape check on both source and destination
+    if !ensure_within_root(&state.files_root, &src_disk) {
+        warn!(path = rel_path, "Symlink escape blocked on MOVE source");
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if !ensure_within_root(&state.files_root, &dst_disk) {
+        warn!(dest = %dest, "Symlink escape blocked on MOVE destination");
+        return StatusCode::FORBIDDEN.into_response();
     }
 
     // Ensure destination parent exists
@@ -715,11 +787,12 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
         if dst_disk.is_dir() {
             let old_prefix = format!("{}/", src_db_path);
             let new_prefix = format!("{}/", dst_db_path);
+            let like_pattern = format!("{}%", escape_like(&old_prefix));
             let mut stmt = db
-                .prepare("SELECT id, path FROM files WHERE path LIKE ?1")
+                .prepare("SELECT id, path FROM files WHERE path LIKE ?1 ESCAPE '\\'")
                 .unwrap();
             let children: Vec<(String, String)> = stmt
-                .query_map([format!("{}%", old_prefix)], |row| {
+                .query_map([&like_pattern], |row| {
                     Ok((row.get(0)?, row.get(1)?))
                 })
                 .unwrap()
@@ -766,6 +839,16 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
 
     if !src_disk.exists() {
         return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Symlink escape check on both source and destination
+    if !ensure_within_root(&state.files_root, &src_disk) {
+        warn!(path = rel_path, "Symlink escape blocked on COPY source");
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if !ensure_within_root(&state.files_root, &dst_disk) {
+        warn!(dest = %dest, "Symlink escape blocked on COPY destination");
+        return StatusCode::FORBIDDEN.into_response();
     }
 
     let overwrite = dst_disk.exists();
@@ -827,6 +910,12 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
 
     if !disk_path.exists() && !rel_path.is_empty() {
         return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Symlink escape check
+    if disk_path.exists() && !ensure_within_root(&state.files_root, &disk_path) {
+        warn!(path = rel_path, "Symlink escape blocked on PROPFIND");
+        return StatusCode::FORBIDDEN.into_response();
     }
 
     let depth = headers
@@ -1259,15 +1348,43 @@ async fn uploads_handler(
 
             let chunk_path = staging_dir.join(chunk_name);
 
-            // Stream chunk to disk
-            let content = match axum::body::to_bytes(body, 10 * 1024 * 1024 * 1024).await {
-                Ok(bytes) => bytes,
-                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+            // Stream chunk to disk (never buffer entire chunk in memory)
+            let chunk_file = match tokio::fs::File::create(&chunk_path).await {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!(error = %e, "Failed to create chunk file");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
             };
+            let mut writer = tokio::io::BufWriter::with_capacity(64 * 1024, chunk_file);
+            let mut chunk_size: i64 = 0;
 
-            let chunk_size = content.len() as i64;
-            if let Err(e) = tokio::fs::write(&chunk_path, &content).await {
-                warn!(error = %e, "Failed to write chunk");
+            use http_body_util::BodyExt as _;
+            use tokio::io::AsyncWriteExt as _;
+
+            let mut body = body;
+            loop {
+                match body.frame().await {
+                    Some(Ok(frame)) => {
+                        if let Ok(chunk) = frame.into_data() {
+                            chunk_size += chunk.len() as i64;
+                            if let Err(e) = writer.write_all(&chunk).await {
+                                let _ = tokio::fs::remove_file(&chunk_path).await;
+                                warn!(error = %e, "Failed to write chunk data");
+                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                            }
+                        }
+                    }
+                    Some(Err(_)) => {
+                        let _ = tokio::fs::remove_file(&chunk_path).await;
+                        return StatusCode::BAD_REQUEST.into_response();
+                    }
+                    None => break,
+                }
+            }
+            if let Err(e) = writer.flush().await {
+                let _ = tokio::fs::remove_file(&chunk_path).await;
+                warn!(error = %e, "Failed to flush chunk file");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
 
@@ -1300,17 +1417,9 @@ async fn uploads_handler(
                 return StatusCode::NOT_FOUND.into_response();
             }
 
-            // Get destination from headers
-            let dest = match headers.get("destination").and_then(|v| v.to_str().ok()) {
-                Some(d) => {
-                    if let Some(idx) = d.find("/dav/files/") {
-                        d[idx + "/dav/files/".len()..]
-                            .trim_end_matches('/')
-                            .to_string()
-                    } else {
-                        d.trim_start_matches('/').trim_end_matches('/').to_string()
-                    }
-                }
+            // Get destination from headers (reuse get_destination which validates path traversal)
+            let dest = match get_destination(&headers) {
+                Some(d) => d,
                 None => return StatusCode::BAD_REQUEST.into_response(),
             };
 
@@ -1328,12 +1437,19 @@ async fn uploads_handler(
             });
 
             let dest_path = state.files_root.join(&dest);
+
+            // Symlink escape check on destination
+            if !ensure_within_root(&state.files_root, &dest_path) {
+                warn!(dest = %dest, "Symlink escape blocked on chunked upload destination");
+                return StatusCode::FORBIDDEN.into_response();
+            }
+
             if let Some(parent) = dest_path.parent() {
                 tokio::fs::create_dir_all(parent).await.ok();
             }
 
-            // Assemble into destination file
-            let tmp_path = dest_path.with_extension("tmp_tilde_chunked");
+            // Assemble into destination file (UUID prevents temp file collisions)
+            let tmp_path = dest_path.with_extension(format!("tmp_chunked_{}", Uuid::new_v4().as_simple()));
             let mut total_size: u64 = 0;
             let mut hasher = Sha256::new();
 
@@ -1461,7 +1577,7 @@ fn get_destination(headers: &HeaderMap) -> Option<String> {
     headers
         .get("destination")
         .and_then(|v| v.to_str().ok())
-        .map(|dest| {
+        .and_then(|dest| {
             // Extract relative path from full URL or path
             // Support all DAV mount points: /dav/files/, /dav/photos/, /dav/notes/
             let path = {
@@ -1477,9 +1593,16 @@ fn get_destination(headers: &HeaderMap) -> Option<String> {
                 })
             };
             // URL-decode the path (spaces, special characters)
-            urlencoding::decode(&path)
+            let decoded = urlencoding::decode(&path)
                 .map(|s| s.into_owned())
-                .unwrap_or(path)
+                .unwrap_or(path);
+            // Validate the decoded destination path against traversal attacks
+            if is_safe_path(&decoded) {
+                Some(decoded)
+            } else {
+                warn!(dest = %dest, "Path traversal blocked in Destination header");
+                None
+            }
         })
 }
 

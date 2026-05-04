@@ -6,7 +6,7 @@ use rand::rngs::OsRng;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 pub use webauthn_rs::Webauthn;
@@ -146,7 +146,7 @@ pub fn create_session(
         rusqlite::params![token_hash, prefix, now_str, now_str, expires_str, user_agent, source_ip],
     )?;
 
-    info!(prefix = prefix, "Session created");
+    tracing::debug!(prefix = prefix, "Session created");
     Ok(token)
 }
 
@@ -199,29 +199,52 @@ pub fn create_app_password(
 ) -> anyhow::Result<String> {
     let password = generate_app_password();
     let hash = hash_password(&password)?;
+    let lookup = hash_token(&password); // SHA-256 for fast O(1) lookup
     let id = Uuid::new_v4().to_string();
     let now = jiff::Zoned::now()
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
 
     conn.execute(
-        "INSERT INTO app_passwords (id, name, password_hash, scope_prefix, created_at, revoked)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-        rusqlite::params![id, name, hash, scope_prefix, now],
+        "INSERT INTO app_passwords (id, name, password_hash, lookup_hash, scope_prefix, created_at, revoked)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+        rusqlite::params![id, name, hash, lookup, scope_prefix, now],
     )?;
 
     info!(name = name, scope = scope_prefix, "App password created");
     Ok(password)
 }
 
-/// Verify an app password and check scope
+/// Verify an app password and check scope.
+/// Uses SHA-256 lookup hash for O(1) matching (avoids iterating all Argon2 hashes).
+/// Falls back to scanning all rows for passwords created before the lookup_hash migration.
 pub fn verify_app_password(
     conn: &Connection,
     password: &str,
     request_path: &str,
 ) -> anyhow::Result<bool> {
-    let mut stmt =
-        conn.prepare("SELECT password_hash, scope_prefix FROM app_passwords WHERE revoked = 0")?;
+    let lookup = hash_token(password);
+
+    // Fast path: O(1) lookup by SHA-256 hash (for passwords created after migration 006)
+    let fast_result = conn.query_row(
+        "SELECT password_hash, scope_prefix FROM app_passwords WHERE lookup_hash = ?1 AND revoked = 0",
+        [&lookup],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    );
+
+    if let Ok((hash, scope)) = fast_result {
+        if verify_password(password, &hash) {
+            let scope_pattern = scope.trim_end_matches('*');
+            if request_path.starts_with(scope_pattern) || scope == "*" {
+                return Ok(true);
+            }
+        }
+    }
+
+    // Slow fallback: scan rows without lookup_hash (pre-migration passwords)
+    let mut stmt = conn.prepare(
+        "SELECT password_hash, scope_prefix FROM app_passwords WHERE revoked = 0 AND lookup_hash IS NULL",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -229,7 +252,6 @@ pub fn verify_app_password(
     for row in rows {
         let (hash, scope) = row?;
         if verify_password(password, &hash) {
-            // Check scope
             let scope_pattern = scope.trim_end_matches('*');
             if request_path.starts_with(scope_pattern) || scope == "*" {
                 return Ok(true);
@@ -261,7 +283,7 @@ pub fn create_mcp_token(
         rusqlite::params![id, name, token_hash, prefix, scopes, rate_limit, now],
     )?;
 
-    info!(name = name, prefix = prefix, "MCP token created");
+    tracing::debug!(name = name, prefix = prefix, "MCP token created");
     Ok(token)
 }
 
@@ -424,7 +446,8 @@ pub fn remove_webauthn_credential(conn: &Connection, id: &str) -> anyhow::Result
     Ok(affected > 0)
 }
 
-/// Update last_used_at for a WebAuthn credential after authentication
+/// Update last_used_at for a WebAuthn credential after authentication.
+/// Matches by credential ID (base64url-encoded) to update the correct row.
 pub fn update_webauthn_credential_counter(
     conn: &Connection,
     credential: &Passkey,
@@ -433,19 +456,37 @@ pub fn update_webauthn_credential_counter(
     let now = jiff::Zoned::now()
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
-    // Update the stored credential (counter changed) and last_used_at
-    // We match on the credential ID embedded in the JSON
     let cred_id_b64 = base64::Engine::encode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         credential.cred_id(),
     );
-    // Update all credentials — in single-user mode we just update by matching serialized data
-    conn.execute(
-        "UPDATE webauthn_credentials SET public_key = ?1, last_used_at = ?2, counter = counter + 1
-         WHERE id IN (SELECT id FROM webauthn_credentials LIMIT 1)",
-        rusqlite::params![cred_json.as_bytes(), now],
-    )?;
-    let _ = cred_id_b64; // suppress unused warning
+
+    // Find the matching credential by deserializing stored public_key blobs
+    // and comparing credential IDs
+    let mut stmt = conn.prepare("SELECT id, public_key FROM webauthn_credentials")?;
+    let rows: Vec<(String, Vec<u8>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for (row_id, pk_bytes) in &rows {
+        if let Ok(stored_cred) = serde_json::from_slice::<Passkey>(pk_bytes) {
+            let stored_id = base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                stored_cred.cred_id(),
+            );
+            if stored_id == cred_id_b64 {
+                conn.execute(
+                    "UPDATE webauthn_credentials SET public_key = ?1, last_used_at = ?2, counter = counter + 1 WHERE id = ?3",
+                    rusqlite::params![cred_json.as_bytes(), now, row_id],
+                )?;
+                return Ok(());
+            }
+        }
+    }
+
+    // Fallback: no matching credential found (shouldn't happen after successful auth)
+    warn!("WebAuthn credential update: no matching cred_id found");
     Ok(())
 }
 

@@ -166,15 +166,16 @@ pub fn spawn_tunnel_supervisor(
                 "Starting tunnel (newt)..."
             );
 
+            // Pass secret via environment variable instead of CLI arg
+            // (CLI args are visible in /proc/<pid>/cmdline)
             let result = Command::new(&config.binary)
                 .arg("--id")
                 .arg(&config.id)
-                .arg("--secret")
-                .arg(&secret)
                 .arg("--endpoint")
                 .arg(&config.endpoint)
                 .arg("--log-level")
                 .arg(&config.log_level)
+                .env("NEWT_SECRET", &secret)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn();

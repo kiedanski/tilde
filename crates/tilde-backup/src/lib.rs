@@ -69,12 +69,12 @@ pub fn create_snapshot_with_encryption(
     let mut file_count: i64 = 0;
 
     // Back up key directories and files
-    let items_to_backup = [
+    let dir_items = [
         "files", "notes", "photos", "calendars", "contacts", "mail",
-        "collections", "tilde.db",
+        "collections",
     ];
 
-    for item in &items_to_backup {
+    for item in &dir_items {
         let src = data_dir.join(item);
         if !src.exists() {
             continue;
@@ -88,6 +88,24 @@ pub fn create_snapshot_with_encryption(
                 .with_context(|| format!("Failed to add {} to archive", item))?;
             file_count += 1;
         }
+    }
+
+    // Use VACUUM INTO for the database — produces a consistent snapshot
+    // without needing to coordinate WAL checkpoint or risk corrupted backup
+    let db_src = data_dir.join("tilde.db");
+    if db_src.exists() {
+        let db_snapshot = backup_dir.join(format!(".snapshot-{}.db", snapshot_id));
+        conn.execute(
+            "VACUUM INTO ?1",
+            [db_snapshot.to_str().unwrap_or_default()],
+        )
+        .context("VACUUM INTO failed for DB snapshot")?;
+        tar_builder
+            .append_path_with_name(&db_snapshot, "tilde.db")
+            .context("Failed to add DB snapshot to archive")?;
+        file_count += 1;
+        // Clean up temp snapshot
+        let _ = std::fs::remove_file(&db_snapshot);
     }
 
     let encoder = tar_builder
@@ -133,7 +151,7 @@ pub fn create_snapshot_with_encryption(
         created_at: created_at.clone(),
         size_bytes,
         file_count,
-        archive_path: filename.clone(),
+        archive_path: final_path.to_string_lossy().to_string(),
         checksum: checksum.clone(),
         pinned: false,
         pin_reason: None,

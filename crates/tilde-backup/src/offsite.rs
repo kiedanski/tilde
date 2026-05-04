@@ -334,7 +334,7 @@ pub async fn upload_snapshot(
 ) -> Result<String> {
     let local_path = Path::new(&snapshot.archive_path);
     if !local_path.exists() {
-        bail!("Snapshot archive not found: {}", snapshot.archive_path);
+        bail!("Snapshot archive not found: {} (use absolute paths in archive_path)", snapshot.archive_path);
     }
 
     let filename = local_path

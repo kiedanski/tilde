@@ -137,7 +137,6 @@ fn connect_and_login(config: &ImapAccountConfig) -> Result<ImapSession> {
 
     if config.use_ssl {
         let tls = native_tls::TlsConnector::builder()
-            .danger_accept_invalid_certs(true)
             .build()?;
         let client = imap::connect(
             (config.imap_host.as_str(), config.imap_port),

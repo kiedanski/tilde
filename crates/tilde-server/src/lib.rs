@@ -541,6 +541,7 @@ async fn apple_mobileconfig_handler(
 async fn login_handler(
     State(state): State<SharedState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> axum::response::Response {
     let password = match body.get("password").and_then(|v| v.as_str()) {
@@ -554,7 +555,14 @@ async fn login_handler(
         }
     };
 
-    let client_ip = addr.ip().to_string();
+    // Use X-Forwarded-For when behind a reverse proxy (Pangolin/caddy),
+    // otherwise the rate limit becomes a single global bucket for 127.0.0.1
+    let client_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| addr.ip().to_string());
 
     let max_attempts = state.config.auth.max_login_attempts;
     let lockout_minutes = state.config.auth.lockout_duration_minutes;
@@ -655,9 +663,15 @@ async fn auth_middleware(
                 auth::validate_session(&db, token, state.config.auth.session_ttl_hours)
                     .unwrap_or(false)
             } else if token.starts_with("mcp_prod_") {
-                auth::validate_mcp_token(&db, token)
-                    .map(|opt| opt.is_some())
-                    .unwrap_or(false)
+                // MCP tokens should only be accepted for /mcp endpoints, not general /api/*
+                let path = req.uri().path();
+                if path.starts_with("/mcp") || path.starts_with("/api/mcp") {
+                    auth::validate_mcp_token(&db, token)
+                        .map(|opt| opt.is_some())
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
             } else {
                 false
             }
@@ -1140,8 +1154,13 @@ fn render_login_error(flow_token: &str, csrf_token: &str, error: &str) -> axum::
         .replace("{{csrf_token}}", csrf_token)
         .replace("{{flow_token}}", flow_token);
 
-    // Insert error div before the form
-    let error_html = format!(r#"<div class="error">{}</div>"#, error);
+    // Insert error div before the form (HTML-escape to prevent injection)
+    let escaped_error = error
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;");
+    let error_html = format!(r#"<div class="error">{}</div>"#, escaped_error);
     let html = html.replace("<form", &format!("{}<form", error_html));
 
     (
@@ -1300,7 +1319,14 @@ async fn webhook_handler(
             .into_response();
     }
 
-    // HMAC replay protection: verify X-Tilde-Signature if secret is configured
+    // HMAC verification: require a secret and valid signature
+    if hmac_secret.is_none() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "webhook has no HMAC secret configured — refusing unauthenticated payload"})),
+        )
+            .into_response();
+    }
     if let Some(ref secret) = hmac_secret {
         let signature = headers
             .get("X-Tilde-Signature")
@@ -1444,9 +1470,13 @@ async fn webauthn_register_start(
             let challenge_id = uuid::Uuid::new_v4().to_string();
             {
                 let mut states = state.webauthn_reg_state.lock().unwrap();
-                // Clean old entries (older than 5 min — use count as proxy)
-                if states.len() > 10 {
-                    states.clear();
+                // Cap pending challenges — if an attacker floods, evict oldest half
+                // rather than clearing ALL entries (which DoSes legitimate in-flight ceremonies)
+                if states.len() > 100 {
+                    let keys: Vec<String> = states.keys().take(states.len() / 2).cloned().collect();
+                    for k in keys {
+                        states.remove(&k);
+                    }
                 }
                 states.insert(challenge_id.clone(), reg_state);
             }
@@ -1569,8 +1599,11 @@ async fn webauthn_auth_start(
             let challenge_id = uuid::Uuid::new_v4().to_string();
             {
                 let mut states = state.webauthn_auth_state.lock().unwrap();
-                if states.len() > 10 {
-                    states.clear();
+                if states.len() > 100 {
+                    let keys: Vec<String> = states.keys().take(states.len() / 2).cloned().collect();
+                    for k in keys {
+                        states.remove(&k);
+                    }
                 }
                 states.insert(challenge_id.clone(), auth_state);
             }
@@ -1628,8 +1661,8 @@ async fn webauthn_auth_finish(
 
     match auth::webauthn_finish_authentication(webauthn, &pub_key_cred, &auth_state) {
         Ok(auth_result) => {
-            // Update credential counter in DB
             let db = state.db.lock().unwrap();
+            // Update credential counter in DB
             if let Ok(creds) = auth::load_webauthn_credentials(&db) {
                 for mut cred in creds {
                     cred.update_credential(&auth_result);
@@ -1637,10 +1670,27 @@ async fn webauthn_auth_finish(
                 }
             }
 
-            (StatusCode::OK, Json(json!({
-                "status": "authenticated",
-                "needs_update": auth_result.needs_update(),
-            }))).into_response()
+            // Create a real session token so the client is actually authenticated
+            match auth::create_session(
+                &db,
+                Some("webauthn"),
+                None,
+                state.config.auth.session_ttl_hours,
+            ) {
+                Ok(token) => {
+                    (StatusCode::OK, Json(json!({
+                        "status": "authenticated",
+                        "token": token,
+                        "token_prefix": &token[..std::cmp::min(22, token.len())],
+                        "expires_in_hours": state.config.auth.session_ttl_hours,
+                        "needs_update": auth_result.needs_update(),
+                    }))).into_response()
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create session after WebAuthn auth");
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "session creation failed"}))).into_response()
+                }
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "WebAuthn authentication failed");

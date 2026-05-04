@@ -39,6 +39,16 @@ fn decode_heic(path: &Path) -> Result<DynamicImage> {
     let width = handle.width();
     let height = handle.height();
 
+    // Guard against crafted images with absurd dimensions (OOM prevention)
+    const MAX_MEGAPIXELS: u64 = 200; // 200 MP covers all consumer cameras
+    let pixels = (width as u64).checked_mul(height as u64).unwrap_or(u64::MAX);
+    if pixels > MAX_MEGAPIXELS * 1_000_000 {
+        bail!(
+            "HEIC image too large: {}x{} ({} MP exceeds {} MP cap)",
+            width, height, pixels / 1_000_000, MAX_MEGAPIXELS
+        );
+    }
+
     let img = lib_heif
         .decode(&handle, ColorSpace::Rgb(RgbChroma::Rgb), None)
         .context("Failed to decode HEIC image")?;
@@ -50,7 +60,11 @@ fn decode_heic(path: &Path) -> Result<DynamicImage> {
     let stride = plane.stride;
 
     // Copy row-by-row to handle stride != width*3
-    let mut rgb_data = Vec::with_capacity((width * height * 3) as usize);
+    let capacity = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|p| p.checked_mul(3))
+        .context("Image dimensions overflow")?;
+    let mut rgb_data = Vec::with_capacity(capacity);
     for y in 0..height as usize {
         let row_start = y * stride;
         let row_end = row_start + (width as usize * 3);
