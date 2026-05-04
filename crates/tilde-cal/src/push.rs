@@ -52,7 +52,7 @@ pub fn list_subscriptions(
     let mut stmt = match db.prepare(
         "SELECT id, collection_type, collection_id, callback_url, expiry, created_at
          FROM push_subscriptions
-         WHERE collection_type = ?1 AND collection_id = ?2 AND expiry > ?3"
+         WHERE collection_type = ?1 AND collection_id = ?2 AND expiry > ?3",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -90,10 +90,7 @@ pub fn cleanup_expired(db: &Connection) {
     let now = jiff::Zoned::now()
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
-    let _ = db.execute(
-        "DELETE FROM push_subscriptions WHERE expiry <= ?1",
-        [&now],
-    );
+    let _ = db.execute("DELETE FROM push_subscriptions WHERE expiry <= ?1", [&now]);
 }
 
 /// Notify all subscribers of a change to a calendar collection.

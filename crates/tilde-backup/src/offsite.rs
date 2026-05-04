@@ -86,7 +86,8 @@ pub async fn upload_file(
     let url = format!("{}/{}/{}", config.endpoint, config.bucket, remote_key);
 
     // Build canonical request for AWS Signature V4
-    let host = config.endpoint
+    let host = config
+        .endpoint
         .strip_prefix("https://")
         .or_else(|| config.endpoint.strip_prefix("http://"))
         .unwrap_or(&config.endpoint);
@@ -113,12 +114,7 @@ pub async fn upload_file(
         hex::encode(Sha256::digest(canonical_request.as_bytes()))
     );
 
-    let signing_key = get_signature_key(
-        &config.secret_key,
-        &date_stamp,
-        &config.region,
-        "s3",
-    );
+    let signing_key = get_signature_key(&config.secret_key, &date_stamp, &config.region, "s3");
     let signature = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes()));
 
     let authorization = format!(
@@ -150,15 +146,13 @@ pub async fn upload_file(
 }
 
 /// List objects in S3-compatible storage with optional prefix.
-pub async fn list_objects(
-    config: &OffsiteConfig,
-    prefix: Option<&str>,
-) -> Result<Vec<S3Object>> {
+pub async fn list_objects(config: &OffsiteConfig, prefix: Option<&str>) -> Result<Vec<S3Object>> {
     let now = jiff::Zoned::now();
     let date_stamp = now.strftime("%Y%m%d").to_string();
     let amz_date = now.strftime("%Y%m%dT%H%M%SZ").to_string();
 
-    let host = config.endpoint
+    let host = config
+        .endpoint
         .strip_prefix("https://")
         .or_else(|| config.endpoint.strip_prefix("http://"))
         .unwrap_or(&config.endpoint);
@@ -205,7 +199,10 @@ pub async fn list_objects(
         config.key_id, credential_scope, signed_headers, signature
     );
 
-    let url = format!("{}/{}?{}", config.endpoint, config.bucket, canonical_querystring);
+    let url = format!(
+        "{}/{}?{}",
+        config.endpoint, config.bucket, canonical_querystring
+    );
 
     let client = reqwest::Client::new();
     let resp = client
@@ -304,7 +301,10 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 fn get_signature_key(secret_key: &str, date_stamp: &str, region: &str, service: &str) -> Vec<u8> {
-    let k_date = hmac_sha256(format!("AWS4{}", secret_key).as_bytes(), date_stamp.as_bytes());
+    let k_date = hmac_sha256(
+        format!("AWS4{}", secret_key).as_bytes(),
+        date_stamp.as_bytes(),
+    );
     let k_region = hmac_sha256(&k_date, region.as_bytes());
     let k_service = hmac_sha256(&k_region, service.as_bytes());
     hmac_sha256(&k_service, b"aws4_request")

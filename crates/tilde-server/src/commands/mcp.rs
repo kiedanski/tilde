@@ -88,7 +88,9 @@ pub async fn run_mcp(config_path: Option<&str>, command: McpCommands) -> anyhow:
             if token.is_some() {
                 sql.push_str(&format!(" AND token_name = ?{}", param_idx));
                 #[allow(unused_assignments)]
-                { param_idx += 1; }
+                {
+                    param_idx += 1;
+                }
                 params.push(Box::new(token.clone().unwrap()));
             }
             sql.push_str(" ORDER BY created_at DESC LIMIT 50");

@@ -167,12 +167,14 @@ pub async fn run_collection(
                     |row| row.get(0),
                 )?;
                 let schema: serde_json::Value = serde_json::from_str(&schema_json)?;
-                let valid = schema.get("properties")
+                let valid = schema
+                    .get("properties")
                     .and_then(|p| p.as_object())
                     .map(|props| props.contains_key(s.as_str()))
                     .unwrap_or(false);
                 if !valid {
-                    let available: Vec<&str> = schema.get("properties")
+                    let available: Vec<&str> = schema
+                        .get("properties")
                         .and_then(|p| p.as_object())
                         .map(|props| props.keys().map(|k| k.as_str()).collect())
                         .unwrap_or_default();

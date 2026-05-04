@@ -501,7 +501,12 @@ pub fn check_disk_usage(
     match get_disk_usage_percent(path) {
         Some(used_percent) => {
             if used_percent >= 80 {
-                notify(sinks, rate_limiter, conn, events::disk_usage_high(used_percent));
+                notify(
+                    sinks,
+                    rate_limiter,
+                    conn,
+                    events::disk_usage_high(used_percent),
+                );
             }
         }
         None => {

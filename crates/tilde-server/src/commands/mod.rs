@@ -115,9 +115,9 @@ pub(crate) fn parse_schedule_interval(schedule: &str) -> u64 {
         "daily" => 86400,
         "weekly" => 604800,
         "monthly" => 2592000, // ~30 days
-        s if s.ends_with('s') => s[..s.len()-1].parse().unwrap_or(3600),
-        s if s.ends_with('m') => s[..s.len()-1].parse::<u64>().unwrap_or(60) * 60,
-        s if s.ends_with('h') => s[..s.len()-1].parse::<u64>().unwrap_or(1) * 3600,
+        s if s.ends_with('s') => s[..s.len() - 1].parse().unwrap_or(3600),
+        s if s.ends_with('m') => s[..s.len() - 1].parse::<u64>().unwrap_or(60) * 60,
+        s if s.ends_with('h') => s[..s.len() - 1].parse::<u64>().unwrap_or(1) * 3600,
         _ => 86400, // default to daily
     }
 }
@@ -226,7 +226,10 @@ pub(crate) fn validate_json_schema(
     Ok(())
 }
 
-pub(crate) fn list_notes_recursive(dir: &std::path::Path, base: &std::path::Path) -> anyhow::Result<()> {
+pub(crate) fn list_notes_recursive(
+    dir: &std::path::Path,
+    base: &std::path::Path,
+) -> anyhow::Result<()> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
 
@@ -391,7 +394,11 @@ pub(crate) fn count_media_files(dir: &std::path::Path) -> usize {
                     total += count_media_files(&path);
                 }
             } else {
-                let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).unwrap_or_default();
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_lowercase())
+                    .unwrap_or_default();
                 if tilde_photos::is_media_ext(&ext) {
                     total += 1;
                 }
@@ -401,7 +408,10 @@ pub(crate) fn count_media_files(dir: &std::path::Path) -> usize {
     total
 }
 
-pub(crate) fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<()> {
+pub(crate) fn copy_dir_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;

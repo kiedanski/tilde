@@ -74,8 +74,7 @@ fn check_auth(state: &SharedDavState, headers: &HeaderMap) -> bool {
                     if auth::verify_admin_password(&db, password).unwrap_or(false) {
                         return true;
                     }
-                    auth::verify_app_password(&db, password, &state.scope_prefix)
-                        .unwrap_or(false)
+                    auth::verify_app_password(&db, password, &state.scope_prefix).unwrap_or(false)
                 } else {
                     false
                 }
@@ -90,9 +89,7 @@ fn check_auth(state: &SharedDavState, headers: &HeaderMap) -> bool {
 /// Validate that a relative path doesn't escape the root directory.
 /// Rejects paths containing `..` segments.
 fn is_safe_path(rel_path: &str) -> bool {
-    !rel_path
-        .split('/')
-        .any(|segment| segment == "..")
+    !rel_path.split('/').any(|segment| segment == "..")
 }
 
 /// Ensure a disk path resolves to within the allowed root directory.
@@ -443,7 +440,11 @@ async fn handle_put(
     // For photos: if an existing file was overwritten, check if metadata (date) changed
     // and queue a reorganization if needed
     if exists && state.db_path_prefix == "photos/" {
-        let ext = disk_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let ext = disk_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
         if is_media_ext(&ext) && !rel_path.starts_with("_") {
             let db = state.db.clone();
             let files_root = state.files_root.clone();
@@ -480,7 +481,8 @@ fn check_and_queue_reorganize(
         None => return,
     };
 
-    let filename = disk_path.file_name()
+    let filename = disk_path
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
@@ -519,7 +521,8 @@ fn check_and_queue_reorganize(
     conn.execute(
         "UPDATE files SET path = ?1, parent_path = ?2 WHERE path = ?3",
         rusqlite::params![new_db_path, new_parent, old_db_path],
-    ).ok();
+    )
+    .ok();
 
     // Update photos.taken_at
     conn.execute(
@@ -531,8 +534,26 @@ fn check_and_queue_reorganize(
 }
 
 fn is_media_ext(ext: &str) -> bool {
-    matches!(ext, "jpg" | "jpeg" | "png" | "webp" | "heic" | "heif" | "tiff" | "tif" |
-             "raw" | "cr2" | "nef" | "arw" | "mp4" | "mov" | "avi" | "mkv" | "webm")
+    matches!(
+        ext,
+        "jpg"
+            | "jpeg"
+            | "png"
+            | "webp"
+            | "heic"
+            | "heif"
+            | "tiff"
+            | "tif"
+            | "raw"
+            | "cr2"
+            | "nef"
+            | "arw"
+            | "mp4"
+            | "mov"
+            | "avi"
+            | "mkv"
+            | "webm"
+    )
 }
 
 /// DELETE — remove a file or collection
@@ -563,7 +584,7 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
         }
     }
 
-    if let Err(e) = tokio::fs::rename(&disk_path, &trash_dest).await {
+    if let Err(_rename_err) = tokio::fs::rename(&disk_path, &trash_dest).await {
         // Cross-filesystem fallback: copy + delete
         if disk_path.is_dir() {
             if let Err(e) = copy_dir_async(&disk_path, &trash_dest).await {
@@ -600,7 +621,10 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
 }
 
 /// Recursively copy a directory (async)
-async fn copy_dir_async(src: &std::path::Path, dst: &std::path::Path) -> Result<(), std::io::Error> {
+async fn copy_dir_async(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> Result<(), std::io::Error> {
     tokio::fs::create_dir_all(dst).await?;
     let mut entries = tokio::fs::read_dir(src).await?;
     while let Some(entry) = entries.next_entry().await? {
@@ -761,9 +785,11 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
 
         // Get the file ID before updating path
         let file_id: Option<String> = db
-            .query_row("SELECT id FROM files WHERE path = ?1", [&src_db_path], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT id FROM files WHERE path = ?1",
+                [&src_db_path],
+                |row| row.get(0),
+            )
             .ok();
 
         db.execute(
@@ -790,9 +816,7 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
                 .prepare("SELECT id, path FROM files WHERE path LIKE ?1 ESCAPE '\\'")
                 .unwrap();
             let children: Vec<(String, String)> = stmt
-                .query_map([&like_pattern], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })
+                .query_map([&like_pattern], |row| Ok((row.get(0)?, row.get(1)?)))
                 .unwrap()
                 .filter_map(|r| r.ok())
                 .collect();
@@ -860,7 +884,10 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
 
     // Create new DB record — stream SHA-256 instead of reading entire file into memory
     {
-        let size = tokio::fs::metadata(&dst_disk).await.map(|m| m.len()).unwrap_or(0);
+        let size = tokio::fs::metadata(&dst_disk)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
         let sha256 = {
             let hash_path = dst_disk.clone();
             tokio::task::spawn_blocking(move || compute_file_sha256(&hash_path))
@@ -871,7 +898,11 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
 
         let db = state.db.get().unwrap();
         let dst_db_path = state.db_path(&dest);
-        let etag = if sha256.len() >= 16 { sha256[..16].to_string() } else { sha256.clone() };
+        let etag = if sha256.len() >= 16 {
+            sha256[..16].to_string()
+        } else {
+            sha256.clone()
+        };
         let content_type = mime_from_path(&dest);
         let now = jiff::Zoned::now()
             .strftime("%Y-%m-%dT%H:%M:%S%:z")
@@ -976,7 +1007,10 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
     let xml_bytes = xml.into_bytes();
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/xml; charset=utf-8"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/xml; charset=utf-8"),
+    );
     headers.insert(header::CONTENT_LENGTH, HeaderValue::from(xml_bytes.len()));
 
     (StatusCode::MULTI_STATUS, headers, xml_bytes).into_response()
@@ -1456,7 +1490,8 @@ async fn uploads_handler(
             }
 
             // Assemble into destination file (UUID prevents temp file collisions)
-            let tmp_path = dest_path.with_extension(format!("tmp_chunked_{}", Uuid::new_v4().as_simple()));
+            let tmp_path =
+                dest_path.with_extension(format!("tmp_chunked_{}", Uuid::new_v4().as_simple()));
             let mut total_size: u64 = 0;
             let mut hasher = Sha256::new();
 
@@ -1596,7 +1631,9 @@ fn get_destination(headers: &HeaderMap) -> Option<String> {
                     }
                 }
                 result.unwrap_or_else(|| {
-                    dest.trim_start_matches('/').trim_end_matches('/').to_string()
+                    dest.trim_start_matches('/')
+                        .trim_end_matches('/')
+                        .to_string()
                 })
             };
             // URL-decode the path (spaces, special characters)
@@ -1816,7 +1853,9 @@ fn compute_file_sha256(path: &std::path::Path) -> Result<String, std::io::Error>
     let mut buf = [0u8; 65536];
     loop {
         let n = file.read(&mut buf)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
     }
     Ok(format!("{:x}", hasher.finalize()))

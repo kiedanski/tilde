@@ -1,8 +1,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tokio_util::sync::CancellationToken;
-use tilde_core::{auth, config::Config, db::{self, DbPool}};
+use tilde_core::{
+    auth,
+    config::Config,
+    db::{self, DbPool},
+};
 use tilde_server::{AppState, SharedState, build_router};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::{parse_schedule_interval, secs_until_next_run, walkdir_media};
@@ -111,7 +115,11 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     // Initialize WebAuthn if enabled
     let webauthn = if config.auth.webauthn_enabled {
-        let hostname = if config.server.hostname.is_empty() { "localhost" } else { &config.server.hostname };
+        let hostname = if config.server.hostname.is_empty() {
+            "localhost"
+        } else {
+            &config.server.hostname
+        };
         match tilde_core::auth::create_webauthn(&config.auth.webauthn_rp_id, hostname) {
             Ok(w) => {
                 tracing::info!("WebAuthn enabled");
@@ -359,8 +367,16 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             let inbox = scan_photos_base.join("_inbox");
             let library_drop = scan_photos_base.join("_library-drop");
 
-            let inbox_files = if inbox.exists() { walkdir_media(&inbox) } else { vec![] };
-            let lib_files = if library_drop.exists() { walkdir_media(&library_drop) } else { vec![] };
+            let inbox_files = if inbox.exists() {
+                walkdir_media(&inbox)
+            } else {
+                vec![]
+            };
+            let lib_files = if library_drop.exists() {
+                walkdir_media(&library_drop)
+            } else {
+                vec![]
+            };
 
             // Process inbox files one at a time with brief DB locks
             if !inbox_files.is_empty() {
@@ -374,8 +390,11 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     let r = tokio::task::spawn_blocking(move || {
                         let conn = db.get().unwrap();
                         tilde_photos::ingest::process_inbox_file(&conn, &p, &photos, &pat)
-                    }).await;
-                    if matches!(r, Ok(Ok(_))) { processed += 1; }
+                    })
+                    .await;
+                    if matches!(r, Ok(Ok(_))) {
+                        processed += 1;
+                    }
                 }
                 if processed > 0 {
                     info!(processed, total, "Processed inbox files");
@@ -394,8 +413,11 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     let r = tokio::task::spawn_blocking(move || {
                         let conn = db.get().unwrap();
                         tilde_photos::ingest::process_library_drop_file(&conn, &p, &photos, &lib)
-                    }).await;
-                    if matches!(r, Ok(Ok(_))) { processed += 1; }
+                    })
+                    .await;
+                    if matches!(r, Ok(Ok(_))) {
+                        processed += 1;
+                    }
                     if (i + 1) % 1000 == 0 {
                         info!(progress = i + 1, total, "Library-drop scan progress");
                     }
@@ -422,7 +444,9 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     Err(e) => tracing::warn!(error = %e, "Failed to rebuild thumbnail mirror"),
                     _ => {}
                 }
-            }).await.ok();
+            })
+            .await
+            .ok();
         });
         info!("Photo scan scheduled (runs in background)");
     }
@@ -482,7 +506,8 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         let token = shutdown.clone();
         tasks.spawn(async move {
             use tokio::signal::unix::{SignalKind, signal};
-            let mut sighup = signal(SignalKind::hangup()).expect("Failed to register SIGHUP handler");
+            let mut sighup =
+                signal(SignalKind::hangup()).expect("Failed to register SIGHUP handler");
             loop {
                 tokio::select! {
                     _ = token.cancelled() => break,
@@ -531,7 +556,10 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 }
             }
         });
-        info!(interval_ms = usec / 2000, "sd-notify: watchdog pinger started");
+        info!(
+            interval_ms = usec / 2000,
+            "sd-notify: watchdog pinger started"
+        );
     }
 
     // Build a future that resolves on SIGTERM or SIGINT for graceful shutdown
@@ -564,7 +592,9 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             let key_path = &state_config_tls.key_path;
 
             if cert_path.is_empty() || key_path.is_empty() {
-                anyhow::bail!("TLS mode 'manual' requires tls.cert_path and tls.key_path to be set");
+                anyhow::bail!(
+                    "TLS mode 'manual' requires tls.cert_path and tls.key_path to be set"
+                );
             }
 
             let cert_file = std::fs::File::open(cert_path)

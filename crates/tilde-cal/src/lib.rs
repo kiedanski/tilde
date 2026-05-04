@@ -188,7 +188,14 @@ async fn handle_caldav_request(
         "PROPFIND" => handle_propfind(state, path, &depth),
         "PROPPATCH" => handle_proppatch(state, path, &body),
         "MKCALENDAR" | "MKCOL" => handle_mkcalendar(state, path, &body),
-        "PUT" => handle_put(state, path, &body, if_match.as_deref(), if_none_match.as_deref(), content_type.as_deref()),
+        "PUT" => handle_put(
+            state,
+            path,
+            &body,
+            if_match.as_deref(),
+            if_none_match.as_deref(),
+            content_type.as_deref(),
+        ),
         "GET" => handle_get(state, path),
         "DELETE" => handle_delete(state, path),
         "REPORT" => handle_report(state, path, &body),
@@ -538,7 +545,11 @@ fn handle_put(
     // Validate Content-Type
     if let Some(ct) = content_type {
         if !ct.contains("text/calendar") && !ct.contains("application/octet-stream") {
-            return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Content-Type must be text/calendar").into_response();
+            return (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Content-Type must be text/calendar",
+            )
+                .into_response();
         }
     }
 
@@ -817,10 +828,10 @@ fn handle_calendar_query_report(
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    let range_start = extract_xml_attr(body, "time-range", "start")
-        .and_then(|s| parse_ical_datetime(&s));
-    let range_end = extract_xml_attr(body, "time-range", "end")
-        .and_then(|s| parse_ical_datetime(&s));
+    let range_start =
+        extract_xml_attr(body, "time-range", "start").and_then(|s| parse_ical_datetime(&s));
+    let range_end =
+        extract_xml_attr(body, "time-range", "end").and_then(|s| parse_ical_datetime(&s));
 
     let mut stmt = db
         .prepare(
@@ -1316,7 +1327,11 @@ fn handle_push_subscribe(
 
     // Push subscribe only works on calendar collections, not individual objects
     if obj_name.is_some() {
-        return (StatusCode::BAD_REQUEST, "Push subscribe only works on calendar collections").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "Push subscribe only works on calendar collections",
+        )
+            .into_response();
     }
 
     let cal_name = match cal_name {
@@ -1376,7 +1391,12 @@ fn handle_push_subscribe(
             "status": "renewed",
             "expiry": expiry_str,
         });
-        return (StatusCode::OK, [(header::CONTENT_TYPE, "application/json")], resp_body.to_string()).into_response();
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            resp_body.to_string(),
+        )
+            .into_response();
     }
 
     match push::subscribe(&db, "calendar", &cal_id, callback_url, expiry_hours) {
@@ -1392,11 +1412,14 @@ fn handle_push_subscribe(
                 "status": "created",
                 "expiry": expiry_str,
             });
-            (StatusCode::CREATED, [(header::CONTENT_TYPE, "application/json")], resp_body.to_string()).into_response()
+            (
+                StatusCode::CREATED,
+                [(header::CONTENT_TYPE, "application/json")],
+                resp_body.to_string(),
+            )
+                .into_response()
         }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
-        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 

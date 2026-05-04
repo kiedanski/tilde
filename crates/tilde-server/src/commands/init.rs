@@ -56,7 +56,10 @@ pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
         std::fs::write(&config_file, config_content)?;
         println!("[OK] Generated config at {}", config_file.display());
     } else {
-        println!("[OK] Config file already exists at {}", config_file.display());
+        println!(
+            "[OK] Config file already exists at {}",
+            config_file.display()
+        );
     }
 
     let config = Config::load(config_path)?;
@@ -100,7 +103,9 @@ pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
         auth::store_admin_password(&conn, &admin_password)?;
         println!("[OK] Admin password hashed and stored");
     } else {
-        println!("[WARN] No admin password set. Set TILDE_ADMIN_PASSWORD env var or run init again.");
+        println!(
+            "[WARN] No admin password set. Set TILDE_ADMIN_PASSWORD env var or run init again."
+        );
     }
 
     // Step 7-8: Generate backup encryption keypair and recovery code
@@ -117,7 +122,13 @@ pub async fn run_init(config_path: Option<&str>) -> anyhow::Result<()> {
             rusqlite::params![code_hash, jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()],
         )?;
         // Write a marker file for the backup key
-        std::fs::write(&backup_key_path, format!("# tilde backup key (recovery code hash: {})\n", &code_hash[..16]))?;
+        std::fs::write(
+            &backup_key_path,
+            format!(
+                "# tilde backup key (recovery code hash: {})\n",
+                &code_hash[..16]
+            ),
+        )?;
         println!("[OK] Backup encryption keypair generated");
         println!();
         println!("╔══════════════════════════════════════════════════════════════╗");

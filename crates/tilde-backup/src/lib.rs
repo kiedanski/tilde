@@ -7,9 +7,9 @@
 pub mod offsite;
 
 use anyhow::{Context, Result, bail};
+use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
@@ -35,11 +35,7 @@ pub struct Snapshot {
 /// Creates a tar.gz archive in `backup_dir`, records metadata in SQLite.
 /// If `encrypt_recipient` is provided, encrypts the archive with age.
 /// Returns the snapshot ID on success.
-pub fn create_snapshot(
-    conn: &Connection,
-    data_dir: &Path,
-    backup_dir: &Path,
-) -> Result<Snapshot> {
+pub fn create_snapshot(conn: &Connection, data_dir: &Path, backup_dir: &Path) -> Result<Snapshot> {
     create_snapshot_with_encryption(conn, data_dir, backup_dir, None)
 }
 
@@ -61,8 +57,8 @@ pub fn create_snapshot_with_encryption(
     info!(snapshot_id = %snapshot_id, archive = %archive_path.display(), "Creating backup snapshot");
 
     // Build tar.gz
-    let archive_file = std::fs::File::create(&archive_path)
-        .context("Failed to create archive file")?;
+    let archive_file =
+        std::fs::File::create(&archive_path).context("Failed to create archive file")?;
     let encoder = GzEncoder::new(archive_file, Compression::fast());
     let mut tar_builder = tar::Builder::new(encoder);
 
@@ -70,7 +66,12 @@ pub fn create_snapshot_with_encryption(
 
     // Back up key directories and files
     let dir_items = [
-        "files", "notes", "photos", "calendars", "contacts", "mail",
+        "files",
+        "notes",
+        "photos",
+        "calendars",
+        "contacts",
+        "mail",
         "collections",
     ];
 
@@ -95,11 +96,8 @@ pub fn create_snapshot_with_encryption(
     let db_src = data_dir.join("tilde.db");
     if db_src.exists() {
         let db_snapshot = backup_dir.join(format!(".snapshot-{}.db", snapshot_id));
-        conn.execute(
-            "VACUUM INTO ?1",
-            [db_snapshot.to_str().unwrap_or_default()],
-        )
-        .context("VACUUM INTO failed for DB snapshot")?;
+        conn.execute("VACUUM INTO ?1", [db_snapshot.to_str().unwrap_or_default()])
+            .context("VACUUM INTO failed for DB snapshot")?;
         tar_builder
             .append_path_with_name(&db_snapshot, "tilde.db")
             .context("Failed to add DB snapshot to archive")?;
@@ -111,7 +109,9 @@ pub fn create_snapshot_with_encryption(
     let encoder = tar_builder
         .into_inner()
         .context("Failed to finalize tar archive")?;
-    encoder.finish().context("Failed to finish gzip compression")?;
+    encoder
+        .finish()
+        .context("Failed to finish gzip compression")?;
 
     // Encrypt with age if recipient provided (paranoid mode)
     let final_path = if let Some(recipient) = encrypt_recipient {
@@ -120,8 +120,10 @@ pub fn create_snapshot_with_encryption(
 
         let status = std::process::Command::new("age")
             .args([
-                "--recipient", recipient,
-                "--output", encrypted_path.to_str().unwrap(),
+                "--recipient",
+                recipient,
+                "--output",
+                encrypted_path.to_str().unwrap(),
                 archive_path.to_str().unwrap(),
             ])
             .status()
@@ -132,8 +134,7 @@ pub fn create_snapshot_with_encryption(
         }
 
         // Remove unencrypted archive
-        std::fs::remove_file(&archive_path)
-            .context("Failed to remove unencrypted archive")?;
+        std::fs::remove_file(&archive_path).context("Failed to remove unencrypted archive")?;
 
         info!("Backup encrypted — server holds only public key, cannot decrypt");
         encrypted_path
@@ -176,7 +177,9 @@ pub fn create_snapshot_with_encryption(
     ).context("Failed to record snapshot in database")?;
 
     // Update kv_meta
-    let now_str = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let now_str = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
     conn.execute(
         "INSERT OR REPLACE INTO kv_meta (key, value, updated_at) VALUES ('backup:last_run', ?1, ?2)",
         rusqlite::params![&now_str, &now_str],
@@ -199,19 +202,21 @@ pub fn list_snapshots(conn: &Connection) -> Result<Vec<Snapshot>> {
          FROM backup_snapshots ORDER BY created_at DESC"
     )?;
 
-    let snapshots = stmt.query_map([], |row| {
-        Ok(Snapshot {
-            id: row.get(0)?,
-            created_at: row.get(1)?,
-            size_bytes: row.get(2)?,
-            file_count: row.get(3)?,
-            archive_path: row.get(4)?,
-            checksum: row.get(5)?,
-            pinned: row.get::<_, i32>(6)? != 0,
-            pin_reason: row.get(7)?,
-            retention_class: row.get(8)?,
-        })
-    })?.collect::<Result<Vec<_>, _>>()?;
+    let snapshots = stmt
+        .query_map([], |row| {
+            Ok(Snapshot {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                size_bytes: row.get(2)?,
+                file_count: row.get(3)?,
+                archive_path: row.get(4)?,
+                checksum: row.get(5)?,
+                pinned: row.get::<_, i32>(6)? != 0,
+                pin_reason: row.get(7)?,
+                retention_class: row.get(8)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(snapshots)
 }
@@ -293,7 +298,12 @@ pub fn pin_snapshot(conn: &Connection, snapshot_id: &str, reason: &str) -> Resul
 }
 
 /// Restore a snapshot to the given directory.
-pub fn restore_snapshot(conn: &Connection, snapshot_id: &str, backup_dir: &Path, target_dir: &Path) -> Result<()> {
+pub fn restore_snapshot(
+    conn: &Connection,
+    snapshot_id: &str,
+    backup_dir: &Path,
+    target_dir: &Path,
+) -> Result<()> {
     let snapshot = get_snapshot(conn, snapshot_id)?;
     let archive_path = resolve_archive_path(&snapshot, backup_dir);
 
@@ -316,7 +326,9 @@ pub fn restore_snapshot(conn: &Connection, snapshot_id: &str, backup_dir: &Path,
     let archive_file = std::fs::File::open(&archive_path)?;
     let decoder = GzDecoder::new(archive_file);
     let mut archive = tar::Archive::new(decoder);
-    archive.unpack(target_dir).context("Failed to extract archive")?;
+    archive
+        .unpack(target_dir)
+        .context("Failed to extract archive")?;
 
     info!(
         snapshot_id = %snapshot_id,
@@ -339,7 +351,9 @@ pub fn restore_from_archive(archive_path: &Path, target_dir: &Path) -> Result<()
     let archive_file = std::fs::File::open(archive_path)?;
     let decoder = GzDecoder::new(archive_file);
     let mut archive = tar::Archive::new(decoder);
-    archive.unpack(target_dir).context("Failed to extract archive")?;
+    archive
+        .unpack(target_dir)
+        .context("Failed to extract archive")?;
 
     info!(
         archive = %archive_path.display(),
@@ -392,18 +406,38 @@ pub fn apply_retention(
     }
 
     // Bucket functions extract the relevant portion of an ISO timestamp
-    keep_by_bucket(&snapshots, hourly, |ts| ts.get(..13).unwrap_or(ts).to_string(), &mut keep);
-    keep_by_bucket(&snapshots, daily, |ts| ts.get(..10).unwrap_or(ts).to_string(), &mut keep);
-    keep_by_bucket(&snapshots, weekly, |ts| {
-        // Parse YYYY-MM-DD and compute ISO week
-        let date_part = ts.get(..10).unwrap_or(ts);
-        if let Ok(date) = jiff::civil::Date::strptime("%Y-%m-%d", date_part) {
-            format!("{}-W{:02}", date.year(), (date.day_of_year() / 7) + 1)
-        } else {
-            date_part.to_string()
-        }
-    }, &mut keep);
-    keep_by_bucket(&snapshots, monthly, |ts| ts.get(..7).unwrap_or(ts).to_string(), &mut keep);
+    keep_by_bucket(
+        &snapshots,
+        hourly,
+        |ts| ts.get(..13).unwrap_or(ts).to_string(),
+        &mut keep,
+    );
+    keep_by_bucket(
+        &snapshots,
+        daily,
+        |ts| ts.get(..10).unwrap_or(ts).to_string(),
+        &mut keep,
+    );
+    keep_by_bucket(
+        &snapshots,
+        weekly,
+        |ts| {
+            // Parse YYYY-MM-DD and compute ISO week
+            let date_part = ts.get(..10).unwrap_or(ts);
+            if let Ok(date) = jiff::civil::Date::strptime("%Y-%m-%d", date_part) {
+                format!("{}-W{:02}", date.year(), (date.day_of_year() / 7) + 1)
+            } else {
+                date_part.to_string()
+            }
+        },
+        &mut keep,
+    );
+    keep_by_bucket(
+        &snapshots,
+        monthly,
+        |ts| ts.get(..7).unwrap_or(ts).to_string(),
+        &mut keep,
+    );
 
     // Prune anything not kept and not pinned
     let mut pruned = Vec::new();
@@ -416,10 +450,7 @@ pub fn apply_retention(
             std::fs::remove_file(&path)
                 .with_context(|| format!("Failed to delete archive {}", path.display()))?;
         }
-        conn.execute(
-            "DELETE FROM backup_snapshots WHERE id = ?1",
-            [&snapshot.id],
-        )?;
+        conn.execute("DELETE FROM backup_snapshots WHERE id = ?1", [&snapshot.id])?;
         pruned.push(snapshot.id.clone());
         info!(snapshot_id = %snapshot.id, "Pruned old snapshot");
     }
@@ -483,10 +514,14 @@ fn append_dir_to_tar<W: Write>(
             // Skip WAL/journal files (they're transient)
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.ends_with("-wal") || name_str.ends_with("-shm") || name_str.ends_with("-journal") {
+            if name_str.ends_with("-wal")
+                || name_str.ends_with("-shm")
+                || name_str.ends_with("-journal")
+            {
                 continue;
             }
-            builder.append_path_with_name(&src_path, &archive_name)
+            builder
+                .append_path_with_name(&src_path, &archive_name)
                 .with_context(|| format!("Failed to add {}", src_path.display()))?;
             count += 1;
         }

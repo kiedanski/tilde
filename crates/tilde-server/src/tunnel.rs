@@ -1,8 +1,8 @@
 //! Newt tunnel subprocess manager with log-based diagnostics
 
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tilde_core::config::TunnelConfig;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -307,7 +307,9 @@ mod tests {
         status.connected.store(true, Ordering::Relaxed);
         assert_eq!(status.summary(), "connected");
 
-        status.consecutive_ping_failures.store(10, Ordering::Relaxed);
+        status
+            .consecutive_ping_failures
+            .store(10, Ordering::Relaxed);
         assert_eq!(status.summary(), "degraded");
     }
 }

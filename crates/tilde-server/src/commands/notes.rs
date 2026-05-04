@@ -16,7 +16,13 @@ pub async fn run_notes(config_path: Option<&str>, command: NotesCommands) -> any
 
             // Use grep for search — notes are plain files on disk
             let output = std::process::Command::new("grep")
-                .args(["-rn", "--include=*.md", "--include=*.txt", "--color=never", &query])
+                .args([
+                    "-rn",
+                    "--include=*.md",
+                    "--include=*.txt",
+                    "--color=never",
+                    &query,
+                ])
                 .arg(&notes_dir)
                 .output()?;
 

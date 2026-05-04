@@ -409,14 +409,27 @@ pub struct BackupRetention {
 
 impl Default for BackupRetention {
     fn default() -> Self {
-        Self { hourly: 24, daily: 7, weekly: 4, monthly: 12 }
+        Self {
+            hourly: 24,
+            daily: 7,
+            weekly: 4,
+            monthly: 12,
+        }
     }
 }
 
-fn default_24() -> u32 { 24 }
-fn default_7() -> u32 { 7 }
-fn default_4() -> u32 { 4 }
-fn default_12() -> u32 { 12 }
+fn default_24() -> u32 {
+    24
+}
+fn default_7() -> u32 {
+    7
+}
+fn default_4() -> u32 {
+    4
+}
+fn default_12() -> u32 {
+    12
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupOffsiteConfig {
@@ -501,7 +514,9 @@ impl EmailAccountConfig {
         if !self.username.is_empty() {
             return self.username.clone();
         }
-        if !self.username_env.is_empty() && let Ok(val) = std::env::var(&self.username_env) {
+        if !self.username_env.is_empty()
+            && let Ok(val) = std::env::var(&self.username_env)
+        {
             return val;
         }
         String::new()
@@ -512,17 +527,27 @@ impl EmailAccountConfig {
         if !self.password.is_empty() {
             return self.password.clone();
         }
-        if !self.password_env.is_empty() && let Ok(val) = std::env::var(&self.password_env) {
+        if !self.password_env.is_empty()
+            && let Ok(val) = std::env::var(&self.password_env)
+        {
             return val;
         }
         String::new()
     }
 }
 
-fn default_email_account_name() -> String { "personal".to_string() }
-fn default_imap_port() -> u16 { 993 }
-fn default_folders_exclude() -> Vec<String> { vec!["Trash".to_string(), "Spam".to_string()] }
-fn default_poll_interval() -> u64 { 300 }
+fn default_email_account_name() -> String {
+    "personal".to_string()
+}
+fn default_imap_port() -> u16 {
+    993
+}
+fn default_folders_exclude() -> Vec<String> {
+    vec!["Trash".to_string(), "Spam".to_string()]
+}
+fn default_poll_interval() -> u64 {
+    300
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TunnelConfig {
@@ -571,13 +596,25 @@ impl Default for TunnelConfig {
     }
 }
 
-fn default_newt_binary() -> String { "newt".to_string() }
-fn default_newt_log_level() -> String { "INFO".to_string() }
-fn default_restart_delay() -> u64 { 5 }
-fn default_max_restart_delay() -> u64 { 300 }
+fn default_newt_binary() -> String {
+    "newt".to_string()
+}
+fn default_newt_log_level() -> String {
+    "INFO".to_string()
+}
+fn default_restart_delay() -> u64 {
+    5
+}
+fn default_max_restart_delay() -> u64 {
+    300
+}
 
-fn default_offsite_type() -> String { "s3".to_string() }
-fn default_backup_schedule() -> String { "daily@04:00".to_string() }
+fn default_offsite_type() -> String {
+    "s3".to_string()
+}
+fn default_backup_schedule() -> String {
+    "daily@04:00".to_string()
+}
 
 fn default_check_interval() -> u32 {
     24

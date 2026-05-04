@@ -66,10 +66,10 @@ pub fn process_inbox_file(
         info!(file = %filename, "Encrypted file detected, storing as opaque blob");
         let dest = photos_base.join(&filename);
         if dest != file_path {
-            std::fs::copy(file_path, &dest)
-                .context("Failed to copy encrypted file")?;
+            std::fs::copy(file_path, &dest).context("Failed to copy encrypted file")?;
         }
-        let photo_id = crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
+        let photo_id =
+            crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
         return Ok(IngestResult::Indexed {
             photo_id,
             destination: dest,
@@ -92,9 +92,9 @@ pub fn process_inbox_file(
         std::fs::create_dir_all(&untriaged_dir)?;
         let dest = untriaged_dir.join(&filename);
         let dest = unique_path(&dest);
-        std::fs::copy(file_path, &dest)
-            .context("Failed to copy file to untriaged")?;
-        let photo_id = crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
+        std::fs::copy(file_path, &dest).context("Failed to copy file to untriaged")?;
+        let photo_id =
+            crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
         return Ok(IngestResult::Untriaged {
             photo_id,
             destination: dest,
@@ -114,11 +114,11 @@ pub fn process_inbox_file(
 
     // Step 6: Copy file (keep original in inbox so upload clients don't re-upload)
     let dest = unique_path(&dest);
-    std::fs::copy(file_path, &dest)
-        .context("Failed to copy file to organized destination")?;
+    std::fs::copy(file_path, &dest).context("Failed to copy file to organized destination")?;
 
     // Step 7: Index in database (pass precomputed SHA-256 to avoid re-reading)
-    let photo_id = crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
+    let photo_id =
+        crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
 
     info!(file = %filename, dest = %dest.display(), photo_id = %photo_id, "Photo organized and indexed");
 
@@ -182,7 +182,8 @@ pub fn process_library_drop_file(
     let dest = unique_path(&dest);
     atomic_move(file_path, &dest)?;
 
-    let photo_id = crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
+    let photo_id =
+        crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
 
     info!(file = %filename, dest = %dest.display(), "Library-drop file indexed");
 
@@ -203,8 +204,7 @@ fn copy_to_errors(file_path: &Path, photos_base: &Path, error_msg: &str) -> Resu
         .unwrap_or_else(|| "unknown".to_string());
 
     let dest = unique_path(&errors_dir.join(&filename));
-    std::fs::copy(file_path, &dest)
-        .context("Failed to copy file to errors")?;
+    std::fs::copy(file_path, &dest).context("Failed to copy file to errors")?;
 
     // Write error sidecar
     let sidecar_path = dest.with_extension(format!(

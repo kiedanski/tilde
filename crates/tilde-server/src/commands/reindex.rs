@@ -23,12 +23,24 @@ pub async fn run_reindex(config_path: Option<&str>, index_type: &str) -> anyhow:
             let photos_dir = config.data_dir().join("photos");
             if photos_dir.exists() {
                 let total = count_media_files(&photos_dir);
-                println!("Rebuilding photos index from disk ({} files found)...", total);
+                println!(
+                    "Rebuilding photos index from disk ({} files found)...",
+                    total
+                );
                 let progress = std::sync::atomic::AtomicUsize::new(0);
-                match reindex_photos_from_dir_progress(&conn, &photos_dir, &photos_dir, Some(&progress)) {
+                match reindex_photos_from_dir_progress(
+                    &conn,
+                    &photos_dir,
+                    &photos_dir,
+                    Some(&progress),
+                ) {
                     Ok(count) => {
                         eprintln!();
-                        println!("  done ({} new photos indexed, {} total scanned)", count, progress.load(std::sync::atomic::Ordering::Relaxed));
+                        println!(
+                            "  done ({} new photos indexed, {} total scanned)",
+                            count,
+                            progress.load(std::sync::atomic::Ordering::Relaxed)
+                        );
                     }
                     Err(e) => {
                         eprintln!();

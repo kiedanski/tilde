@@ -128,10 +128,7 @@ pub fn start_watcher(
                         };
 
                         // Create thumbnail job while we have the lock
-                        if let Ok(ingest::IngestResult::Indexed {
-                            ref photo_id, ..
-                        }) = r
-                        {
+                        if let Ok(ingest::IngestResult::Indexed { ref photo_id, .. }) = r {
                             let _ = crate::create_thumbnail_job(&conn, photo_id);
                         }
 
@@ -203,7 +200,10 @@ pub fn start_watcher(
                                     &c, &photo_id, true, true,
                                 );
                                 let _ = crate::thumbnail::create_thumbnail_symlink(
-                                    &c, &photo_id, &debounce_photos, &debounce_cache,
+                                    &c,
+                                    &photo_id,
+                                    &debounce_photos,
+                                    &debounce_cache,
                                 );
                                 let _ = c.execute(
                                     "UPDATE jobs SET status = 'completed', completed_at = ?1 WHERE job_type = 'thumbnail' AND payload_json LIKE ?2 AND status = 'pending'",

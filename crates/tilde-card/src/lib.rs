@@ -182,7 +182,14 @@ async fn handle_request(
         "PROPFIND" => handle_propfind(state, path, &depth),
         "PROPPATCH" => handle_proppatch(state, path, &body),
         "MKCOL" => handle_mkcol(state, path, &body),
-        "PUT" => handle_put(state, path, &body, if_match.as_deref(), if_none_match.as_deref(), content_type.as_deref()),
+        "PUT" => handle_put(
+            state,
+            path,
+            &body,
+            if_match.as_deref(),
+            if_none_match.as_deref(),
+            content_type.as_deref(),
+        ),
         "GET" => handle_get(state, path),
         "DELETE" => handle_delete(state, path),
         "REPORT" => handle_report(state, path, &body),
@@ -478,7 +485,11 @@ fn handle_put(
     // Validate Content-Type
     if let Some(ct) = content_type {
         if !ct.contains("text/vcard") && !ct.contains("application/octet-stream") {
-            return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Content-Type must be text/vcard").into_response();
+            return (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Content-Type must be text/vcard",
+            )
+                .into_response();
         }
     }
 
@@ -784,7 +795,9 @@ fn handle_addressbook_query(
     let filter_test = extract_filter_test(body);
 
     let mut stmt = db
-        .prepare("SELECT uid, etag, vcard_data FROM contacts WHERE addressbook_id = ?1 AND deleted = 0")
+        .prepare(
+            "SELECT uid, etag, vcard_data FROM contacts WHERE addressbook_id = ?1 AND deleted = 0",
+        )
         .unwrap();
     let contacts: Vec<(String, String, String)> = stmt
         .query_map([&ab_id], |row| {
@@ -1661,13 +1674,17 @@ END:VCARD";
             },
         ];
         // John has both FN containing "john" and EMAIL containing "example.com"
-        assert!(filters
-            .iter()
-            .all(|pf| vcard_matches_prop_filter(VCARD_JOHN, pf)));
+        assert!(
+            filters
+                .iter()
+                .all(|pf| vcard_matches_prop_filter(VCARD_JOHN, pf))
+        );
         // Jane has FN not containing "john" but has EMAIL containing "example" (not .com)
-        assert!(!filters
-            .iter()
-            .all(|pf| vcard_matches_prop_filter(VCARD_JANE, pf)));
+        assert!(
+            !filters
+                .iter()
+                .all(|pf| vcard_matches_prop_filter(VCARD_JANE, pf))
+        );
     }
 
     #[test]
@@ -1691,16 +1708,22 @@ END:VCARD";
             },
         ];
         // anyof: John matches first filter
-        assert!(filters
-            .iter()
-            .any(|pf| vcard_matches_prop_filter(VCARD_JOHN, pf)));
+        assert!(
+            filters
+                .iter()
+                .any(|pf| vcard_matches_prop_filter(VCARD_JOHN, pf))
+        );
         // anyof: Jane matches second filter
-        assert!(filters
-            .iter()
-            .any(|pf| vcard_matches_prop_filter(VCARD_JANE, pf)));
+        assert!(
+            filters
+                .iter()
+                .any(|pf| vcard_matches_prop_filter(VCARD_JANE, pf))
+        );
         // anyof: Bob matches neither
-        assert!(!filters
-            .iter()
-            .any(|pf| vcard_matches_prop_filter(VCARD_NO_EMAIL, pf)));
+        assert!(
+            !filters
+                .iter()
+                .any(|pf| vcard_matches_prop_filter(VCARD_NO_EMAIL, pf))
+        );
     }
 }

@@ -268,10 +268,7 @@ pub fn index_photo_with_hash(
 /// Create a thumbnail generation job in the jobs queue.
 /// Only stores photo_id — file path is resolved from DB at execution time,
 /// making jobs portable across backup/restore to different machines.
-pub fn create_thumbnail_job(
-    conn: &Connection,
-    photo_id: &str,
-) -> anyhow::Result<i64> {
+pub fn create_thumbnail_job(conn: &Connection, photo_id: &str) -> anyhow::Result<i64> {
     let now = jiff::Zoned::now()
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
@@ -327,7 +324,13 @@ pub fn process_pending_jobs(
         )?;
 
         let result = match job_type.as_str() {
-            "thumbnail" => process_thumbnail_job(&payload_json, conn, photos_base, cache_dir, thumbnail_quality),
+            "thumbnail" => process_thumbnail_job(
+                &payload_json,
+                conn,
+                photos_base,
+                cache_dir,
+                thumbnail_quality,
+            ),
             _ => Err(anyhow::anyhow!("Unknown job type: {}", job_type)),
         };
 
@@ -392,10 +395,7 @@ fn process_thumbnail_job(
         anyhow::bail!("Photo file not found: {}", file.display());
     }
 
-    let ext = file
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     if is_photo_ext(ext) {
         thumbnail::generate_thumbnails(&file, photo_id, cache_dir, quality)?;

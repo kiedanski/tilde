@@ -10,8 +10,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Use JSON format when running under systemd (detected by JOURNAL_STREAM or INVOCATION_ID)
     // This produces structured logs that journald can parse and filter by fields
-    let under_systemd = std::env::var("JOURNAL_STREAM").is_ok()
-        || std::env::var("INVOCATION_ID").is_ok();
+    let under_systemd =
+        std::env::var("JOURNAL_STREAM").is_ok() || std::env::var("INVOCATION_ID").is_ok();
 
     if under_systemd {
         tracing_subscriber::fmt()
@@ -23,9 +23,7 @@ async fn main() -> anyhow::Result<()> {
             .with_line_number(false)
             .init();
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
     let cli = Cli::parse();

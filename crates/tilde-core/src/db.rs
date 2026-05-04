@@ -51,11 +51,13 @@ pub fn init_pool(path: &str) -> anyhow::Result<DbPool> {
         )
     });
 
-    let pool = r2d2::Pool::builder()
-        .max_size(4)
-        .build(manager)?;
+    let pool = r2d2::Pool::builder().max_size(4).build(manager)?;
 
-    info!(path = path, pool_size = 4, "Database pool initialized with WAL mode");
+    info!(
+        path = path,
+        pool_size = 4,
+        "Database pool initialized with WAL mode"
+    );
     Ok(pool)
 }
 

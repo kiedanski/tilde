@@ -87,19 +87,30 @@ impl ImapSession {
 
     fn select(&mut self, folder: &str) -> Result<()> {
         match self {
-            ImapSession::Ssl(s) => { s.select(folder)?; }
-            ImapSession::Plain(s) => { s.select(folder)?; }
+            ImapSession::Ssl(s) => {
+                s.select(folder)?;
+            }
+            ImapSession::Plain(s) => {
+                s.select(folder)?;
+            }
         }
         Ok(())
     }
 
-    fn uid_fetch(&mut self, range: &str, query: &str) -> Result<Vec<(Option<u32>, Option<Vec<u8>>)>> {
+    fn uid_fetch(
+        &mut self,
+        range: &str,
+        query: &str,
+    ) -> Result<Vec<(Option<u32>, Option<Vec<u8>>)>> {
         #![allow(clippy::type_complexity)]
         let fetches = match self {
             ImapSession::Ssl(s) => s.uid_fetch(range, query)?,
             ImapSession::Plain(s) => s.uid_fetch(range, query)?,
         };
-        Ok(fetches.iter().map(|m| (m.uid, m.body().map(|b| b.to_vec()))).collect())
+        Ok(fetches
+            .iter()
+            .map(|m| (m.uid, m.body().map(|b| b.to_vec())))
+            .collect())
     }
 
     fn idle_wait(&mut self, timeout_secs: u64) -> Result<()> {
@@ -118,8 +129,12 @@ impl ImapSession {
 
     fn logout(&mut self) -> Result<()> {
         match self {
-            ImapSession::Ssl(s) => { let _ = s.logout(); }
-            ImapSession::Plain(s) => { let _ = s.logout(); }
+            ImapSession::Ssl(s) => {
+                let _ = s.logout();
+            }
+            ImapSession::Plain(s) => {
+                let _ = s.logout();
+            }
         }
         Ok(())
     }
@@ -136,8 +151,7 @@ fn connect_and_login(config: &ImapAccountConfig) -> Result<ImapSession> {
     );
 
     if config.use_ssl {
-        let tls = native_tls::TlsConnector::builder()
-            .build()?;
+        let tls = native_tls::TlsConnector::builder().build()?;
         let client = imap::connect(
             (config.imap_host.as_str(), config.imap_port),
             &config.imap_host,
@@ -196,7 +210,9 @@ fn fetch_new_messages(
     let mut results = Vec::new();
     for (uid_opt, body_opt) in &fetched {
         if let (Some(uid), Some(body)) = (uid_opt, body_opt) {
-            if let Some(last) = last_uid && *uid <= last {
+            if let Some(last) = last_uid
+                && *uid <= last
+            {
                 continue;
             }
             results.push((*uid, body.clone()));
@@ -351,10 +367,7 @@ pub async fn run_sync_loop(
                 interval_secs = config.poll_interval_seconds,
                 "IDLE disabled — polling fallback"
             );
-            tokio::time::sleep(std::time::Duration::from_secs(
-                config.poll_interval_seconds,
-            ))
-            .await;
+            tokio::time::sleep(std::time::Duration::from_secs(config.poll_interval_seconds)).await;
         }
     }
 }

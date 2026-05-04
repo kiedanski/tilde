@@ -199,13 +199,9 @@ fn read_xmp_tags(path: &Path) -> Result<Vec<String>> {
     xmp_file
         .open_file(
             path,
-            OpenFileOptions::default()
-                .only_xmp()
-                .use_smart_handler(),
+            OpenFileOptions::default().only_xmp().use_smart_handler(),
         )
-        .or_else(|_| {
-            xmp_file.open_file(path, OpenFileOptions::default().use_packet_scanning())
-        })
+        .or_else(|_| xmp_file.open_file(path, OpenFileOptions::default().use_packet_scanning()))
         .context("Failed to open file for XMP reading")?;
 
     let xmp = match xmp_file.xmp() {
@@ -233,15 +229,11 @@ pub fn write_tags(path: &Path, tags: &[String]) -> Result<()> {
     xmp_file
         .open_file(
             path,
-            OpenFileOptions::default()
-                .for_update()
-                .use_smart_handler(),
+            OpenFileOptions::default().for_update().use_smart_handler(),
         )
         .context("Failed to open file for XMP writing")?;
 
-    let mut xmp = xmp_file
-        .xmp()
-        .unwrap_or_else(|| XmpMeta::new().unwrap());
+    let mut xmp = xmp_file.xmp().unwrap_or_else(|| XmpMeta::new().unwrap());
 
     let dc_ns = xmp_toolkit::xmp_ns::DC;
 

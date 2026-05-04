@@ -11,10 +11,9 @@ use uuid::Uuid;
 
 pub use webauthn_rs::Webauthn;
 pub use webauthn_rs::prelude::{
-    CreationChallengeResponse, RequestChallengeResponse,
-    Passkey, PasskeyRegistration, PasskeyAuthentication,
-    RegisterPublicKeyCredential, PublicKeyCredential,
-    AuthenticationResult,
+    AuthenticationResult, CreationChallengeResponse, Passkey, PasskeyAuthentication,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    RequestChallengeResponse,
 };
 
 /// Hash a password with Argon2id
@@ -344,7 +343,8 @@ pub fn webauthn_start_registration(
     user_name: &str,
 ) -> anyhow::Result<(CreationChallengeResponse, PasskeyRegistration)> {
     let user_id = Uuid::new_v4();
-    let (ccr, reg_state) = webauthn.start_passkey_registration(user_id, user_name, user_name, None)?;
+    let (ccr, reg_state) =
+        webauthn.start_passkey_registration(user_id, user_name, user_name, None)?;
     Ok((ccr, reg_state))
 }
 
@@ -403,9 +403,7 @@ pub fn store_webauthn_credential(
 pub type WebauthnCredentialInfo = (String, String, String, Option<String>);
 
 /// List all WebAuthn credentials
-pub fn list_webauthn_credentials(
-    conn: &Connection,
-) -> anyhow::Result<Vec<WebauthnCredentialInfo>> {
+pub fn list_webauthn_credentials(conn: &Connection) -> anyhow::Result<Vec<WebauthnCredentialInfo>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, created_at, last_used_at FROM webauthn_credentials ORDER BY created_at DESC",
     )?;
@@ -492,11 +490,9 @@ pub fn update_webauthn_credential_counter(
 
 /// Check if any WebAuthn credentials exist (to know if 2FA is configured)
 pub fn has_webauthn_credentials(conn: &Connection) -> anyhow::Result<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM webauthn_credentials",
-        [],
-        |row| row.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM webauthn_credentials", [], |row| {
+        row.get(0)
+    })?;
     Ok(count > 0)
 }
 

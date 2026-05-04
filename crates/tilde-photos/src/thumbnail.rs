@@ -3,8 +3,8 @@
 //! Generates WebP thumbnails at 256px (square crop) and 1920px (longest edge).
 
 use anyhow::{Context, Result, bail};
-use image::imageops::FilterType;
 use image::DynamicImage;
+use image::imageops::FilterType;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tracing::{debug, info};
@@ -41,11 +41,16 @@ fn decode_heic(path: &Path) -> Result<DynamicImage> {
 
     // Guard against crafted images with absurd dimensions (OOM prevention)
     const MAX_MEGAPIXELS: u64 = 200; // 200 MP covers all consumer cameras
-    let pixels = (width as u64).checked_mul(height as u64).unwrap_or(u64::MAX);
+    let pixels = (width as u64)
+        .checked_mul(height as u64)
+        .unwrap_or(u64::MAX);
     if pixels > MAX_MEGAPIXELS * 1_000_000 {
         bail!(
             "HEIC image too large: {}x{} ({} MP exceeds {} MP cap)",
-            width, height, pixels / 1_000_000, MAX_MEGAPIXELS
+            width,
+            height,
+            pixels / 1_000_000,
+            MAX_MEGAPIXELS
         );
     }
 
@@ -510,9 +515,8 @@ pub fn rebuild_thumbnail_mirror(
     std::fs::create_dir_all(&thumbnails_dir)?;
 
     // Query all photos with 1920px thumbnails generated
-    let mut stmt = conn.prepare(
-        "SELECT p.id FROM photos p WHERE p.thumbnail_1920_generated = 1",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT p.id FROM photos p WHERE p.thumbnail_1920_generated = 1")?;
     let photo_ids: Vec<String> = stmt
         .query_map([], |row| row.get(0))?
         .filter_map(|r| r.ok())

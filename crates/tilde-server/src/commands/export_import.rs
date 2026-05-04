@@ -11,7 +11,13 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
     let data_dir = config.data_dir();
 
     match command {
-        ExportCommands::Run { path, only, format, encrypt, recipient } => {
+        ExportCommands::Run {
+            path,
+            only,
+            format,
+            encrypt,
+            recipient,
+        } => {
             let export_dir = std::path::PathBuf::from(&path);
             let types: Option<Vec<String>> =
                 only.map(|s| s.split(',').map(|t| t.trim().to_string()).collect());
@@ -250,38 +256,50 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
             )?;
 
             let elapsed = export_start.elapsed();
-            println!("Export complete: {} ({} sections in {:.1}s)", export_dir.display(), sections_exported, elapsed.as_secs_f64());
+            println!(
+                "Export complete: {} ({} sections in {:.1}s)",
+                export_dir.display(),
+                sections_exported,
+                elapsed.as_secs_f64()
+            );
 
             // If tar.zst format requested, compress the export directory
             if format.as_deref() == Some("tar.zst") {
-                    let archive_path = format!("{}.tar.zst", path.trim_end_matches('/'));
-                    println!("Compressing to {}...", archive_path);
-                    let tar_status = std::process::Command::new("tar")
-                        .arg("--zstd")
-                        .arg("-cf")
-                        .arg(&archive_path)
-                        .arg("-C")
-                        .arg(export_dir.parent().unwrap_or(std::path::Path::new(".")))
-                        .arg(export_dir.file_name().unwrap_or(std::ffi::OsStr::new("export")))
-                        .status();
-                    match tar_status {
-                        Ok(status) if status.success() => {
-                            let size = std::fs::metadata(&archive_path)
-                                .map(|m| m.len())
-                                .unwrap_or(0);
-                            println!("Archive created: {} ({} bytes)", archive_path, size);
-                            // Clean up directory export
-                            std::fs::remove_dir_all(&export_dir).ok();
-                        }
-                        Ok(status) => {
-                            println!("Warning: tar compression failed with exit code {:?}", status.code());
-                            println!("Export directory preserved at {}", export_dir.display());
-                        }
-                        Err(e) => {
-                            println!("Warning: tar compression failed: {}", e);
-                            println!("Export directory preserved at {}", export_dir.display());
-                        }
+                let archive_path = format!("{}.tar.zst", path.trim_end_matches('/'));
+                println!("Compressing to {}...", archive_path);
+                let tar_status = std::process::Command::new("tar")
+                    .arg("--zstd")
+                    .arg("-cf")
+                    .arg(&archive_path)
+                    .arg("-C")
+                    .arg(export_dir.parent().unwrap_or(std::path::Path::new(".")))
+                    .arg(
+                        export_dir
+                            .file_name()
+                            .unwrap_or(std::ffi::OsStr::new("export")),
+                    )
+                    .status();
+                match tar_status {
+                    Ok(status) if status.success() => {
+                        let size = std::fs::metadata(&archive_path)
+                            .map(|m| m.len())
+                            .unwrap_or(0);
+                        println!("Archive created: {} ({} bytes)", archive_path, size);
+                        // Clean up directory export
+                        std::fs::remove_dir_all(&export_dir).ok();
                     }
+                    Ok(status) => {
+                        println!(
+                            "Warning: tar compression failed with exit code {:?}",
+                            status.code()
+                        );
+                        println!("Export directory preserved at {}", export_dir.display());
+                    }
+                    Err(e) => {
+                        println!("Warning: tar compression failed: {}", e);
+                        println!("Export directory preserved at {}", export_dir.display());
+                    }
+                }
             }
 
             // Encrypt with age if requested
@@ -302,7 +320,11 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                             .arg(&tar_path)
                             .arg("-C")
                             .arg(export_dir.parent().unwrap_or(std::path::Path::new(".")))
-                            .arg(export_dir.file_name().unwrap_or(std::ffi::OsStr::new("export")))
+                            .arg(
+                                export_dir
+                                    .file_name()
+                                    .unwrap_or(std::ffi::OsStr::new("export")),
+                            )
                             .status()?;
                         if !tar_status.success() {
                             anyhow::bail!("Failed to create tar archive for encryption");
@@ -317,7 +339,11 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                         .arg(&tar_path)
                         .arg("-C")
                         .arg(export_dir.parent().unwrap_or(std::path::Path::new(".")))
-                        .arg(export_dir.file_name().unwrap_or(std::ffi::OsStr::new("export")))
+                        .arg(
+                            export_dir
+                                .file_name()
+                                .unwrap_or(std::ffi::OsStr::new("export")),
+                        )
                         .status()?;
                     if !tar_status.success() {
                         anyhow::bail!("Failed to create tar archive for encryption");
@@ -348,7 +374,10 @@ pub async fn run_export(config_path: Option<&str>, command: ExportCommands) -> a
                         std::fs::remove_file(&source_to_encrypt).ok();
                     }
                     Ok(status) => {
-                        anyhow::bail!("age encryption failed with exit code {:?}. Is `age` installed?", status.code());
+                        anyhow::bail!(
+                            "age encryption failed with exit code {:?}. Is `age` installed?",
+                            status.code()
+                        );
                     }
                     Err(e) => {
                         anyhow::bail!("Failed to run age: {}. Is `age` installed?", e);
@@ -604,13 +633,22 @@ pub async fn run_import(
         let links_content = std::fs::read_to_string(&links_path)?;
         if let Ok(links) = serde_json::from_str::<Vec<serde_json::Value>>(&links_content) {
             if dry_run {
-                println!("[DRY RUN] Would import {} cross-reference links", links.len());
+                println!(
+                    "[DRY RUN] Would import {} cross-reference links",
+                    links.len()
+                );
             } else {
                 let mut imported = 0;
                 for link in &links {
-                    let source_type = link.get("source_type").and_then(|v| v.as_str()).unwrap_or("");
+                    let source_type = link
+                        .get("source_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let source_id = link.get("source_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let target_uri = link.get("target_uri").and_then(|v| v.as_str()).unwrap_or("");
+                    let target_uri = link
+                        .get("target_uri")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let context = link.get("context").and_then(|v| v.as_str());
 
                     if !source_type.is_empty() && !target_uri.is_empty() {
@@ -630,10 +668,14 @@ pub async fn run_import(
     let manifest_path = import_dir.join("manifest.json");
     if manifest_path.exists() {
         let manifest_content = std::fs::read_to_string(&manifest_path)?;
-        if let Ok(manifest) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&manifest_content)
+        if let Ok(manifest) =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&manifest_content)
             && !manifest.is_empty()
         {
-            println!("Manifest contains {} UUID mappings (tilde:// URIs stable)", manifest.len());
+            println!(
+                "Manifest contains {} UUID mappings (tilde:// URIs stable)",
+                manifest.len()
+            );
         }
     }
 

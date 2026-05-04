@@ -166,7 +166,9 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                                     println!("Tag '{}' removed from photo {}", tag, uuid);
 
                                     // Re-organize if tag removal affects destination path
-                                    if let Ok(updated_meta) = tilde_photos::metadata::read_metadata(&full_path) {
+                                    if let Ok(updated_meta) =
+                                        tilde_photos::metadata::read_metadata(&full_path)
+                                    {
                                         match tilde_photos::organize::reorganize_after_tag_change(
                                             &conn,
                                             &uuid,
@@ -179,7 +181,10 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                                             }
                                             Ok(None) => {}
                                             Err(e) => {
-                                                println!("Warning: failed to re-organize photo: {}", e);
+                                                println!(
+                                                    "Warning: failed to re-organize photo: {}",
+                                                    e
+                                                );
                                             }
                                         }
                                     }
@@ -259,7 +264,10 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                                     &conn, photo_id, true, true,
                                 )?;
                                 let _ = tilde_photos::thumbnail::create_thumbnail_symlink(
-                                    &conn, photo_id, &photos_dir, &cache_dir,
+                                    &conn,
+                                    photo_id,
+                                    &photos_dir,
+                                    &cache_dir,
                                 );
                                 success += 1;
                             }

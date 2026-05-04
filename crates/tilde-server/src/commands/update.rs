@@ -15,7 +15,9 @@ pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> a
             } else if !config.updates.manifest_url.is_empty() {
                 config.updates.manifest_url.clone()
             } else {
-                println!("No manifest URL configured. Set updates.manifest_url or updates.manifest_mirror in config.");
+                println!(
+                    "No manifest URL configured. Set updates.manifest_url or updates.manifest_mirror in config."
+                );
                 println!("Update check: no updates available (manifest not configured)");
                 return Ok(());
             };
@@ -25,17 +27,23 @@ pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> a
             let client = reqwest::Client::new();
 
             // Fetch manifest
-            let manifest_text = client.get(&manifest_url)
-                .send().await?
+            let manifest_text = client
+                .get(&manifest_url)
+                .send()
+                .await?
                 .error_for_status()?
-                .text().await?;
+                .text()
+                .await?;
 
             // Fetch signature
             let sig_url = format!("{}.minisig", manifest_url);
-            let sig_text = client.get(&sig_url)
-                .send().await?
+            let sig_text = client
+                .get(&sig_url)
+                .send()
+                .await?
                 .error_for_status()?
-                .text().await?;
+                .text()
+                .await?;
 
             // Verify signature with minisign
             if let Some(ref pubkey_str) = config.updates.public_key {
@@ -44,17 +52,22 @@ pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> a
                 let sig = minisign_verify::Signature::decode(&sig_text)
                     .map_err(|e| anyhow::anyhow!("Invalid minisign signature: {}", e))?;
                 pk.verify(manifest_text.as_bytes(), &sig, false)
-                    .map_err(|e| anyhow::anyhow!("Manifest signature verification failed: {}", e))?;
+                    .map_err(|e| {
+                        anyhow::anyhow!("Manifest signature verification failed: {}", e)
+                    })?;
                 println!("Manifest signature verified.");
             } else {
-                println!("Warning: no updates.public_key configured, skipping signature verification");
+                println!(
+                    "Warning: no updates.public_key configured, skipping signature verification"
+                );
             }
 
             // Parse manifest JSON
             let manifest: serde_json::Value = serde_json::from_str(&manifest_text)
                 .map_err(|e| anyhow::anyhow!("Invalid manifest JSON: {}", e))?;
 
-            let latest_version = manifest.get("version")
+            let latest_version = manifest
+                .get("version")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("Manifest missing 'version' field"))?;
 
@@ -84,27 +97,36 @@ pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> a
             let client = reqwest::Client::new();
 
             // Fetch and verify manifest
-            let manifest_text = client.get(&manifest_url)
-                .send().await?
+            let manifest_text = client
+                .get(&manifest_url)
+                .send()
+                .await?
                 .error_for_status()?
-                .text().await?;
+                .text()
+                .await?;
 
             if let Some(ref pubkey_str) = config.updates.public_key {
                 let sig_url = format!("{}.minisig", manifest_url);
-                let sig_text = client.get(&sig_url)
-                    .send().await?
+                let sig_text = client
+                    .get(&sig_url)
+                    .send()
+                    .await?
                     .error_for_status()?
-                    .text().await?;
+                    .text()
+                    .await?;
                 let pk = minisign_verify::PublicKey::from_base64(pubkey_str)
                     .map_err(|e| anyhow::anyhow!("Invalid minisign public key: {}", e))?;
                 let sig = minisign_verify::Signature::decode(&sig_text)
                     .map_err(|e| anyhow::anyhow!("Invalid minisign signature: {}", e))?;
                 pk.verify(manifest_text.as_bytes(), &sig, false)
-                    .map_err(|e| anyhow::anyhow!("Manifest signature verification failed: {}", e))?;
+                    .map_err(|e| {
+                        anyhow::anyhow!("Manifest signature verification failed: {}", e)
+                    })?;
             }
 
             let manifest: serde_json::Value = serde_json::from_str(&manifest_text)?;
-            let latest_version = manifest.get("version")
+            let latest_version = manifest
+                .get("version")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("Manifest missing 'version' field"))?;
 
@@ -116,16 +138,20 @@ pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> a
             // Determine download URL from manifest
             let arch = std::env::consts::ARCH;
             let download_key = format!("download_{}", arch);
-            let download_url = manifest.get(&download_key)
+            let download_url = manifest
+                .get(&download_key)
                 .or_else(|| manifest.get("download_url"))
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("No download URL found in manifest for arch '{}'", arch))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("No download URL found in manifest for arch '{}'", arch)
+                })?;
 
-            println!("Downloading tilde {} from {}...", latest_version, download_url);
+            println!(
+                "Downloading tilde {} from {}...",
+                latest_version, download_url
+            );
 
-            let response = client.get(download_url)
-                .send().await?
-                .error_for_status()?;
+            let response = client.get(download_url).send().await?.error_for_status()?;
             let bytes = response.bytes().await?;
 
             // Write to a staging path (do NOT auto-install)
@@ -161,8 +187,8 @@ pub async fn run_install() -> anyhow::Result<()> {
     }
 
     // Find the binary path
-    let binary_path = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("/usr/bin/tilde"));
+    let binary_path =
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/usr/bin/tilde"));
     let binary_str = binary_path.to_str().unwrap_or("/usr/bin/tilde");
 
     let unit_content = generate_systemd_unit(binary_str);
@@ -170,10 +196,16 @@ pub async fn run_install() -> anyhow::Result<()> {
     if unit_path.exists() {
         let existing = std::fs::read_to_string(unit_path)?;
         if existing == unit_content {
-            println!("[OK] systemd unit file already up-to-date at {}", unit_path.display());
+            println!(
+                "[OK] systemd unit file already up-to-date at {}",
+                unit_path.display()
+            );
             return Ok(());
         }
-        println!("[INFO] Updating existing systemd unit file at {}", unit_path.display());
+        println!(
+            "[INFO] Updating existing systemd unit file at {}",
+            unit_path.display()
+        );
     }
 
     // Write the unit file
@@ -191,7 +223,15 @@ pub async fn run_install() -> anyhow::Result<()> {
 
     if !user_exists {
         let status = std::process::Command::new("useradd")
-            .args(["--system", "--home-dir", "/var/lib/tilde", "--shell", "/usr/sbin/nologin", "--user-group", "tilde"])
+            .args([
+                "--system",
+                "--home-dir",
+                "/var/lib/tilde",
+                "--shell",
+                "/usr/sbin/nologin",
+                "--user-group",
+                "tilde",
+            ])
             .status();
         match status {
             Ok(s) if s.success() => println!("[OK] Created system user 'tilde'"),
@@ -220,9 +260,7 @@ pub async fn run_install() -> anyhow::Result<()> {
 
 /// Compare two semver-like version strings. Returns true if `latest` is newer than `current`.
 fn version_is_newer(current: &str, latest: &str) -> bool {
-    let parse = |v: &str| -> Vec<u64> {
-        v.split('.').filter_map(|s| s.parse().ok()).collect()
-    };
+    let parse = |v: &str| -> Vec<u64> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
     let c = parse(current);
     let l = parse(latest);
     l > c
@@ -240,7 +278,8 @@ fn nix_is_root() -> bool {
 }
 
 fn generate_systemd_unit(binary_path: &str) -> String {
-    format!(r#"[Unit]
+    format!(
+        r#"[Unit]
 Description=tilde Personal Cloud Server
 After=network-online.target
 Wants=network-online.target
@@ -285,7 +324,8 @@ ReadWritePaths=/var/lib/tilde /var/cache/tilde
 
 [Install]
 WantedBy=multi-user.target
-"#)
+"#
+    )
 }
 
 #[cfg(test)]

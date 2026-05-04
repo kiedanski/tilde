@@ -392,7 +392,11 @@ fn prune_old_audit_logs(conn: &Connection, retention_days: u32) {
 
 // ─── Tool implementations ────────────────────────────────────────────────
 
-fn exec_notes_search(_conn: &Connection, notes_dir: &Path, params: &Value) -> Result<Value, String> {
+fn exec_notes_search(
+    _conn: &Connection,
+    notes_dir: &Path,
+    params: &Value,
+) -> Result<Value, String> {
     let query = params
         .get("query")
         .and_then(|v| v.as_str())
@@ -405,7 +409,14 @@ fn exec_notes_search(_conn: &Connection, notes_dir: &Path, params: &Value) -> Re
 
     // Use grep for search — notes are plain files on disk
     let output = std::process::Command::new("grep")
-        .args(["-rn", "--include=*.md", "--include=*.txt", "--color=never", "-l", query])
+        .args([
+            "-rn",
+            "--include=*.md",
+            "--include=*.txt",
+            "--color=never",
+            "-l",
+            query,
+        ])
         .arg(notes_dir)
         .output()
         .map_err(|e| format!("grep failed: {}", e))?;
@@ -631,7 +642,11 @@ fn exec_files_read(files_dir: &Path, params: &Value) -> Result<Value, String> {
     Ok(json!({"content": content}))
 }
 
-fn exec_files_search(_conn: &Connection, notes_dir: &Path, params: &Value) -> Result<Value, String> {
+fn exec_files_search(
+    _conn: &Connection,
+    notes_dir: &Path,
+    params: &Value,
+) -> Result<Value, String> {
     let query = params
         .get("query")
         .and_then(|v| v.as_str())
@@ -643,7 +658,13 @@ fn exec_files_search(_conn: &Connection, notes_dir: &Path, params: &Value) -> Re
 
     // Use grep for file content search
     let output = std::process::Command::new("grep")
-        .args(["-rn", "--include=*.md", "--include=*.txt", "--color=never", query])
+        .args([
+            "-rn",
+            "--include=*.md",
+            "--include=*.txt",
+            "--color=never",
+            query,
+        ])
         .arg(notes_dir)
         .output()
         .map_err(|e| format!("grep failed: {}", e))?;
@@ -656,7 +677,8 @@ fn exec_files_search(_conn: &Connection, notes_dir: &Path, params: &Value) -> Re
             .map(|s| s.trim_start_matches('/'))
             .unwrap_or(line);
         // Split "path:line:content" into path and snippet
-        let (path, snippet) = rel.split_once(':')
+        let (path, snippet) = rel
+            .split_once(':')
             .and_then(|(p, rest)| rest.split_once(':').map(|(_, s)| (p, s)))
             .unwrap_or((rel, ""));
         results.push(json!({
@@ -756,7 +778,6 @@ fn exec_trackers_query(conn: &Connection, params: &Value) -> Result<Value, Strin
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
-
 
 fn basic_validate(data: &Value, schema: &Value) -> Result<(), String> {
     if let Some(required) = schema.get("required").and_then(|r| r.as_array())

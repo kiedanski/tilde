@@ -1,6 +1,4 @@
-use tilde_cli::{
-    AppPasswordCommands, AuthCommands, SessionCommands, WebauthnCommands,
-};
+use tilde_cli::{AppPasswordCommands, AuthCommands, SessionCommands, WebauthnCommands};
 use tilde_core::{auth, config::Config, db};
 
 pub async fn run_auth(config_path: Option<&str>, command: AuthCommands) -> anyhow::Result<()> {
@@ -106,10 +104,7 @@ pub async fn run_auth(config_path: Option<&str>, command: AuthCommands) -> anyho
                 if credentials.is_empty() {
                     println!("No WebAuthn credentials registered");
                 } else {
-                    println!(
-                        "{:<38} {:<20} {:<25} Last Used",
-                        "ID", "Name", "Created"
-                    );
+                    println!("{:<38} {:<20} {:<25} Last Used", "ID", "Name", "Created");
                     println!("{}", "-".repeat(110));
                     for (id, name, created_at, last_used_at) in &credentials {
                         let last_used = last_used_at.as_deref().unwrap_or("-");

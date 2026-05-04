@@ -16,7 +16,8 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             println!("=============");
             println!("Backup enabled: {}", config.backup.enabled);
             println!("Schedule: {}", config.backup.schedule);
-            println!("Retention: hourly={}, daily={}, weekly={}, monthly={}",
+            println!(
+                "Retention: hourly={}, daily={}, weekly={}, monthly={}",
                 config.backup.local_retention.hourly,
                 config.backup.local_retention.daily,
                 config.backup.local_retention.weekly,
@@ -40,7 +41,10 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
                 .ok();
 
             println!("Last backup: {}", last_run.as_deref().unwrap_or("never"));
-            println!("Next scheduled: {}", next_scheduled.as_deref().unwrap_or("not scheduled"));
+            println!(
+                "Next scheduled: {}",
+                next_scheduled.as_deref().unwrap_or("not scheduled")
+            );
 
             // Show snapshot count
             let snapshots = tilde_backup::list_snapshots(&conn)?;
@@ -49,7 +53,10 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             if !config.backup.offsite.is_empty() {
                 println!("\nOffsite destinations:");
                 for dest in &config.backup.offsite {
-                    println!("  - {} (type: {}, schedule: {})", dest.name, dest.r#type, dest.schedule);
+                    println!(
+                        "  - {} (type: {}, schedule: {})",
+                        dest.name, dest.r#type, dest.schedule
+                    );
                 }
             }
         }
@@ -61,7 +68,10 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
                 Some(config.backup.encrypt_recipient.as_str())
             };
             let snapshot = tilde_backup::create_snapshot_with_encryption(
-                &conn, &data_dir, &backup_dir, encrypt_recipient,
+                &conn,
+                &data_dir,
+                &backup_dir,
+                encrypt_recipient,
             )?;
             if encrypt_recipient.is_some() {
                 println!("  Encrypted with age (paranoid mode — server cannot decrypt)");
@@ -69,20 +79,30 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
             println!("Snapshot created successfully:");
             println!("  ID:         {}", snapshot.id);
             println!("  Created:    {}", snapshot.created_at);
-            println!("  Size:       {}", tilde_backup::format_size(snapshot.size_bytes));
+            println!(
+                "  Size:       {}",
+                tilde_backup::format_size(snapshot.size_bytes)
+            );
             println!("  Files:      {}", snapshot.file_count);
             println!("  Checksum:   {}", &snapshot.checksum[..16]);
 
             // Upload to offsite if requested
             if let Some(dest_name) = offsite {
-                let offsite_cfg = config.backup.offsite.iter()
+                let offsite_cfg = config
+                    .backup
+                    .offsite
+                    .iter()
                     .find(|d| d.name == dest_name)
-                    .ok_or_else(|| anyhow::anyhow!("Offsite destination '{}' not found in config", dest_name))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Offsite destination '{}' not found in config", dest_name)
+                    })?;
 
                 let s3_config = tilde_backup::offsite::OffsiteConfig::from_config(offsite_cfg)?;
                 println!("Uploading to offsite destination '{}'...", dest_name);
                 let backup_dir = config.data_dir().join("backup");
-                let remote_key = tilde_backup::offsite::upload_snapshot(&s3_config, &snapshot, &backup_dir).await?;
+                let remote_key =
+                    tilde_backup::offsite::upload_snapshot(&s3_config, &snapshot, &backup_dir)
+                        .await?;
                 println!("  Uploaded to: {}", remote_key);
             }
 
@@ -102,9 +122,14 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
         }
         BackupCommands::List { offsite } => {
             if let Some(dest_name) = offsite {
-                let offsite_cfg = config.backup.offsite.iter()
+                let offsite_cfg = config
+                    .backup
+                    .offsite
+                    .iter()
                     .find(|d| d.name == dest_name)
-                    .ok_or_else(|| anyhow::anyhow!("Offsite destination '{}' not found in config", dest_name))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Offsite destination '{}' not found in config", dest_name)
+                    })?;
 
                 let s3_config = tilde_backup::offsite::OffsiteConfig::from_config(offsite_cfg)?;
                 println!("Listing remote snapshots from '{}'...", dest_name);
@@ -120,7 +145,8 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
                 println!("{:<50} {:>12} Last Modified", "Key", "Size");
                 println!("{}", "-".repeat(80));
                 for obj in &objects {
-                    println!("{:<50} {:>12} {}",
+                    println!(
+                        "{:<50} {:>12} {}",
                         &obj.key,
                         tilde_backup::format_size(obj.size),
                         &obj.last_modified,
@@ -137,8 +163,10 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
 
             println!("Backup Snapshots ({} total)", snapshots.len());
             println!("=============");
-            println!("{:<38} {:<26} {:>10} {:>6} Pinned",
-                "ID", "Created", "Size", "Files");
+            println!(
+                "{:<38} {:<26} {:>10} {:>6} Pinned",
+                "ID", "Created", "Size", "Files"
+            );
             println!("{}", "-".repeat(90));
 
             for s in &snapshots {
@@ -147,7 +175,8 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
                 } else {
                     String::new()
                 };
-                println!("{:<38} {:<26} {:>10} {:>6} {}",
+                println!(
+                    "{:<38} {:<26} {:>10} {:>6} {}",
                     &s.id[..36.min(s.id.len())],
                     &s.created_at,
                     tilde_backup::format_size(s.size_bytes),
@@ -159,9 +188,14 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
         BackupCommands::Verify { offsite } => {
             if let Some(dest_name) = offsite {
                 // Verify offsite: check that remote snapshots exist and are listed
-                let offsite_cfg = config.backup.offsite.iter()
+                let offsite_cfg = config
+                    .backup
+                    .offsite
+                    .iter()
                     .find(|d| d.name == dest_name)
-                    .ok_or_else(|| anyhow::anyhow!("Offsite destination '{}' not found in config", dest_name))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Offsite destination '{}' not found in config", dest_name)
+                    })?;
 
                 let s3_config = tilde_backup::offsite::OffsiteConfig::from_config(offsite_cfg)?;
                 println!("Verifying offsite snapshots in '{}'...", dest_name);
@@ -170,9 +204,17 @@ pub async fn run_backup(config_path: Option<&str>, command: BackupCommands) -> a
                 if objects.is_empty() {
                     println!("No remote snapshots found — nothing to verify.");
                 } else {
-                    println!("Found {} remote snapshot(s) — offsite storage accessible", objects.len());
+                    println!(
+                        "Found {} remote snapshot(s) — offsite storage accessible",
+                        objects.len()
+                    );
                     for obj in &objects {
-                        println!("  {} ({}, {})", obj.key, tilde_backup::format_size(obj.size), obj.last_modified);
+                        println!(
+                            "  {} ({}, {})",
+                            obj.key,
+                            tilde_backup::format_size(obj.size),
+                            obj.last_modified
+                        );
                     }
                 }
                 return Ok(());
@@ -229,11 +271,17 @@ pub async fn run_restore(
     db::run_migrations(&conn, &migrations_dir)?;
 
     if from != "local" {
-        let offsite_cfg = config.backup.offsite.iter()
+        let offsite_cfg = config
+            .backup
+            .offsite
+            .iter()
             .find(|d| d.name == from)
             .ok_or_else(|| anyhow::anyhow!("Offsite destination '{}' not found in config", from))?;
 
-        println!("Offsite restore from '{}' is not yet supported — download manually and use --from local", from);
+        println!(
+            "Offsite restore from '{}' is not yet supported — download manually and use --from local",
+            from
+        );
         let _ = offsite_cfg;
         return Ok(());
     }

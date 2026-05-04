@@ -33,8 +33,10 @@ pub struct AppState {
     pub login_attempts: Mutex<HashMap<String, RateLimitEntry>>,
     pub mcp_state: tilde_mcp::SharedMcpState,
     pub webauthn: Option<webauthn_rs::Webauthn>,
-    pub webauthn_reg_state: Mutex<HashMap<String, (webauthn_rs::prelude::PasskeyRegistration, Instant)>>,
-    pub webauthn_auth_state: Mutex<HashMap<String, (webauthn_rs::prelude::PasskeyAuthentication, Instant)>>,
+    pub webauthn_reg_state:
+        Mutex<HashMap<String, (webauthn_rs::prelude::PasskeyRegistration, Instant)>>,
+    pub webauthn_auth_state:
+        Mutex<HashMap<String, (webauthn_rs::prelude::PasskeyAuthentication, Instant)>>,
     pub tunnel_status: Option<tunnel::SharedTunnelStatus>,
 }
 
@@ -121,14 +123,8 @@ pub fn build_router(
             "/ocs/v1.php/cloud/capabilities",
             get(ocs_capabilities_handler),
         )
-        .route(
-            "/ocs/v1.php/cloud/user",
-            get(ocs_user_handler),
-        )
-        .route(
-            "/ocs/v2.php/cloud/user",
-            get(ocs_user_handler),
-        )
+        .route("/ocs/v1.php/cloud/user", get(ocs_user_handler))
+        .route("/ocs/v2.php/cloud/user", get(ocs_user_handler))
         .route("/.well-known/caldav", any(well_known_caldav))
         .route("/.well-known/carddav", any(well_known_carddav))
         // Apple .mobileconfig profile for easy iOS/macOS CalDAV+CardDAV setup
@@ -142,12 +138,30 @@ pub fn build_router(
         // Auth endpoints (public)
         .route("/api/auth/login", post(login_handler))
         // WebAuthn endpoints (require session auth)
-        .route("/api/auth/webauthn/register/start", post(webauthn_register_start))
-        .route("/api/auth/webauthn/register/finish", post(webauthn_register_finish))
-        .route("/api/auth/webauthn/authenticate/start", post(webauthn_auth_start))
-        .route("/api/auth/webauthn/authenticate/finish", post(webauthn_auth_finish))
-        .route("/api/auth/webauthn/credentials", get(webauthn_list_credentials))
-        .route("/api/auth/webauthn/credentials/{id}", axum::routing::delete(webauthn_remove_credential))
+        .route(
+            "/api/auth/webauthn/register/start",
+            post(webauthn_register_start),
+        )
+        .route(
+            "/api/auth/webauthn/register/finish",
+            post(webauthn_register_finish),
+        )
+        .route(
+            "/api/auth/webauthn/authenticate/start",
+            post(webauthn_auth_start),
+        )
+        .route(
+            "/api/auth/webauthn/authenticate/finish",
+            post(webauthn_auth_finish),
+        )
+        .route(
+            "/api/auth/webauthn/credentials",
+            get(webauthn_list_credentials),
+        )
+        .route(
+            "/api/auth/webauthn/credentials/{id}",
+            axum::routing::delete(webauthn_remove_credential),
+        )
         // MCP endpoint
         .route("/mcp/", post(mcp_handler))
         .route("/mcp", post(mcp_handler))
@@ -171,15 +185,17 @@ pub fn build_router(
         .nest_service("/dav/photos", photos_router)
         .nest_service("/dav/uploads", uploads_router)
         // Middleware
-        .layer(CorsLayer::new()
-            .allow_origin([
-                "app://obsidian.md".parse().unwrap(),
-                "capacitor://localhost".parse().unwrap(),
-                "http://localhost".parse().unwrap(),
-            ])
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
-            .expose_headers(tower_http::cors::Any))
+        .layer(
+            CorsLayer::new()
+                .allow_origin([
+                    "app://obsidian.md".parse().unwrap(),
+                    "capacitor://localhost".parse().unwrap(),
+                    "http://localhost".parse().unwrap(),
+                ])
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any)
+                .expose_headers(tower_http::cors::Any),
+        )
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(add_request_id))
@@ -416,9 +432,7 @@ async fn well_known_carddav() -> impl IntoResponse {
 }
 
 /// GET /apple-mobileconfig — Generate Apple .mobileconfig profile for CalDAV + CardDAV
-async fn apple_mobileconfig_handler(
-    State(state): State<SharedState>,
-) -> axum::response::Response {
+async fn apple_mobileconfig_handler(State(state): State<SharedState>) -> axum::response::Response {
     let cfg = state.config();
     let hostname = if cfg.server.hostname.is_empty() {
         "localhost".to_string()
@@ -552,7 +566,10 @@ async fn login_handler(
     let is_trusted_proxy = cfg.server.trusted_proxies.iter().any(|cidr| {
         // Simple prefix match: "127.0.0.1" or "10.0.0.0/8" etc.
         let prefix = cidr.split('/').next().unwrap_or(cidr);
-        prefix.parse::<std::net::IpAddr>().map(|p| p == raw_ip).unwrap_or(false)
+        prefix
+            .parse::<std::net::IpAddr>()
+            .map(|p| p == raw_ip)
+            .unwrap_or(false)
     }) || raw_ip.is_loopback();
 
     let client_ip = if is_trusted_proxy {
@@ -1143,25 +1160,48 @@ async fn webauthn_register_start(
 ) -> axum::response::Response {
     // Require session auth
     if !is_session_authenticated(&state, &req) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "authentication required"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authentication required"})),
+        )
+            .into_response();
     }
 
     if !state.config().auth.webauthn_enabled {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "WebAuthn is not enabled"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "WebAuthn is not enabled"})),
+        )
+            .into_response();
     }
 
     let webauthn = match &state.webauthn {
         Some(w) => w,
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "WebAuthn not configured"}))).into_response(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "WebAuthn not configured"})),
+            )
+                .into_response();
+        }
     };
 
     let body = match axum::body::to_bytes(req.into_body(), 65536).await {
         Ok(b) => b,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid body"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid body"})),
+            )
+                .into_response();
+        }
     };
 
     let params: serde_json::Value = serde_json::from_slice(&body).unwrap_or(json!({}));
-    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("default");
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default");
 
     match auth::webauthn_start_registration(webauthn, "admin") {
         Ok((ccr, reg_state)) => {
@@ -1174,15 +1214,23 @@ async fn webauthn_register_start(
                 states.insert(challenge_id.clone(), (reg_state, now));
             }
 
-            (StatusCode::OK, Json(json!({
-                "challenge_id": challenge_id,
-                "credential_name": name,
-                "publicKey": ccr,
-            }))).into_response()
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "challenge_id": challenge_id,
+                    "credential_name": name,
+                    "publicKey": ccr,
+                })),
+            )
+                .into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "WebAuthn registration start failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -1194,44 +1242,93 @@ async fn webauthn_register_finish(
 ) -> axum::response::Response {
     // Require session auth
     if !is_session_authenticated_from_headers(req.headers(), &state) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "authentication required"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authentication required"})),
+        )
+            .into_response();
     }
 
     if !state.config().auth.webauthn_enabled {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "WebAuthn is not enabled"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "WebAuthn is not enabled"})),
+        )
+            .into_response();
     }
 
     let webauthn = match &state.webauthn {
         Some(w) => w,
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "WebAuthn not configured"}))).into_response(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "WebAuthn not configured"})),
+            )
+                .into_response();
+        }
     };
 
     let body = match axum::body::to_bytes(req.into_body(), 65536).await {
         Ok(b) => b,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid body"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid body"})),
+            )
+                .into_response();
+        }
     };
 
     let params: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid JSON"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid JSON"})),
+            )
+                .into_response();
+        }
     };
 
     let challenge_id = match params.get("challenge_id").and_then(|v| v.as_str()) {
         Some(id) => id.to_string(),
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "challenge_id required"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "challenge_id required"})),
+            )
+                .into_response();
+        }
     };
 
-    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("default").to_string();
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default")
+        .to_string();
 
     let credential_response = match params.get("credential") {
         Some(v) => v,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "credential required"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "credential required"})),
+            )
+                .into_response();
+        }
     };
 
-    let reg_pub_key: webauthn_rs::prelude::RegisterPublicKeyCredential = match serde_json::from_value(credential_response.clone()) {
-        Ok(v) => v,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("invalid credential: {}", e)}))).into_response(),
-    };
+    let reg_pub_key: webauthn_rs::prelude::RegisterPublicKeyCredential =
+        match serde_json::from_value(credential_response.clone()) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("invalid credential: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
 
     let reg_state = {
         let mut states = state.webauthn_reg_state.lock().unwrap();
@@ -1240,51 +1337,83 @@ async fn webauthn_register_finish(
 
     let reg_state = match reg_state {
         Some(s) => s,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "unknown or expired challenge"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "unknown or expired challenge"})),
+            )
+                .into_response();
+        }
     };
 
     match auth::webauthn_finish_registration(webauthn, &reg_pub_key, &reg_state) {
         Ok(credential) => {
             let db = state.db.get().unwrap();
             match auth::store_webauthn_credential(&db, &name, &credential) {
-                Ok(id) => {
-                    (StatusCode::OK, Json(json!({"id": id, "name": name, "status": "registered"}))).into_response()
-                }
-                Err(e) => {
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
-                }
+                Ok(id) => (
+                    StatusCode::OK,
+                    Json(json!({"id": id, "name": name, "status": "registered"})),
+                )
+                    .into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response(),
             }
         }
         Err(e) => {
             tracing::warn!(error = %e, "WebAuthn registration verification failed");
-            (StatusCode::BAD_REQUEST, Json(json!({"error": format!("registration failed: {}", e)}))).into_response()
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("registration failed: {}", e)})),
+            )
+                .into_response()
         }
     }
 }
 
 /// POST /api/auth/webauthn/authenticate/start — Begin WebAuthn authentication challenge
-async fn webauthn_auth_start(
-    State(state): State<SharedState>,
-) -> axum::response::Response {
+async fn webauthn_auth_start(State(state): State<SharedState>) -> axum::response::Response {
     if !state.config().auth.webauthn_enabled {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "WebAuthn is not enabled"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "WebAuthn is not enabled"})),
+        )
+            .into_response();
     }
 
     let webauthn = match &state.webauthn {
         Some(w) => w,
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "WebAuthn not configured"}))).into_response(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "WebAuthn not configured"})),
+            )
+                .into_response();
+        }
     };
 
     let credentials = {
         let db = state.db.get().unwrap();
         match auth::load_webauthn_credentials(&db) {
             Ok(c) => c,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response();
+            }
         }
     };
 
     if credentials.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "no WebAuthn credentials registered"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "no WebAuthn credentials registered"})),
+        )
+            .into_response();
     }
 
     match auth::webauthn_start_authentication(webauthn, &credentials) {
@@ -1297,14 +1426,22 @@ async fn webauthn_auth_start(
                 states.insert(challenge_id.clone(), (auth_state, now));
             }
 
-            (StatusCode::OK, Json(json!({
-                "challenge_id": challenge_id,
-                "publicKey": rcr,
-            }))).into_response()
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "challenge_id": challenge_id,
+                    "publicKey": rcr,
+                })),
+            )
+                .into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "WebAuthn authentication start failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -1315,28 +1452,57 @@ async fn webauthn_auth_finish(
     Json(params): Json<serde_json::Value>,
 ) -> axum::response::Response {
     if !state.config().auth.webauthn_enabled {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "WebAuthn is not enabled"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "WebAuthn is not enabled"})),
+        )
+            .into_response();
     }
 
     let webauthn = match &state.webauthn {
         Some(w) => w,
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "WebAuthn not configured"}))).into_response(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "WebAuthn not configured"})),
+            )
+                .into_response();
+        }
     };
 
     let challenge_id = match params.get("challenge_id").and_then(|v| v.as_str()) {
         Some(id) => id.to_string(),
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "challenge_id required"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "challenge_id required"})),
+            )
+                .into_response();
+        }
     };
 
     let credential_response = match params.get("credential") {
         Some(v) => v,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "credential required"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "credential required"})),
+            )
+                .into_response();
+        }
     };
 
-    let pub_key_cred: webauthn_rs::prelude::PublicKeyCredential = match serde_json::from_value(credential_response.clone()) {
-        Ok(v) => v,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("invalid credential: {}", e)}))).into_response(),
-    };
+    let pub_key_cred: webauthn_rs::prelude::PublicKeyCredential =
+        match serde_json::from_value(credential_response.clone()) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("invalid credential: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
 
     let auth_state = {
         let mut states = state.webauthn_auth_state.lock().unwrap();
@@ -1345,7 +1511,13 @@ async fn webauthn_auth_finish(
 
     let auth_state = match auth_state {
         Some(s) => s,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"error": "unknown or expired challenge"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "unknown or expired challenge"})),
+            )
+                .into_response();
+        }
     };
 
     match auth::webauthn_finish_authentication(webauthn, &pub_key_cred, &auth_state) {
@@ -1361,30 +1533,35 @@ async fn webauthn_auth_finish(
 
             // Create a real session token so the client is actually authenticated
             let cfg = state.config();
-            match auth::create_session(
-                &db,
-                Some("webauthn"),
-                None,
-                cfg.auth.session_ttl_hours,
-            ) {
-                Ok(token) => {
-                    (StatusCode::OK, Json(json!({
+            match auth::create_session(&db, Some("webauthn"), None, cfg.auth.session_ttl_hours) {
+                Ok(token) => (
+                    StatusCode::OK,
+                    Json(json!({
                         "status": "authenticated",
                         "token": token,
                         "token_prefix": &token[..std::cmp::min(22, token.len())],
                         "expires_in_hours": cfg.auth.session_ttl_hours,
                         "needs_update": auth_result.needs_update(),
-                    }))).into_response()
-                }
+                    })),
+                )
+                    .into_response(),
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to create session after WebAuthn auth");
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "session creation failed"}))).into_response()
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "session creation failed"})),
+                    )
+                        .into_response()
                 }
             }
         }
         Err(e) => {
             tracing::warn!(error = %e, "WebAuthn authentication failed");
-            (StatusCode::UNAUTHORIZED, Json(json!({"error": format!("authentication failed: {}", e)}))).into_response()
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": format!("authentication failed: {}", e)})),
+            )
+                .into_response()
         }
     }
 }
@@ -1395,25 +1572,34 @@ async fn webauthn_list_credentials(
     req: Request<axum::body::Body>,
 ) -> axum::response::Response {
     if !is_session_authenticated(&state, &req) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "authentication required"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authentication required"})),
+        )
+            .into_response();
     }
 
     let db = state.db.get().unwrap();
     match auth::list_webauthn_credentials(&db) {
         Ok(credentials) => {
-            let creds: Vec<serde_json::Value> = credentials.iter().map(|(id, name, created_at, last_used_at)| {
-                json!({
-                    "id": id,
-                    "name": name,
-                    "created_at": created_at,
-                    "last_used_at": last_used_at,
+            let creds: Vec<serde_json::Value> = credentials
+                .iter()
+                .map(|(id, name, created_at, last_used_at)| {
+                    json!({
+                        "id": id,
+                        "name": name,
+                        "created_at": created_at,
+                        "last_used_at": last_used_at,
+                    })
                 })
-            }).collect();
+                .collect();
             (StatusCode::OK, Json(json!({"credentials": creds}))).into_response()
         }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -1427,14 +1613,26 @@ async fn webauthn_remove_credential(
     let cred_id = path.rsplit('/').next().unwrap_or("");
 
     if !is_session_authenticated(&state, &req) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "authentication required"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "authentication required"})),
+        )
+            .into_response();
     }
 
     let db = state.db.get().unwrap();
     match auth::remove_webauthn_credential(&db, cred_id) {
         Ok(true) => (StatusCode::OK, Json(json!({"status": "removed"}))).into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "credential not found"}))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "credential not found"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -1443,7 +1641,10 @@ fn is_session_authenticated(state: &SharedState, req: &Request<axum::body::Body>
     is_session_authenticated_from_headers(req.headers(), state)
 }
 
-fn is_session_authenticated_from_headers(headers: &axum::http::HeaderMap, state: &SharedState) -> bool {
+fn is_session_authenticated_from_headers(
+    headers: &axum::http::HeaderMap,
+    state: &SharedState,
+) -> bool {
     let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
@@ -1452,7 +1653,8 @@ fn is_session_authenticated_from_headers(headers: &axum::http::HeaderMap, state:
         Some(h) if h.starts_with("Bearer tilde_session_") => {
             let token = &h[7..];
             let db = state.db.get().unwrap();
-            auth::validate_session(&db, token, state.config().auth.session_ttl_hours).unwrap_or(false)
+            auth::validate_session(&db, token, state.config().auth.session_ttl_hours)
+                .unwrap_or(false)
         }
         _ => false,
     }
