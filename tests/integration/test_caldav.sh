@@ -152,7 +152,7 @@ else
 fi
 
 # Update event (PUT with If-Match)
-ETAG=$(curl -sI -u "$AUTH" "$CAL_BASE/test-cal/$EVENT_UID.ics" | grep -i etag | tr -d '\r' | awk '{print $2}')
+ETAG=$(curl -sI -u "$AUTH" "$CAL_BASE/test-cal/$EVENT_UID.ics" | grep -i etag | tr -d '\r' | awk '{print $2}' || true)
 UPDATED_ICS=$(echo "$EVENT_ICS" | sed 's/Test Event/Updated Event/')
 UPDATE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$AUTH" \
     -X PUT "$CAL_BASE/test-cal/$EVENT_UID.ics" \
