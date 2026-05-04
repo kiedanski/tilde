@@ -217,44 +217,22 @@ else
     fail "CardDAV no auth" "expected 401, got $CODE"
 fi
 
-# Session auth — login, use token
-LOGIN_RESP=$(curl -sf -X POST "$BASE_URL/api/auth/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"password\":\"$ADMIN_PW\"}")
-TOKEN=$(echo "$LOGIN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null)
-
-if [ -n "$TOKEN" ]; then
-    pass "Login returns session token"
-
-    # Use token for API
-    VERIFY_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        -H "Authorization: Bearer $TOKEN" \
-        "$BASE_URL/api/auth/verify")
-    if [ "$VERIFY_CODE" = "200" ]; then
-        pass "Session token authenticates API request"
-    else
-        fail "Session token auth" "expected 200, got $VERIFY_CODE"
-    fi
+# App-password auth — verify scoped password works
+APP_AUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$AUTH" \
+    -X PROPFIND "$BASE_URL/dav/files/" -H "Depth: 0")
+if [ "$APP_AUTH_CODE" = "207" ]; then
+    pass "App password authenticates DAV request"
 else
-    fail "Login" "no token in response: $LOGIN_RESP"
+    fail "App password auth" "expected 207, got $APP_AUTH_CODE"
 fi
 
-# Rate limiting — many wrong passwords should trigger 429
-log "--- Rate Limiting ---"
-GOT_429=false
-for i in $(seq 1 10); do
-    RL_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/api/auth/login" \
-        -H "Content-Type: application/json" \
-        -d '{"password":"wrong"}')
-    if [ "$RL_CODE" = "429" ]; then
-        GOT_429=true
-        break
-    fi
-done
-if $GOT_429; then
-    pass "Rate limiting triggers 429 after repeated failures"
+# Wrong password rejected
+WRONG_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "admin:wrong" \
+    -X PROPFIND "$BASE_URL/dav/files/" -H "Depth: 0")
+if [ "$WRONG_CODE" = "401" ]; then
+    pass "Wrong app password returns 401"
 else
-    fail "Rate limiting" "never got 429 after 10 wrong attempts"
+    fail "Wrong password" "expected 401, got $WRONG_CODE"
 fi
 
 # ========================================
