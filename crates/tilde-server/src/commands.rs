@@ -2415,6 +2415,9 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                                 tilde_photos::thumbnail::mark_thumbnails_generated(
                                     &conn, photo_id, true, true,
                                 )?;
+                                let _ = tilde_photos::thumbnail::create_thumbnail_symlink(
+                                    &conn, photo_id, &photos_dir, &cache_dir,
+                                );
                                 success += 1;
                             }
                             Err(e) => {
