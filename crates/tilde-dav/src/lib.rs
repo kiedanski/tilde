@@ -577,11 +577,11 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
     let timestamp = jiff::Zoned::now().strftime("%Y%m%d-%H%M%S").to_string();
     let trash_dest = trash_dir.join(&timestamp).join(rel_path);
 
-    if let Some(parent) = trash_dest.parent() {
-        if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            warn!(error = %e, "Failed to create trash directory");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
+    if let Some(parent) = trash_dest.parent()
+        && let Err(e) = tokio::fs::create_dir_all(parent).await
+    {
+        warn!(error = %e, "Failed to create trash directory");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     if let Err(_rename_err) = tokio::fs::rename(&disk_path, &trash_dest).await {
@@ -657,13 +657,12 @@ pub fn purge_trash(files_root: &std::path::Path, retention_days: u32) -> usize {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             // Trash directories are named by timestamp: 20260427-104829
-            if name <= cutoff_str {
-                if let Ok(meta) = entry.metadata() {
-                    if meta.is_dir() {
-                        let _ = std::fs::remove_dir_all(entry.path());
-                        purged += 1;
-                    }
-                }
+            if name <= cutoff_str
+                && let Ok(meta) = entry.metadata()
+                && meta.is_dir()
+            {
+                let _ = std::fs::remove_dir_all(entry.path());
+                purged += 1;
             }
         }
     }

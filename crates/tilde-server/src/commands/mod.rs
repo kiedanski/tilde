@@ -130,24 +130,24 @@ pub(crate) fn secs_until_next_run(schedule: &str) -> u64 {
     if let Some(time_part) = s.split('@').nth(1) {
         // Parse HH:MM
         let parts: Vec<&str> = time_part.split(':').collect();
-        if parts.len() == 2 {
-            if let (Ok(hour), Ok(minute)) = (parts[0].parse::<i8>(), parts[1].parse::<i8>()) {
-                let now = jiff::Zoned::now();
-                let today_target = now
-                    .date()
-                    .at(hour, minute, 0, 0)
-                    .to_zoned(now.time_zone().clone());
-                if let Ok(today_target) = today_target {
-                    let until = today_target.since(&now);
-                    if let Ok(dur) = until {
-                        let secs = dur.get_seconds();
-                        if secs > 0 {
-                            return secs as u64;
-                        }
-                        // Already past today's time — schedule for tomorrow
-                        let interval = parse_schedule_interval(schedule);
-                        return (secs + interval as i64) as u64;
+        if parts.len() == 2
+            && let (Ok(hour), Ok(minute)) = (parts[0].parse::<i8>(), parts[1].parse::<i8>())
+        {
+            let now = jiff::Zoned::now();
+            let today_target = now
+                .date()
+                .at(hour, minute, 0, 0)
+                .to_zoned(now.time_zone().clone());
+            if let Ok(today_target) = today_target {
+                let until = today_target.since(&now);
+                if let Ok(dur) = until {
+                    let secs = dur.get_seconds();
+                    if secs > 0 {
+                        return secs as u64;
                     }
+                    // Already past today's time — schedule for tomorrow
+                    let interval = parse_schedule_interval(schedule);
+                    return (secs + interval as i64) as u64;
                 }
             }
         }

@@ -483,14 +483,15 @@ fn handle_put(
     content_type: Option<&str>,
 ) -> axum::response::Response {
     // Validate Content-Type
-    if let Some(ct) = content_type {
-        if !ct.contains("text/vcard") && !ct.contains("application/octet-stream") {
-            return (
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "Content-Type must be text/vcard",
-            )
-                .into_response();
-        }
+    if let Some(ct) = content_type
+        && !ct.contains("text/vcard")
+        && !ct.contains("application/octet-stream")
+    {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Content-Type must be text/vcard",
+        )
+            .into_response();
     }
 
     let db = state.db.get().unwrap();
@@ -521,10 +522,11 @@ fn handle_put(
     );
 
     // If-None-Match: * means "only create, don't overwrite" (DAVx5 sends this)
-    if let Some(inm) = if_none_match {
-        if inm.trim() == "*" && existing.is_ok() {
-            return StatusCode::PRECONDITION_FAILED.into_response();
-        }
+    if let Some(inm) = if_none_match
+        && inm.trim() == "*"
+        && existing.is_ok()
+    {
+        return StatusCode::PRECONDITION_FAILED.into_response();
     }
 
     if let Some(expected) = if_match {
@@ -1135,7 +1137,7 @@ fn extract_prop_filters(xml: &str) -> Vec<PropFilter> {
         let element_span = if let Some(sc) = self_close {
             // Check if self-close comes before any child elements
             let child_start = xml[after_tag..prop_filter_end].find('<');
-            if child_start.map_or(true, |cs| sc < cs) {
+            if child_start.is_none_or(|cs| sc < cs) {
                 &xml[after_tag..after_tag + sc]
             } else {
                 &xml[after_tag..prop_filter_end]
@@ -1229,8 +1231,8 @@ fn extract_vcard_property(vcard: &str, prop_name: &str) -> Vec<String> {
             let upper = line.to_uppercase();
             if upper.starts_with(&prop_upper) {
                 let rest = &line[prop_upper.len()..];
-                if rest.starts_with(':') {
-                    Some(rest[1..].trim().to_string())
+                if let Some(value) = rest.strip_prefix(':') {
+                    Some(value.trim().to_string())
                 } else if rest.starts_with(';') {
                     rest.find(':').map(|i| rest[i + 1..].trim().to_string())
                 } else {

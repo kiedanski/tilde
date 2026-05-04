@@ -88,12 +88,11 @@ fn classify_and_log(line: &str, status: &TunnelStatus) {
         status.last_connected_at.store(now, Ordering::Relaxed);
         info!(target: "newt", "Tunnel connected");
     } else if msg_body.contains("Periodic ping failed") {
-        if let Some(start) = msg_body.find('(') {
-            if let Some(end) = msg_body.find(" consecutive") {
-                if let Ok(n) = msg_body[start + 1..end].parse::<u64>() {
-                    status.consecutive_ping_failures.store(n, Ordering::Relaxed);
-                }
-            }
+        if let Some(start) = msg_body.find('(')
+            && let Some(end) = msg_body.find(" consecutive")
+            && let Ok(n) = msg_body[start + 1..end].parse::<u64>()
+        {
+            status.consecutive_ping_failures.store(n, Ordering::Relaxed);
         }
         warn!(target: "newt", consecutive_failures = status.consecutive_ping_failures.load(Ordering::Relaxed), "Ping check failing");
     } else if msg_body.contains("Error connecting to target") {

@@ -775,9 +775,8 @@ async fn session_info_handler(
 /// /remote.php/dav/* → redirect to /dav/*
 /// Strips Nextcloud-style username prefix: /remote.php/dav/files/admin/foo → /dav/files/foo
 async fn remote_php_dav_redirect(AxumPath(path): AxumPath<String>) -> impl IntoResponse {
-    let stripped = if path.starts_with("files/") {
+    let stripped = if let Some(after_files) = path.strip_prefix("files/") {
         // Strip username segment: files/<user>/rest → files/rest
-        let after_files = &path["files/".len()..];
         if let Some(pos) = after_files.find('/') {
             format!("files/{}", &after_files[pos + 1..])
         } else {

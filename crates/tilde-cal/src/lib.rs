@@ -543,14 +543,15 @@ fn handle_put(
     content_type: Option<&str>,
 ) -> axum::response::Response {
     // Validate Content-Type
-    if let Some(ct) = content_type {
-        if !ct.contains("text/calendar") && !ct.contains("application/octet-stream") {
-            return (
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "Content-Type must be text/calendar",
-            )
-                .into_response();
-        }
+    if let Some(ct) = content_type
+        && !ct.contains("text/calendar")
+        && !ct.contains("application/octet-stream")
+    {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Content-Type must be text/calendar",
+        )
+            .into_response();
     }
 
     let db = state.db.get().unwrap();
@@ -582,10 +583,11 @@ fn handle_put(
     );
 
     // If-None-Match: * means "only create, don't overwrite" (DAVx5 sends this)
-    if let Some(inm) = if_none_match {
-        if inm.trim() == "*" && existing.is_ok() {
-            return StatusCode::PRECONDITION_FAILED.into_response();
-        }
+    if let Some(inm) = if_none_match
+        && inm.trim() == "*"
+        && existing.is_ok()
+    {
+        return StatusCode::PRECONDITION_FAILED.into_response();
     }
 
     if let Some(expected) = if_match {
@@ -839,6 +841,7 @@ fn handle_calendar_query_report(
              FROM calendar_objects WHERE calendar_id = ?1 AND deleted = 0",
         )
         .unwrap();
+    #[allow(clippy::type_complexity)]
     let all_objects: Vec<(String, String, String, Option<String>, Option<String>)> = stmt
         .query_map([&cal_id], |row| {
             Ok((

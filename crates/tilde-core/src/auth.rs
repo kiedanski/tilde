@@ -231,12 +231,12 @@ pub fn verify_app_password(
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
     );
 
-    if let Ok((hash, scope)) = fast_result {
-        if verify_password(password, &hash) {
-            let scope_pattern = scope.trim_end_matches('*');
-            if request_path.starts_with(scope_pattern) || scope == "*" {
-                return Ok(true);
-            }
+    if let Ok((hash, scope)) = fast_result
+        && verify_password(password, &hash)
+    {
+        let scope_pattern = scope.trim_end_matches('*');
+        if request_path.starts_with(scope_pattern) || scope == "*" {
+            return Ok(true);
         }
     }
 
