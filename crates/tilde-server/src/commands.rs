@@ -1239,7 +1239,8 @@ pub async fn run_mcp(config_path: Option<&str>, command: McpCommands) -> anyhow:
             }
             if token.is_some() {
                 sql.push_str(&format!(" AND token_name = ?{}", param_idx));
-                let _ = param_idx;
+                #[allow(unused_assignments)]
+                { param_idx += 1; }
                 params.push(Box::new(token.clone().unwrap()));
             }
             sql.push_str(" ORDER BY created_at DESC LIMIT 50");
@@ -1485,11 +1486,18 @@ pub async fn run_collection(
                 )
                 .map_err(|_| anyhow::anyhow!("Collection '{}' not found", name))?;
 
-            let mut sql = format!(
-                "SELECT id, data_json, created_at FROM records WHERE collection_id = '{}'",
-                collection_id
+            // Validate sort field: only allow alphanumeric + underscores to prevent injection
+            if let Some(ref s) = sort {
+                if !s.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    anyhow::bail!("Invalid sort field: must be alphanumeric");
+                }
+            }
+
+            let mut sql = String::from(
+                "SELECT id, data_json, created_at FROM records WHERE collection_id = ?1",
             );
             if let Some(ref s) = sort {
+                // Sort field is validated above — safe to interpolate into json_extract path
                 sql.push_str(&format!(" ORDER BY json_extract(data_json, '$.{}') ASC", s));
             } else {
                 sql.push_str(" ORDER BY created_at DESC");
@@ -1499,7 +1507,7 @@ pub async fn run_collection(
             }
 
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map([&collection_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -2146,19 +2154,29 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
             let mut sql = String::from(
                 "SELECT p.id, f.path, p.taken_at, p.camera_model, p.tags_json FROM photos p JOIN files f ON p.file_id = f.id WHERE 1=1",
             );
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            let mut idx = 1;
             if let Some(ref t) = tag {
-                sql.push_str(&format!(" AND p.tags_json LIKE '%{}%'", t));
+                sql.push_str(&format!(" AND p.tags_json LIKE ?{}", idx));
+                idx += 1;
+                params.push(Box::new(format!("%{}%", t)));
             }
             if let Some(ref s) = since {
-                sql.push_str(&format!(" AND p.taken_at >= '{}'", s));
+                sql.push_str(&format!(" AND p.taken_at >= ?{}", idx));
+                idx += 1;
+                params.push(Box::new(s.clone()));
             }
             if let Some(ref u) = until {
-                sql.push_str(&format!(" AND p.taken_at <= '{}'", u));
+                sql.push_str(&format!(" AND p.taken_at <= ?{}", idx));
+                let _ = idx;
+                params.push(Box::new(u.clone()));
             }
             sql.push_str(" ORDER BY p.taken_at DESC LIMIT 100");
 
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map(param_refs.as_slice(), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,

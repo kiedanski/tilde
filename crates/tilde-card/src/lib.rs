@@ -952,7 +952,12 @@ fn extract_hrefs(xml: &str) -> Vec<String> {
         match found {
             Some((content_start,)) => {
                 if let Some(end) = xml[content_start..].find("</") {
-                    hrefs.push(xml[content_start..content_start + end].trim().to_string());
+                    let raw = xml[content_start..content_start + end].trim();
+                    // URL-decode: clients may percent-encode UIDs with @/:
+                    let decoded = urlencoding::decode(raw)
+                        .map(|s| s.into_owned())
+                        .unwrap_or_else(|_| raw.to_string());
+                    hrefs.push(decoded);
                     search_from = content_start + end;
                 } else {
                     break;

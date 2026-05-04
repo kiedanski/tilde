@@ -9,3 +9,8 @@ target/
 .current_prompt.md
 .example_spec.txt
 logs/
+
+# AI-generated artifacts
+app_spec.txt
+claude-progress.txt
+feature_list.json

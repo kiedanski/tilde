@@ -45,8 +45,8 @@ pub struct AppState {
     pub login_flows: Mutex<HashMap<String, LoginFlowSession>>,
     pub mcp_state: tilde_mcp::SharedMcpState,
     pub webauthn: Option<webauthn_rs::Webauthn>,
-    pub webauthn_reg_state: Mutex<HashMap<String, webauthn_rs::prelude::PasskeyRegistration>>,
-    pub webauthn_auth_state: Mutex<HashMap<String, webauthn_rs::prelude::PasskeyAuthentication>>,
+    pub webauthn_reg_state: Mutex<HashMap<String, (webauthn_rs::prelude::PasskeyRegistration, Instant)>>,
+    pub webauthn_auth_state: Mutex<HashMap<String, (webauthn_rs::prelude::PasskeyAuthentication, Instant)>>,
     pub tunnel_status: Option<tunnel::SharedTunnelStatus>,
 }
 
@@ -555,14 +555,25 @@ async fn login_handler(
         }
     };
 
-    // Use X-Forwarded-For when behind a reverse proxy (Pangolin/caddy),
-    // otherwise the rate limit becomes a single global bucket for 127.0.0.1
-    let client_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| addr.ip().to_string());
+    // Use X-Forwarded-For only when the direct connection is from a trusted proxy.
+    // Without this gate, direct-exposed deployments would allow trivial IP spoofing.
+    let raw_ip = addr.ip();
+    let is_trusted_proxy = state.config.server.trusted_proxies.iter().any(|cidr| {
+        // Simple prefix match: "127.0.0.1" or "10.0.0.0/8" etc.
+        let prefix = cidr.split('/').next().unwrap_or(cidr);
+        prefix.parse::<std::net::IpAddr>().map(|p| p == raw_ip).unwrap_or(false)
+    }) || raw_ip.is_loopback();
+
+    let client_ip = if is_trusted_proxy {
+        headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| raw_ip.to_string())
+    } else {
+        raw_ip.to_string()
+    };
 
     let max_attempts = state.config.auth.max_login_attempts;
     let lockout_minutes = state.config.auth.lockout_duration_minutes;
@@ -1470,15 +1481,10 @@ async fn webauthn_register_start(
             let challenge_id = uuid::Uuid::new_v4().to_string();
             {
                 let mut states = state.webauthn_reg_state.lock().unwrap();
-                // Cap pending challenges — if an attacker floods, evict oldest half
-                // rather than clearing ALL entries (which DoSes legitimate in-flight ceremonies)
-                if states.len() > 100 {
-                    let keys: Vec<String> = states.keys().take(states.len() / 2).cloned().collect();
-                    for k in keys {
-                        states.remove(&k);
-                    }
-                }
-                states.insert(challenge_id.clone(), reg_state);
+                // TTL eviction: remove entries older than 5 minutes
+                let now = Instant::now();
+                states.retain(|_, (_, created)| now.duration_since(*created).as_secs() < 300);
+                states.insert(challenge_id.clone(), (reg_state, now));
             }
 
             (StatusCode::OK, Json(json!({
@@ -1542,7 +1548,7 @@ async fn webauthn_register_finish(
 
     let reg_state = {
         let mut states = state.webauthn_reg_state.lock().unwrap();
-        states.remove(&challenge_id)
+        states.remove(&challenge_id).map(|(s, _)| s)
     };
 
     let reg_state = match reg_state {
@@ -1599,13 +1605,9 @@ async fn webauthn_auth_start(
             let challenge_id = uuid::Uuid::new_v4().to_string();
             {
                 let mut states = state.webauthn_auth_state.lock().unwrap();
-                if states.len() > 100 {
-                    let keys: Vec<String> = states.keys().take(states.len() / 2).cloned().collect();
-                    for k in keys {
-                        states.remove(&k);
-                    }
-                }
-                states.insert(challenge_id.clone(), auth_state);
+                let now = Instant::now();
+                states.retain(|_, (_, created)| now.duration_since(*created).as_secs() < 300);
+                states.insert(challenge_id.clone(), (auth_state, now));
             }
 
             (StatusCode::OK, Json(json!({
@@ -1651,7 +1653,7 @@ async fn webauthn_auth_finish(
 
     let auth_state = {
         let mut states = state.webauthn_auth_state.lock().unwrap();
-        states.remove(&challenge_id)
+        states.remove(&challenge_id).map(|(s, _)| s)
     };
 
     let auth_state = match auth_state {

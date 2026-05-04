@@ -64,7 +64,6 @@ impl Config {
             match key_lower.as_str() {
                 "hostname" => "server.hostname".into(),
                 "acme_email" => "tls.acme_email".into(),
-                "admin_password" => "auth.admin_password".into(),
                 _ => key_lower.replace("__", ".").into(),
             }
         }));
@@ -220,8 +219,7 @@ pub struct AuthConfig {
     pub max_login_attempts: u32,
     #[serde(default = "default_lockout_duration")]
     pub lockout_duration_minutes: u32,
-    #[serde(default)]
-    pub admin_password: String,
+    // admin_password removed: secrets must come from env (TILDE_ADMIN_PASSWORD), not config files
     #[serde(default)]
     pub webauthn_enabled: bool,
     #[serde(default)]
@@ -234,7 +232,6 @@ impl Default for AuthConfig {
             session_ttl_hours: default_session_ttl(),
             max_login_attempts: default_max_login_attempts(),
             lockout_duration_minutes: default_lockout_duration(),
-            admin_password: String::new(),
             webauthn_enabled: false,
             webauthn_rp_id: String::new(),
         }

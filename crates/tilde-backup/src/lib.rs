@@ -352,6 +352,12 @@ pub fn restore_from_archive(archive_path: &Path, target_dir: &Path) -> Result<()
 
 /// Apply retention policy: keep the specified number of snapshots per time class,
 /// prune the rest (unless pinned).
+///
+/// Each class selects the most recent snapshot per distinct time bucket:
+/// - hourly: one per hour (bucket = YYYY-MM-DD-HH)
+/// - daily:  one per day  (bucket = YYYY-MM-DD)
+/// - weekly: one per week (bucket = YYYY-WW)
+/// - monthly: one per month (bucket = YYYY-MM)
 pub fn apply_retention(
     conn: &Connection,
     backup_dir: &Path,
@@ -360,29 +366,62 @@ pub fn apply_retention(
     weekly: u32,
     monthly: u32,
 ) -> Result<Vec<String>> {
-    let snapshots = list_snapshots(conn)?;
-    let total = hourly + daily + weekly + monthly;
+    let snapshots = list_snapshots(conn)?; // newest-first
 
-    // Simple retention: keep the most recent `total` snapshots plus any pinned ones
+    let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // For each time class, walk snapshots and keep the first N that fall into distinct buckets
+    fn keep_by_bucket(
+        snapshots: &[Snapshot],
+        count: u32,
+        bucket_fn: fn(&str) -> String,
+        keep: &mut std::collections::HashSet<String>,
+    ) {
+        let mut seen = std::collections::HashSet::new();
+        let mut kept = 0u32;
+        for snap in snapshots {
+            if kept >= count {
+                break;
+            }
+            let bucket = bucket_fn(&snap.created_at);
+            if seen.insert(bucket) {
+                keep.insert(snap.id.clone());
+                kept += 1;
+            }
+        }
+    }
+
+    // Bucket functions extract the relevant portion of an ISO timestamp
+    keep_by_bucket(&snapshots, hourly, |ts| ts.get(..13).unwrap_or(ts).to_string(), &mut keep);
+    keep_by_bucket(&snapshots, daily, |ts| ts.get(..10).unwrap_or(ts).to_string(), &mut keep);
+    keep_by_bucket(&snapshots, weekly, |ts| {
+        // Parse YYYY-MM-DD and compute ISO week
+        let date_part = ts.get(..10).unwrap_or(ts);
+        if let Ok(date) = jiff::civil::Date::strptime("%Y-%m-%d", date_part) {
+            format!("{}-W{:02}", date.year(), (date.day_of_year() / 7) + 1)
+        } else {
+            date_part.to_string()
+        }
+    }, &mut keep);
+    keep_by_bucket(&snapshots, monthly, |ts| ts.get(..7).unwrap_or(ts).to_string(), &mut keep);
+
+    // Prune anything not kept and not pinned
     let mut pruned = Vec::new();
-    for (i, snapshot) in snapshots.iter().enumerate() {
-        if snapshot.pinned {
+    for snapshot in &snapshots {
+        if snapshot.pinned || keep.contains(&snapshot.id) {
             continue;
         }
-        if i >= total as usize {
-            // Prune this snapshot
-            let path = resolve_archive_path(snapshot, backup_dir);
-            if path.exists() {
-                std::fs::remove_file(&path)
-                    .with_context(|| format!("Failed to delete archive {}", path.display()))?;
-            }
-            conn.execute(
-                "DELETE FROM backup_snapshots WHERE id = ?1",
-                [&snapshot.id],
-            )?;
-            pruned.push(snapshot.id.clone());
-            info!(snapshot_id = %snapshot.id, "Pruned old snapshot");
+        let path = resolve_archive_path(snapshot, backup_dir);
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("Failed to delete archive {}", path.display()))?;
         }
+        conn.execute(
+            "DELETE FROM backup_snapshots WHERE id = ?1",
+            [&snapshot.id],
+        )?;
+        pruned.push(snapshot.id.clone());
+        info!(snapshot_id = %snapshot.id, "Pruned old snapshot");
     }
 
     Ok(pruned)

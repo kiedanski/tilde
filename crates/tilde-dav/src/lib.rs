@@ -351,12 +351,10 @@ async fn handle_put(
         warn!(error = %e, "Failed to flush tmp file");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    drop(writer);
 
-    // fsync the temp file for durability
-    if let Ok(f) = tokio::fs::File::open(&tmp_path).await {
-        let _ = f.sync_all().await;
-    }
+    // fsync the ORIGINAL file handle (not a reopened one) for durability
+    let inner_file = writer.into_inner();
+    let _ = inner_file.sync_all().await;
 
     // Atomic rename
     if let Err(e) = tokio::fs::rename(&tmp_path, &disk_path).await {
@@ -922,6 +920,15 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
         .get("depth")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("0");
+
+    // RFC 4918: servers MAY reject Depth: infinity with 403 + propfind-finite-depth
+    if depth == "infinity" {
+        return (
+            StatusCode::FORBIDDEN,
+            [(header::CONTENT_TYPE, HeaderValue::from_static("application/xml; charset=utf-8"))],
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<d:error xmlns:d=\"DAV:\"><d:propfind-finite-depth/></d:error>",
+        ).into_response();
+    }
 
     let mut responses = Vec::new();
 
