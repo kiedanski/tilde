@@ -107,9 +107,6 @@ fn check_auth(state: &SharedCalDavState, req: &axum::extract::Request, scope_pre
             if let Some(creds) = decoded {
                 if let Some((_user, password)) = creds.split_once(':') {
                     let db = state.db.get().unwrap();
-                    if auth::verify_admin_password(&db, password).unwrap_or(false) {
-                        return true;
-                    }
                     auth::verify_app_password(&db, password, scope_prefix).unwrap_or(false)
                 } else {
                     false

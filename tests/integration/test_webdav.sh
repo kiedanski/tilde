@@ -64,8 +64,15 @@ level = "warn"
 format = "pretty"
 EOF
 
+# --- Initialize DB and create app passwords ---
+TILDE_ADMIN_PASSWORD="$ADMIN_PW" TILDE_DATA_DIR="$DATA_DIR" \
+  "$TILDE_BIN" init --config "$CONFIG_FILE" 2>/dev/null || true
+DAV_APP_PW=$(TILDE_DATA_DIR="$DATA_DIR" "$TILDE_BIN" auth app-password create \
+  --name "test-dav" --scope "/dav/*" --config "$CONFIG_FILE" 2>/dev/null | grep "tilde_app_" | awk '{print $NF}')
+log "App password created for DAV"
+
 # --- Generate rclone config ---
-OBSCURED_PW=$(command rclone obscure "$ADMIN_PW")
+OBSCURED_PW=$(command rclone obscure "$DAV_APP_PW")
 cat > "$RCLONE_CONF" <<EOF
 [tilde]
 type = webdav

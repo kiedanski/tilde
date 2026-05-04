@@ -51,6 +51,14 @@ level = "warn"
 format = "pretty"
 EOF
 
+# Initialize DB and create app password before starting server
+TILDE_ADMIN_PASSWORD="$ADMIN_PW" TILDE_DATA_DIR="$DATA_DIR" \
+  "$TILDE_BIN" init --config "$CONFIG_FILE" 2>/dev/null || true
+APP_PW=$(TILDE_DATA_DIR="$DATA_DIR" "$TILDE_BIN" auth app-password create \
+  --name "test-carddav" --scope "/carddav/*" --config "$CONFIG_FILE" 2>/dev/null | grep "tilde_app_" | awk '{print $NF}')
+AUTH="admin:$APP_PW"
+log "App password created for CardDAV"
+
 TILDE_ADMIN_PASSWORD="$ADMIN_PW" TILDE_DATA_DIR="$DATA_DIR" \
   "$TILDE_BIN" serve --config "$CONFIG_FILE" &
 echo $! > "$TEST_DIR/tilde.pid"

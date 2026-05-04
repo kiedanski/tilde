@@ -71,9 +71,7 @@ fn check_auth(state: &SharedDavState, headers: &HeaderMap) -> bool {
             if let Some(creds) = decoded {
                 if let Some((_user, password)) = creds.split_once(':') {
                     let db = state.db.get().unwrap();
-                    if auth::verify_admin_password(&db, password).unwrap_or(false) {
-                        return true;
-                    }
+                    // Only app passwords accepted — each scoped to its service
                     auth::verify_app_password(&db, password, &state.scope_prefix).unwrap_or(false)
                 } else {
                     false
