@@ -72,3 +72,4 @@ rusqlite = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+axum-test = { workspace = true }

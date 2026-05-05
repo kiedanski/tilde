@@ -263,13 +263,23 @@ async fn handle_put(
     headers: &HeaderMap,
     body: Body,
 ) -> Response {
-    // Check If-Match precondition
+    // PUT to a collection path (trailing slash) is invalid
+    if rel_path.ends_with('/') || rel_path.is_empty() {
+        return StatusCode::CONFLICT.into_response();
+    }
+
+    // Check If-Match precondition (RFC 7232)
     if let Some(if_match) = headers.get("if-match").and_then(|v| v.to_str().ok()) {
         let expected_etag = if_match.trim_matches('"');
-        if let Some(current_etag) = get_etag_for_file(state, rel_path)
-            && current_etag != expected_etag
-        {
-            return StatusCode::PRECONDITION_FAILED.into_response();
+        match get_etag_for_file(state, rel_path) {
+            Some(current_etag) if current_etag != expected_etag => {
+                return StatusCode::PRECONDITION_FAILED.into_response();
+            }
+            None => {
+                // Resource doesn't exist — If-Match MUST fail (RFC 7232 §3.1)
+                return StatusCode::PRECONDITION_FAILED.into_response();
+            }
+            _ => {} // etag matches, proceed
         }
     }
 
@@ -861,8 +871,19 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
 
     let overwrite = dst_disk.exists();
 
+    // RFC 4918 §9.8.3: Depth:0 on a collection means create empty collection only
+    let depth = headers
+        .get("depth")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("infinity");
+
     if src_disk.is_dir() {
-        copy_dir_recursive(&src_disk, &dst_disk).await.ok();
+        if depth == "0" {
+            // Depth:0 — create the collection but don't copy children
+            tokio::fs::create_dir_all(&dst_disk).await.ok();
+        } else {
+            copy_dir_recursive(&src_disk, &dst_disk).await.ok();
+        }
     } else if let Err(e) = tokio::fs::copy(&src_disk, &dst_disk).await {
         warn!(error = %e, "Failed to copy");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -1860,4 +1881,173 @@ async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ─── is_safe_path ────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_safe_path_normal_paths() {
+        assert!(is_safe_path("file.txt"));
+        assert!(is_safe_path("dir/file.txt"));
+        assert!(is_safe_path("a/b/c/deep.txt"));
+        assert!(is_safe_path(""));
+    }
+
+    #[test]
+    fn is_safe_path_rejects_dot_dot() {
+        assert!(!is_safe_path(".."));
+        assert!(!is_safe_path("../etc/passwd"));
+        assert!(!is_safe_path("a/../../etc/passwd"));
+        assert!(!is_safe_path("a/b/../../../secret"));
+    }
+
+    #[test]
+    fn is_safe_path_allows_dots_in_names() {
+        // ".." as a segment is bad, but dots in filenames are fine
+        assert!(is_safe_path("file..txt"));
+        assert!(is_safe_path(".hidden"));
+        assert!(is_safe_path("dir/.hidden/file"));
+        assert!(is_safe_path("..."));
+    }
+
+    // ─── escape_like ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn escape_like_no_special_chars() {
+        assert_eq!(escape_like("photos/2024/img.jpg"), "photos/2024/img.jpg");
+    }
+
+    #[test]
+    fn escape_like_percent() {
+        assert_eq!(escape_like("100%done"), "100\\%done");
+    }
+
+    #[test]
+    fn escape_like_underscore() {
+        assert_eq!(escape_like("file_name"), "file\\_name");
+    }
+
+    #[test]
+    fn escape_like_backslash() {
+        assert_eq!(escape_like("path\\to\\file"), "path\\\\to\\\\file");
+    }
+
+    #[test]
+    fn escape_like_all_special() {
+        assert_eq!(escape_like("a%b_c\\d"), "a\\%b\\_c\\\\d");
+    }
+
+    // ─── ensure_within_root ──────────────────────────────────────────────────
+
+    #[test]
+    fn ensure_within_root_normal_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let file = root.join("hello.txt");
+        fs::write(&file, "hi").unwrap();
+
+        assert!(ensure_within_root(root, &file));
+    }
+
+    #[test]
+    fn ensure_within_root_nested_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let dir = root.join("sub/dir");
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("file.txt");
+        fs::write(&file, "nested").unwrap();
+
+        assert!(ensure_within_root(root, &file));
+    }
+
+    #[test]
+    fn ensure_within_root_nonexistent_within() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // Target doesn't exist but ancestor does -- should still be within root
+        let target = root.join("new_file.txt");
+
+        assert!(ensure_within_root(root, &target));
+    }
+
+    #[test]
+    fn ensure_within_root_rejects_outside() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("webdav");
+        fs::create_dir_all(&root).unwrap();
+        // Try to escape via ..
+        let target = root.join("../../../etc/passwd");
+
+        assert!(!ensure_within_root(&root, &target));
+    }
+
+    // ─── get_destination ──────────────────────────────────────────────────────
+
+    #[test]
+    fn get_destination_extracts_relative_path() {
+        let mut headers = HeaderMap::new();
+        headers.insert("destination", "/dav/files/subdir/file.txt".parse().unwrap());
+        assert_eq!(get_destination(&headers), Some("subdir/file.txt".to_string()));
+    }
+
+    #[test]
+    fn get_destination_handles_full_url() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "destination",
+            "https://example.com/dav/files/foo/bar.txt".parse().unwrap(),
+        );
+        assert_eq!(get_destination(&headers), Some("foo/bar.txt".to_string()));
+    }
+
+    #[test]
+    fn get_destination_rejects_traversal() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "destination",
+            "/dav/files/../../../etc/passwd".parse().unwrap(),
+        );
+        assert_eq!(get_destination(&headers), None);
+    }
+
+    #[test]
+    fn get_destination_url_decodes() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "destination",
+            "/dav/files/my%20file%20name.txt".parse().unwrap(),
+        );
+        assert_eq!(
+            get_destination(&headers),
+            Some("my file name.txt".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_within_root_rejects_symlink_escape() {
+        use std::os::unix::fs as unix_fs;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("webdav");
+        fs::create_dir_all(&root).unwrap();
+
+        // Create a symlink inside root that points outside
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+
+        let link = root.join("escape");
+        unix_fs::symlink(&outside, &link).unwrap();
+
+        let target = link.join("secret.txt");
+        assert!(!ensure_within_root(&root, &target));
+    }
 }

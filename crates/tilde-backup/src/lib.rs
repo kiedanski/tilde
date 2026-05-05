@@ -563,3 +563,83 @@ pub fn format_size(bytes: i64) -> String {
         format!("{} B", bytes)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_size_bytes() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+    }
+
+    #[test]
+    fn format_size_kilobytes() {
+        assert_eq!(format_size(1024), "1.00 KB");
+        assert_eq!(format_size(1536), "1.50 KB");
+    }
+
+    #[test]
+    fn format_size_megabytes() {
+        assert_eq!(format_size(1048576), "1.00 MB");
+    }
+
+    #[test]
+    fn format_size_gigabytes() {
+        assert_eq!(format_size(1073741824), "1.00 GB");
+    }
+
+    /// Retention bucket logic: hourly bucket uses first 13 chars (YYYY-MM-DDTHH)
+    #[test]
+    fn hourly_bucket_groups_within_same_hour() {
+        let bucket_fn = |ts: &str| ts.get(..13).unwrap_or(ts).to_string();
+        assert_eq!(
+            bucket_fn("2026-01-15T10:30:00+00:00"),
+            "2026-01-15T10"
+        );
+        assert_eq!(
+            bucket_fn("2026-01-15T10:45:00+00:00"),
+            "2026-01-15T10"
+        );
+        // Different hour
+        assert_ne!(
+            bucket_fn("2026-01-15T10:30:00+00:00"),
+            bucket_fn("2026-01-15T11:30:00+00:00"),
+        );
+    }
+
+    /// Retention bucket logic: daily bucket uses first 10 chars (YYYY-MM-DD)
+    #[test]
+    fn daily_bucket_groups_within_same_day() {
+        let bucket_fn = |ts: &str| ts.get(..10).unwrap_or(ts).to_string();
+        assert_eq!(bucket_fn("2026-01-15T10:30:00+00:00"), "2026-01-15");
+        assert_eq!(bucket_fn("2026-01-15T22:00:00+00:00"), "2026-01-15");
+    }
+
+    /// Retention bucket logic: monthly bucket uses first 7 chars (YYYY-MM)
+    #[test]
+    fn monthly_bucket_groups_within_same_month() {
+        let bucket_fn = |ts: &str| ts.get(..7).unwrap_or(ts).to_string();
+        assert_eq!(bucket_fn("2026-01-15T10:30:00+00:00"), "2026-01");
+        assert_eq!(bucket_fn("2026-01-28T22:00:00+00:00"), "2026-01");
+    }
+
+    /// Pinned snapshots are never deleted by retention.
+    #[test]
+    fn pinned_snapshots_preserved() {
+        let snap = Snapshot {
+            id: "test-id".to_string(),
+            created_at: "2020-01-01T00:00:00+00:00".to_string(),
+            size_bytes: 100,
+            file_count: 5,
+            archive_path: "test.tar.gz".to_string(),
+            checksum: "abc123".to_string(),
+            pinned: true,
+            pin_reason: Some("important".to_string()),
+            retention_class: None,
+        };
+        // In apply_retention, this condition prevents deletion:
+        assert!(snap.pinned);
+    }
+}

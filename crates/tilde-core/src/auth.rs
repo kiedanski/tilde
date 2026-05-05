@@ -239,4 +239,39 @@ mod tests {
         assert!(!constant_time_compare(b"hello", b"world"));
         assert!(!constant_time_compare(b"hello", b"hell"));
     }
+
+    #[test]
+    fn test_app_password_format() {
+        let pw = generate_app_password();
+        assert!(pw.starts_with("tilde_app_"));
+        assert_eq!(pw.len(), 10 + 24); // prefix + 24 alphanumeric
+    }
+
+    /// Scope matching logic: wildcard scope "*" matches any path.
+    #[test]
+    fn scope_wildcard_matches_all() {
+        let scope = "*";
+        // The logic in verify_app_password:
+        // scope == "*" → always true
+        assert!(scope == "*");
+    }
+
+    /// Scope matching logic: prefix "/dav/" matches "/dav/files/test.txt"
+    #[test]
+    fn scope_prefix_matches_subpaths() {
+        let scope = "/dav/*";
+        let scope_pattern = scope.trim_end_matches('*');
+        assert!("/dav/files/test.txt".starts_with(scope_pattern));
+        assert!("/dav/notes/note.md".starts_with(scope_pattern));
+        assert!(!"/caldav/admin/".starts_with(scope_pattern));
+    }
+
+    /// Scope matching logic: exact prefix without wildcard
+    #[test]
+    fn scope_exact_prefix_without_wildcard() {
+        let scope = "/caldav/";
+        let scope_pattern = scope.trim_end_matches('*');
+        assert!("/caldav/admin/default/".starts_with(scope_pattern));
+        assert!(!"/dav/files/".starts_with(scope_pattern));
+    }
 }

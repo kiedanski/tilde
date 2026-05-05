@@ -102,6 +102,9 @@ notify = "7"
 # Atomic config swap
 arc-swap = "1"
 
+# Testing
+axum-test = "20"
+
 # Error handling
 thiserror = "2"
 anyhow = "1"
