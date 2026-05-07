@@ -197,7 +197,7 @@ pub fn start_watcher(
                             // Brief lock to mark completion and create symlink
                             if let Ok(c) = debounce_conn.get() {
                                 let _ = crate::thumbnail::mark_thumbnails_generated(
-                                    &c, &photo_id, true, true,
+                                    &c, &photo_id, true,
                                 );
                                 let _ = crate::thumbnail::create_thumbnail_symlink(
                                     &c,

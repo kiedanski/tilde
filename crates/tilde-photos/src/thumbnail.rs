@@ -98,16 +98,16 @@ fn open_image(path: &Path) -> Result<DynamicImage> {
     image::open(path).context("Failed to open image for thumbnail generation")
 }
 
-/// Generate thumbnails for a photo, storing them in the cache directory.
+/// Generate a 256px square-crop thumbnail for a photo.
 ///
-/// Returns (path_256, path_1920) on success.
+/// Returns the path to the generated 256px WebP thumbnail.
 /// Uses a single-slot semaphore to prevent OOM on large HEIC files.
 pub fn generate_thumbnails(
     source: &Path,
     photo_uuid: &str,
     cache_dir: &Path,
     quality: u8,
-) -> Result<(PathBuf, PathBuf)> {
+) -> Result<PathBuf> {
     // Acquire single-slot semaphore to prevent OOM on large HEIC files
     let _guard = THUMBNAIL_LOCK
         .lock()
@@ -122,14 +122,13 @@ fn generate_thumbnails_inner(
     photo_uuid: &str,
     cache_dir: &Path,
     quality: u8,
-) -> Result<(PathBuf, PathBuf)> {
+) -> Result<PathBuf> {
     let thumb_dir = cache_dir.join("thumbnails").join(photo_uuid);
     std::fs::create_dir_all(&thumb_dir)?;
 
     let path_256 = thumb_dir.join("256.webp");
-    let path_1920 = thumb_dir.join("1920.webp");
 
-    debug!(source = %source.display(), uuid = %photo_uuid, "Generating thumbnails");
+    debug!(source = %source.display(), uuid = %photo_uuid, "Generating thumbnail");
 
     let img = open_image(source)?;
 
@@ -137,24 +136,9 @@ fn generate_thumbnails_inner(
     let thumb_256 = img.resize_to_fill(256, 256, FilterType::Lanczos3);
     save_webp(&thumb_256, &path_256, quality)?;
 
-    // 1920px longest edge
-    let (w, h) = (img.width(), img.height());
-    let (new_w, new_h) = if w > h {
-        (1920, (1920.0 * h as f64 / w as f64) as u32)
-    } else {
-        ((1920.0 * w as f64 / h as f64) as u32, 1920)
-    };
-    // Only downscale, don't upscale
-    let thumb_1920 = if w > 1920 || h > 1920 {
-        img.resize(new_w, new_h, FilterType::Lanczos3)
-    } else {
-        img.clone()
-    };
-    save_webp(&thumb_1920, &path_1920, quality)?;
-
     info!(uuid = %photo_uuid, "Thumbnails generated");
 
-    Ok((path_256, path_1920))
+    Ok(path_256)
 }
 
 /// Compute a blurhash string from an image file.
@@ -266,7 +250,7 @@ pub fn generate_video_thumbnail(
     cache_dir: &Path,
     quality: u8,
     _timeout_secs: u64,
-) -> Result<(PathBuf, PathBuf)> {
+) -> Result<PathBuf> {
     // Acquire single-slot semaphore (shared with generate_thumbnails)
     let _guard = THUMBNAIL_LOCK
         .lock()
@@ -370,18 +354,12 @@ mod tests {
 
         // Test thumbnail generation
         let cache_dir = temp_dir.join("cache");
-        let (p256, p1920) =
-            generate_thumbnails(&heic_path, "test-heic-uuid", &cache_dir, 80).unwrap();
+        let p256 = generate_thumbnails(&heic_path, "test-heic-uuid", &cache_dir, 80).unwrap();
 
         assert!(p256.exists(), "256px thumbnail should exist");
-        assert!(p1920.exists(), "1920px thumbnail should exist");
         assert!(
             std::fs::metadata(&p256).unwrap().len() > 0,
             "256px thumbnail should not be empty"
-        );
-        assert!(
-            std::fs::metadata(&p1920).unwrap().len() > 0,
-            "1920px thumbnail should not be empty"
         );
 
         // Clean up
@@ -511,9 +489,8 @@ pub fn rebuild_thumbnail_mirror(
     }
     std::fs::create_dir_all(&thumbnails_dir)?;
 
-    // Query all photos with 1920px thumbnails generated
-    let mut stmt =
-        conn.prepare("SELECT p.id FROM photos p WHERE p.thumbnail_1920_generated = 1")?;
+    // Query all photos with thumbnails generated
+    let mut stmt = conn.prepare("SELECT p.id FROM photos p WHERE p.thumbnail_256_generated = 1")?;
     let photo_ids: Vec<String> = stmt
         .query_map([], |row| row.get(0))?
         .filter_map(|r| r.ok())
@@ -531,16 +508,15 @@ pub fn rebuild_thumbnail_mirror(
     Ok(count)
 }
 
-/// Mark thumbnails as generated in the database
+/// Mark thumbnail as generated in the database
 pub fn mark_thumbnails_generated(
     conn: &rusqlite::Connection,
     photo_id: &str,
-    size_256: bool,
-    size_1920: bool,
+    generated: bool,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE photos SET thumbnail_256_generated = ?1, thumbnail_1920_generated = ?2 WHERE id = ?3",
-        rusqlite::params![size_256 as i32, size_1920 as i32, photo_id],
+        "UPDATE photos SET thumbnail_256_generated = ?1 WHERE id = ?2",
+        rusqlite::params![generated as i32, photo_id],
     )?;
     Ok(())
 }

@@ -215,7 +215,7 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                     let condition = if all {
                         "1=1"
                     } else {
-                        "p.thumbnail_256_generated = 0 OR p.thumbnail_1920_generated = 0"
+                        "p.thumbnail_256_generated = 0"
                     };
                     let sql = format!(
                         "SELECT p.id, f.path FROM photos p JOIN files f ON p.file_id = f.id WHERE p.content_readable = 1 AND ({})",
@@ -261,7 +261,7 @@ pub async fn run_photos(config_path: Option<&str>, command: PhotosCommands) -> a
                         match result {
                             Ok(_) => {
                                 tilde_photos::thumbnail::mark_thumbnails_generated(
-                                    &conn, photo_id, true, true,
+                                    &conn, photo_id, true,
                                 )?;
                                 let _ = tilde_photos::thumbnail::create_thumbnail_symlink(
                                     &conn,

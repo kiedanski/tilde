@@ -404,7 +404,7 @@ fn process_thumbnail_job(
     }
 
     // Mark as generated and create browseable symlink
-    let _ = thumbnail::mark_thumbnails_generated(conn, photo_id, true, true);
+    let _ = thumbnail::mark_thumbnails_generated(conn, photo_id, true);
     let _ = thumbnail::create_thumbnail_symlink(conn, photo_id, photos_base, cache_dir);
 
     Ok(())
