@@ -513,7 +513,10 @@ async fn delete_calendar_cascades_to_objects() {
     let auth = common::basic_auth_header(&pw);
 
     env.server
-        .method(Method::from_bytes(b"MKCALENDAR").unwrap(), "/caldav/admin/temp2/")
+        .method(
+            Method::from_bytes(b"MKCALENDAR").unwrap(),
+            "/caldav/admin/temp2/",
+        )
         .add_header(header::AUTHORIZATION, &auth)
         .await;
 
@@ -539,5 +542,9 @@ async fn delete_calendar_cascades_to_objects() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(orphans, 0, "DELETE calendar left {} orphaned calendar_objects", orphans);
+    assert_eq!(
+        orphans, 0,
+        "DELETE calendar left {} orphaned calendar_objects",
+        orphans
+    );
 }

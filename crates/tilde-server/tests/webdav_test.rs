@@ -156,7 +156,10 @@ async fn move_file() {
 
     let resp = env
         .server
-        .method(Method::from_bytes(b"MOVE").unwrap(), "/dav/files/source.txt")
+        .method(
+            Method::from_bytes(b"MOVE").unwrap(),
+            "/dav/files/source.txt",
+        )
         .add_header(header::AUTHORIZATION, &auth)
         .add_header("destination", "/dav/files/dest.txt")
         .await;
@@ -240,10 +243,7 @@ async fn move_directory() {
 
     let resp = env
         .server
-        .method(
-            Method::from_bytes(b"MOVE").unwrap(),
-            "/dav/files/movedir",
-        )
+        .method(Method::from_bytes(b"MOVE").unwrap(), "/dav/files/movedir")
         .add_header(header::AUTHORIZATION, &auth)
         .add_header("destination", "/dav/files/moveddir")
         .await;
@@ -541,7 +541,10 @@ async fn put_in_subdir() {
 
     let resp = env
         .server
-        .method(Method::from_bytes(b"PROPFIND").unwrap(), "/dav/files/subdir")
+        .method(
+            Method::from_bytes(b"PROPFIND").unwrap(),
+            "/dav/files/subdir",
+        )
         .add_header("depth", "1")
         .add_header(header::AUTHORIZATION, &auth)
         .await;
@@ -674,10 +677,7 @@ async fn chunked_upload_full_flow() {
 async fn options_returns_200() {
     let env = common::create_test_server();
 
-    let resp = env
-        .server
-        .method(Method::OPTIONS, "/dav/files/")
-        .await;
+    let resp = env.server.method(Method::OPTIONS, "/dav/files/").await;
     resp.assert_status_ok();
 }
 
@@ -690,7 +690,8 @@ async fn if_match_on_nonexistent_returns_412() {
     let pw = common::create_app_password(&env.pool, "test", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
-    let resp = env.server
+    let resp = env
+        .server
         .method(Method::PUT, "/dav/files/ghost.txt")
         .add_header(header::AUTHORIZATION, &auth)
         .add_header(header::IF_MATCH, "\"nonexistent-etag\"")
@@ -706,7 +707,8 @@ async fn put_trailing_slash_not_500() {
     let pw = common::create_app_password(&env.pool, "test", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
-    let resp = env.server
+    let resp = env
+        .server
         .method(Method::PUT, "/dav/files/badpath/")
         .add_header(header::AUTHORIZATION, &auth)
         .text("data")
@@ -714,7 +716,8 @@ async fn put_trailing_slash_not_500() {
     let status = resp.status_code();
     assert!(
         status == StatusCode::BAD_REQUEST || status == StatusCode::CONFLICT,
-        "PUT trailing slash: got {}, expected 400/409", status
+        "PUT trailing slash: got {}, expected 400/409",
+        status
     );
 }
 
@@ -725,19 +728,31 @@ async fn copy_dir_depth_zero_no_children() {
     let pw = common::create_app_password(&env.pool, "test", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
-    env.server.method(Method::from_bytes(b"MKCOL").unwrap(), "/dav/files/copysrc")
-        .add_header(header::AUTHORIZATION, &auth).await;
-    env.server.method(Method::PUT, "/dav/files/copysrc/child.txt")
-        .add_header(header::AUTHORIZATION, &auth).text("child").await;
-
-    env.server.method(Method::from_bytes(b"COPY").unwrap(), "/dav/files/copysrc")
+    env.server
+        .method(Method::from_bytes(b"MKCOL").unwrap(), "/dav/files/copysrc")
         .add_header(header::AUTHORIZATION, &auth)
-        .add_header(header::HeaderName::from_static("destination"), "/dav/files/copydst")
+        .await;
+    env.server
+        .method(Method::PUT, "/dav/files/copysrc/child.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("child")
+        .await;
+
+    env.server
+        .method(Method::from_bytes(b"COPY").unwrap(), "/dav/files/copysrc")
+        .add_header(header::AUTHORIZATION, &auth)
+        .add_header(
+            header::HeaderName::from_static("destination"),
+            "/dav/files/copydst",
+        )
         .add_header(header::HeaderName::from_static("depth"), "0")
         .await;
 
     // Child must NOT exist in destination
-    let resp = env.server.get("/dav/files/copydst/child.txt")
-        .add_header(header::AUTHORIZATION, &auth).await;
+    let resp = env
+        .server
+        .get("/dav/files/copydst/child.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
     resp.assert_status(StatusCode::NOT_FOUND);
 }

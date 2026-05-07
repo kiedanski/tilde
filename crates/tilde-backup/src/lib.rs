@@ -594,14 +594,8 @@ mod tests {
     #[test]
     fn hourly_bucket_groups_within_same_hour() {
         let bucket_fn = |ts: &str| ts.get(..13).unwrap_or(ts).to_string();
-        assert_eq!(
-            bucket_fn("2026-01-15T10:30:00+00:00"),
-            "2026-01-15T10"
-        );
-        assert_eq!(
-            bucket_fn("2026-01-15T10:45:00+00:00"),
-            "2026-01-15T10"
-        );
+        assert_eq!(bucket_fn("2026-01-15T10:30:00+00:00"), "2026-01-15T10");
+        assert_eq!(bucket_fn("2026-01-15T10:45:00+00:00"), "2026-01-15T10");
         // Different hour
         assert_ne!(
             bucket_fn("2026-01-15T10:30:00+00:00"),

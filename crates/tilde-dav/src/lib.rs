@@ -1994,7 +1994,10 @@ mod tests {
     fn get_destination_extracts_relative_path() {
         let mut headers = HeaderMap::new();
         headers.insert("destination", "/dav/files/subdir/file.txt".parse().unwrap());
-        assert_eq!(get_destination(&headers), Some("subdir/file.txt".to_string()));
+        assert_eq!(
+            get_destination(&headers),
+            Some("subdir/file.txt".to_string())
+        );
     }
 
     #[test]

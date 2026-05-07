@@ -125,7 +125,6 @@ pub fn create_mcp_token(pool: &db::DbPool, name: &str, scopes: &str) -> String {
 /// Format a Basic auth header value for the given password (user is always "admin").
 pub fn basic_auth_header(password: &str) -> String {
     use base64::Engine;
-    let encoded =
-        base64::engine::general_purpose::STANDARD.encode(format!("admin:{}", password));
+    let encoded = base64::engine::general_purpose::STANDARD.encode(format!("admin:{}", password));
     format!("Basic {}", encoded)
 }

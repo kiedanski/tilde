@@ -16,9 +16,7 @@ async fn health_endpoint() {
     let resp = env.server.get("/health").await;
     resp.assert_status_ok();
     let body = resp.text();
-    assert!(
-        body.contains("\"status\":\"healthy\"") || body.contains("\"status\": \"healthy\"")
-    );
+    assert!(body.contains("\"status\":\"healthy\"") || body.contains("\"status\": \"healthy\""));
 }
 
 #[tokio::test]

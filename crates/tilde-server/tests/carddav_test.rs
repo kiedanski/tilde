@@ -8,9 +8,7 @@ mod common;
 use axum::http::{Method, StatusCode, header};
 
 fn sample_vcard(fn_name: &str, email: &str) -> String {
-    format!(
-        "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:{fn_name}\r\nEMAIL:{email}\r\nEND:VCARD\r\n"
-    )
+    format!("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:{fn_name}\r\nEMAIL:{email}\r\nEND:VCARD\r\n")
 }
 
 // ─── Basic operations ─────────────────────────────────────────────────────────
@@ -428,4 +426,3 @@ async fn propfind_addressbook_depth1_lists_contacts() {
     resp.assert_status(StatusCode::MULTI_STATUS);
     assert!(resp.text().contains("depth1.vcf"));
 }
-

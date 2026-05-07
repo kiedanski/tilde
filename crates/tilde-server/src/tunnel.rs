@@ -245,7 +245,9 @@ pub fn spawn_tunnel_supervisor(
                     _ = exited;
                     status_clone.running.store(false, Ordering::Relaxed);
                     status_clone.connected.store(false, Ordering::Relaxed);
-                    status_clone.consecutive_ping_failures.store(0, Ordering::Relaxed);
+                    status_clone
+                        .consecutive_ping_failures
+                        .store(0, Ordering::Relaxed);
                 }
                 Err(e) => {
                     error!(

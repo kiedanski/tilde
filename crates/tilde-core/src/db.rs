@@ -79,13 +79,34 @@ fn compute_checksum(sql: &str) -> String {
 /// Migrations embedded at compile time so they're always available,
 /// regardless of the working directory at runtime.
 const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
-    ("001_initial", include_str!("../../../migrations/001_initial.sql")),
-    ("002_file_properties", include_str!("../../../migrations/002_file_properties.sql")),
-    ("003_caldav_carddav", include_str!("../../../migrations/003_caldav_carddav.sql")),
-    ("004_backup_snapshots", include_str!("../../../migrations/004_backup_snapshots.sql")),
-    ("005_push_subscriptions", include_str!("../../../migrations/005_push_subscriptions.sql")),
-    ("006_app_password_lookup", include_str!("../../../migrations/006_app_password_lookup.sql")),
-    ("007_drop_fts_tables", include_str!("../../../migrations/007_drop_fts_tables.sql")),
+    (
+        "001_initial",
+        include_str!("../../../migrations/001_initial.sql"),
+    ),
+    (
+        "002_file_properties",
+        include_str!("../../../migrations/002_file_properties.sql"),
+    ),
+    (
+        "003_caldav_carddav",
+        include_str!("../../../migrations/003_caldav_carddav.sql"),
+    ),
+    (
+        "004_backup_snapshots",
+        include_str!("../../../migrations/004_backup_snapshots.sql"),
+    ),
+    (
+        "005_push_subscriptions",
+        include_str!("../../../migrations/005_push_subscriptions.sql"),
+    ),
+    (
+        "006_app_password_lookup",
+        include_str!("../../../migrations/006_app_password_lookup.sql"),
+    ),
+    (
+        "007_drop_fts_tables",
+        include_str!("../../../migrations/007_drop_fts_tables.sql"),
+    ),
 ];
 
 /// Load embedded migrations (compiled into the binary).

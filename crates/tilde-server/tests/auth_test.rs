@@ -269,5 +269,8 @@ async fn mcp_tools_list() {
 
     resp.assert_status_ok();
     let text = resp.text();
-    assert!(text.contains("tools"), "Expected tools list in response body");
+    assert!(
+        text.contains("tools"),
+        "Expected tools list in response body"
+    );
 }
