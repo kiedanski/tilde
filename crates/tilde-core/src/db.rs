@@ -76,47 +76,48 @@ fn compute_checksum(sql: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Load migrations from the migrations directory
-fn load_migrations(migrations_dir: &Path) -> anyhow::Result<Vec<Migration>> {
-    let mut migrations = Vec::new();
+/// Migrations embedded at compile time so they're always available,
+/// regardless of the working directory at runtime.
+const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
+    ("001_initial", include_str!("../../../migrations/001_initial.sql")),
+    ("002_file_properties", include_str!("../../../migrations/002_file_properties.sql")),
+    ("003_caldav_carddav", include_str!("../../../migrations/003_caldav_carddav.sql")),
+    ("004_backup_snapshots", include_str!("../../../migrations/004_backup_snapshots.sql")),
+    ("005_push_subscriptions", include_str!("../../../migrations/005_push_subscriptions.sql")),
+    ("006_app_password_lookup", include_str!("../../../migrations/006_app_password_lookup.sql")),
+    ("007_drop_fts_tables", include_str!("../../../migrations/007_drop_fts_tables.sql")),
+];
 
-    if !migrations_dir.exists() {
-        return Ok(migrations);
-    }
-
-    let mut entries: Vec<_> = std::fs::read_dir(migrations_dir)?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "sql"))
-        .collect();
-
-    entries.sort_by_key(|e| e.file_name());
-
-    for entry in entries {
-        let filename = entry.file_name().to_string_lossy().to_string();
-        // Parse version from filename like "001_initial.sql"
-        let version: i64 = filename
-            .split('_')
-            .next()
-            .and_then(|v| v.parse().ok())
-            .ok_or_else(|| anyhow::anyhow!("Invalid migration filename: {}", filename))?;
-
-        let name = filename.trim_end_matches(".sql").to_string();
-        let sql = std::fs::read_to_string(entry.path())?;
-        let checksum = compute_checksum(&sql);
-
-        migrations.push(Migration {
-            version,
-            name,
-            sql,
-            checksum,
-        });
-    }
-
-    Ok(migrations)
+/// Load embedded migrations (compiled into the binary).
+fn load_embedded_migrations() -> Vec<Migration> {
+    EMBEDDED_MIGRATIONS
+        .iter()
+        .map(|(name, sql)| {
+            let version: i64 = name
+                .split('_')
+                .next()
+                .and_then(|v| v.parse().ok())
+                .expect("embedded migration has invalid name");
+            Migration {
+                version,
+                name: name.to_string(),
+                sql: sql.to_string(),
+                checksum: compute_checksum(sql),
+            }
+        })
+        .collect()
 }
 
-/// Run all pending migrations from the migrations directory
-pub fn run_migrations(conn: &Connection, migrations_dir: &Path) -> anyhow::Result<()> {
+/// Run all pending migrations (embedded at compile time).
+///
+/// The `_migrations_dir` parameter is kept for backward compatibility but ignored;
+/// migrations are compiled into the binary and always available.
+pub fn run_migrations(conn: &Connection, _migrations_dir: &Path) -> anyhow::Result<()> {
+    run_embedded_migrations(conn)
+}
+
+/// Run all pending embedded migrations.
+pub fn run_embedded_migrations(conn: &Connection) -> anyhow::Result<()> {
     // Create migrations tracking table
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS migrations (
@@ -127,7 +128,7 @@ pub fn run_migrations(conn: &Connection, migrations_dir: &Path) -> anyhow::Resul
         );",
     )?;
 
-    let migrations = load_migrations(migrations_dir)?;
+    let migrations = load_embedded_migrations();
 
     for migration in &migrations {
         // Check if already applied

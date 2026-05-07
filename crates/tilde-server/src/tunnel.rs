@@ -208,17 +208,44 @@ pub fn spawn_tunnel_supervisor(
                         });
                     }
 
-                    // Wait for exit
-                    match child.wait().await {
-                        Ok(exit_status) => {
-                            warn!(exit_code = ?exit_status.code(), "Tunnel (newt) exited");
+                    // Wait for exit, but periodically check for a zombie tunnel
+                    // (process alive but connection dead — ping failures accumulating)
+                    const PING_FAILURE_KILL_THRESHOLD: u64 = 10;
+                    const HEALTH_CHECK_INTERVAL: std::time::Duration =
+                        std::time::Duration::from_secs(30);
+
+                    let exited = loop {
+                        tokio::select! {
+                            result = child.wait() => {
+                                match result {
+                                    Ok(exit_status) => {
+                                        warn!(exit_code = ?exit_status.code(), "Tunnel (newt) exited");
+                                    }
+                                    Err(e) => {
+                                        error!(error = %e, "Failed to wait on tunnel process");
+                                    }
+                                }
+                                break true;
+                            }
+                            _ = tokio::time::sleep(HEALTH_CHECK_INTERVAL) => {
+                                let failures = status_clone
+                                    .consecutive_ping_failures
+                                    .load(Ordering::Relaxed);
+                                if failures >= PING_FAILURE_KILL_THRESHOLD {
+                                    warn!(
+                                        consecutive_failures = failures,
+                                        "Tunnel unresponsive — killing newt for restart"
+                                    );
+                                    let _ = child.kill().await;
+                                    break false;
+                                }
+                            }
                         }
-                        Err(e) => {
-                            error!(error = %e, "Failed to wait on tunnel process");
-                        }
-                    }
+                    };
+                    _ = exited;
                     status_clone.running.store(false, Ordering::Relaxed);
                     status_clone.connected.store(false, Ordering::Relaxed);
+                    status_clone.consecutive_ping_failures.store(0, Ordering::Relaxed);
                 }
                 Err(e) => {
                     error!(

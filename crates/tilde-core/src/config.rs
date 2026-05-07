@@ -10,6 +10,10 @@ use tracing::info;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
+    /// Explicit data directory. If set in config or via TILDE_DATA_DIR env var,
+    /// takes precedence over XDG/platform defaults.
+    #[serde(default)]
+    pub data_dir_override: Option<String>,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
@@ -64,6 +68,7 @@ impl Config {
             match key_lower.as_str() {
                 "hostname" => "server.hostname".into(),
                 "acme_email" => "tls.acme_email".into(),
+                "data_dir" => "data_dir_override".into(),
                 _ => key_lower.replace("__", ".").into(),
             }
         }));
@@ -74,11 +79,20 @@ impl Config {
 
     /// Resolve data directory based on mode (systemd vs user)
     pub fn data_dir(&self) -> PathBuf {
+        // 1. Systemd StateDirectory (highest priority in service mode)
         if let Ok(state_dir) = std::env::var("STATE_DIRECTORY") {
-            PathBuf::from(state_dir)
-        } else if let Ok(dir) = std::env::var("TILDE_DATA_DIR") {
-            PathBuf::from(dir)
-        } else if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            return PathBuf::from(state_dir);
+        }
+        // 2. Config file field or TILDE_DATA_DIR env var (mapped via figment)
+        if let Some(ref dir) = self.data_dir_override {
+            return PathBuf::from(dir);
+        }
+        // 3. Env var directly (in case figment mapping didn't fire)
+        if let Ok(dir) = std::env::var("TILDE_DATA_DIR") {
+            return PathBuf::from(dir);
+        }
+        // 4. XDG fallback
+        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
             PathBuf::from(xdg).join("tilde")
         } else if let Some(data_dir) =
             directories::ProjectDirs::from("", "", "tilde").map(|d| d.data_dir().to_path_buf())

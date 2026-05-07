@@ -4,6 +4,7 @@ use tilde_core::{auth, config::Config, db};
 pub async fn run_auth(config_path: Option<&str>, command: AuthCommands) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
+    db::run_embedded_migrations(&conn)?;
 
     match command {
         AuthCommands::AppPassword { command } => match command {

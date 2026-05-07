@@ -19,8 +19,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     // Run migrations on a single connection first, then create the pool
     {
         let conn = db::init_db(db_path.to_str().unwrap())?;
-        let migrations_dir = tilde_cli::find_migrations_dir();
-        db::run_migrations(&conn, &migrations_dir)?;
+        db::run_embedded_migrations(&conn)?;
     }
 
     let pool: DbPool = db::init_pool(db_path.to_str().unwrap())?;
