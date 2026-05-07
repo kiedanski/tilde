@@ -462,11 +462,8 @@ pub fn create_thumbnail_symlink(
         return Ok(());
     }
 
-    // Build the thumbnail source path
-    let thumb_source = cache_dir
-        .join("thumbnails")
-        .join(photo_id)
-        .join("1920.webp");
+    // Build the thumbnail source path (256px for browseable grid)
+    let thumb_source = cache_dir.join("thumbnails").join(photo_id).join("256.webp");
     if !thumb_source.exists() {
         return Ok(()); // No thumbnail generated yet
     }
