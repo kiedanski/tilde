@@ -4,7 +4,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Connection pool type for the application.
 /// Each pooled connection is configured with the same PRAGMAs as `init_db`.
@@ -183,7 +183,32 @@ pub fn run_embedded_migrations(conn: &Connection) -> anyhow::Result<()> {
         // Apply migration within a transaction so partial failure doesn't wedge the DB
         info!(version = migration.version, name = %migration.name, "Applying migration");
         let tx = conn.unchecked_transaction()?;
-        tx.execute_batch(&migration.sql)?;
+        match tx.execute_batch(&migration.sql) {
+            Ok(()) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                // Schema was already partially applied (e.g. column added manually).
+                // Safe to record as applied and move on.
+                if msg.contains("duplicate column name") || msg.contains("already exists") {
+                    tx.rollback().ok();
+                    warn!(
+                        version = migration.version,
+                        name = %migration.name,
+                        error = %msg,
+                        "Migration schema already present — recording as applied"
+                    );
+                    let now = jiff::Zoned::now()
+                        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                        .to_string();
+                    conn.execute(
+                        "INSERT INTO migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+                        rusqlite::params![migration.version, migration.name, now, migration.checksum],
+                    )?;
+                    continue;
+                }
+                return Err(e.into());
+            }
+        }
 
         // Record migration inside the same transaction
         let now = jiff::Zoned::now()
