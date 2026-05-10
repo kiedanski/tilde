@@ -29,6 +29,9 @@ pub struct DavState {
     pub scope_prefix: String,
     /// Photo organization pattern (only used by photos mount)
     pub organization_pattern: String,
+    /// Extra directories that symlinks are allowed to resolve into.
+    /// Used by the photos mount to allow thumbnail symlinks pointing to the cache dir.
+    pub allowed_symlink_targets: Vec<PathBuf>,
 }
 
 pub type SharedDavState = Arc<DavState>;
@@ -81,16 +84,29 @@ fn is_safe_path(rel_path: &str) -> bool {
 
 /// Ensure a disk path resolves to within the allowed root directory.
 /// Prevents symlink escape by canonicalizing and checking the prefix.
-fn ensure_within_root(root: &std::path::Path, target: &std::path::Path) -> bool {
+fn ensure_within_root(
+    root: &std::path::Path,
+    target: &std::path::Path,
+    allowed_extras: &[PathBuf],
+) -> bool {
     let canon_root = match root.canonicalize() {
         Ok(p) => p,
         Err(_) => return false,
     };
 
+    let check = |resolved: &std::path::Path| -> bool {
+        if resolved.starts_with(&canon_root) {
+            return true;
+        }
+        allowed_extras
+            .iter()
+            .any(|extra| extra.canonicalize().map_or(false, |ce| resolved.starts_with(&ce)))
+    };
+
     // If target exists, canonicalize it directly (follows symlinks)
     if target.exists() {
         return match target.canonicalize() {
-            Ok(p) => p.starts_with(&canon_root),
+            Ok(p) => check(&p),
             Err(_) => false,
         };
     }
@@ -103,7 +119,7 @@ fn ensure_within_root(root: &std::path::Path, target: &std::path::Path) -> bool 
         }
     }
     match ancestor.canonicalize() {
-        Ok(p) => p.starts_with(&canon_root),
+        Ok(p) => check(&p),
         Err(_) => false,
     }
 }
@@ -210,7 +226,7 @@ async fn handle_get(state: &SharedDavState, rel_path: &str, head_only: bool) -> 
     }
 
     // Symlink escape check — canonicalize and verify within root
-    if !ensure_within_root(&state.files_root, &disk_path) {
+    if !ensure_within_root(&state.files_root, &disk_path, &state.allowed_symlink_targets) {
         warn!(path = rel_path, "Symlink escape blocked on GET");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -286,7 +302,7 @@ async fn handle_put(
     let disk_path = state.files_root.join(rel_path);
 
     // Symlink escape check
-    if !ensure_within_root(&state.files_root, &disk_path) {
+    if !ensure_within_root(&state.files_root, &disk_path, &state.allowed_symlink_targets) {
         warn!(path = rel_path, "Symlink escape blocked on PUT");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -562,7 +578,7 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
     }
 
     // Symlink escape check
-    if !ensure_within_root(&state.files_root, &disk_path) {
+    if !ensure_within_root(&state.files_root, &disk_path, &state.allowed_symlink_targets) {
         warn!(path = rel_path, "Symlink escape blocked on DELETE");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -675,7 +691,7 @@ async fn handle_mkcol(state: &SharedDavState, rel_path: &str) -> Response {
     let disk_path = state.files_root.join(rel_path);
 
     // Symlink escape check (checks nearest existing ancestor)
-    if !ensure_within_root(&state.files_root, &disk_path) {
+    if !ensure_within_root(&state.files_root, &disk_path, &state.allowed_symlink_targets) {
         warn!(path = rel_path, "Symlink escape blocked on MKCOL");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -739,11 +755,11 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
     }
 
     // Symlink escape check on both source and destination
-    if !ensure_within_root(&state.files_root, &src_disk) {
+    if !ensure_within_root(&state.files_root, &src_disk, &state.allowed_symlink_targets) {
         warn!(path = rel_path, "Symlink escape blocked on MOVE source");
         return StatusCode::FORBIDDEN.into_response();
     }
-    if !ensure_within_root(&state.files_root, &dst_disk) {
+    if !ensure_within_root(&state.files_root, &dst_disk, &state.allowed_symlink_targets) {
         warn!(dest = %dest, "Symlink escape blocked on MOVE destination");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -860,11 +876,11 @@ async fn handle_copy(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
     }
 
     // Symlink escape check on both source and destination
-    if !ensure_within_root(&state.files_root, &src_disk) {
+    if !ensure_within_root(&state.files_root, &src_disk, &state.allowed_symlink_targets) {
         warn!(path = rel_path, "Symlink escape blocked on COPY source");
         return StatusCode::FORBIDDEN.into_response();
     }
-    if !ensure_within_root(&state.files_root, &dst_disk) {
+    if !ensure_within_root(&state.files_root, &dst_disk, &state.allowed_symlink_targets) {
         warn!(dest = %dest, "Symlink escape blocked on COPY destination");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -949,7 +965,7 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
     }
 
     // Symlink escape check
-    if disk_path.exists() && !ensure_within_root(&state.files_root, &disk_path) {
+    if disk_path.exists() && !ensure_within_root(&state.files_root, &disk_path, &state.allowed_symlink_targets) {
         warn!(path = rel_path, "Symlink escape blocked on PROPFIND");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -1487,7 +1503,7 @@ async fn uploads_handler(
             let dest_path = state.files_root.join(&dest);
 
             // Symlink escape check on destination
-            if !ensure_within_root(&state.files_root, &dest_path) {
+            if !ensure_within_root(&state.files_root, &dest_path, &state.allowed_symlink_targets) {
                 warn!(dest = %dest, "Symlink escape blocked on chunked upload destination");
                 return StatusCode::FORBIDDEN.into_response();
             }
@@ -1952,7 +1968,7 @@ mod tests {
         let file = root.join("hello.txt");
         fs::write(&file, "hi").unwrap();
 
-        assert!(ensure_within_root(root, &file));
+        assert!(ensure_within_root(root, &file, &[]));
     }
 
     #[test]
@@ -1964,7 +1980,7 @@ mod tests {
         let file = dir.join("file.txt");
         fs::write(&file, "nested").unwrap();
 
-        assert!(ensure_within_root(root, &file));
+        assert!(ensure_within_root(root, &file, &[]));
     }
 
     #[test]
@@ -1974,7 +1990,7 @@ mod tests {
         // Target doesn't exist but ancestor does -- should still be within root
         let target = root.join("new_file.txt");
 
-        assert!(ensure_within_root(root, &target));
+        assert!(ensure_within_root(root, &target, &[]));
     }
 
     #[test]
@@ -1985,7 +2001,7 @@ mod tests {
         // Try to escape via ..
         let target = root.join("../../../etc/passwd");
 
-        assert!(!ensure_within_root(&root, &target));
+        assert!(!ensure_within_root(&root, &target, &[]));
     }
 
     // ─── get_destination ──────────────────────────────────────────────────────
@@ -2051,6 +2067,31 @@ mod tests {
         unix_fs::symlink(&outside, &link).unwrap();
 
         let target = link.join("secret.txt");
-        assert!(!ensure_within_root(&root, &target));
+        assert!(!ensure_within_root(&root, &target, &[]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_within_root_allows_symlink_to_allowlisted_dir() {
+        use std::os::unix::fs as unix_fs;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("photos");
+        fs::create_dir_all(&root).unwrap();
+
+        // Simulate cache dir outside root with a thumbnail
+        let cache = tmp.path().join("cache");
+        let thumb_dir = cache.join("thumbnails").join("abc123");
+        fs::create_dir_all(&thumb_dir).unwrap();
+        fs::write(thumb_dir.join("256.webp"), "thumb").unwrap();
+
+        // Create symlink inside root pointing to cache
+        let link = root.join("thumb.webp");
+        unix_fs::symlink(thumb_dir.join("256.webp"), &link).unwrap();
+
+        // Without allowlist: blocked
+        assert!(!ensure_within_root(&root, &link, &[]));
+        // With allowlist: allowed
+        assert!(ensure_within_root(&root, &link, &[cache.clone()]));
     }
 }

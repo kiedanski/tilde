@@ -60,6 +60,7 @@ pub fn build_router(
         db_path_prefix: "notes/".to_string(),
         scope_prefix: "/dav/".to_string(),
         organization_pattern: String::new(),
+        allowed_symlink_targets: vec![],
     });
     let notes_router = tilde_dav::build_dav_router(notes_state);
 
@@ -69,6 +70,7 @@ pub fn build_router(
         .parent()
         .map(|p| p.join("photos"))
         .unwrap_or_else(|| dav_state.files_root.join("../photos"));
+    let cache_thumbnails_dir = state.config().cache_dir().join("thumbnails");
     let photos_state: tilde_dav::SharedDavState = Arc::new(tilde_dav::DavState {
         db: dav_state.db.clone(),
         files_root: photos_root,
@@ -76,6 +78,7 @@ pub fn build_router(
         db_path_prefix: "photos/".to_string(),
         scope_prefix: "/dav/".to_string(),
         organization_pattern: state.config().photos.organization_pattern.clone(),
+        allowed_symlink_targets: vec![cache_thumbnails_dir],
     });
     let photos_router = tilde_dav::build_dav_router(photos_state);
 
