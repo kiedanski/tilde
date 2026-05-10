@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tilde_core::{
@@ -459,6 +460,10 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
 
     let app = build_router(state, dav_state, caldav_state, carddav_state);
 
+    // Flag: if set, the process will exec() itself after graceful shutdown
+    // instead of exiting. Used by SIGUSR2 for zero-downtime upgrades.
+    let should_reexec = Arc::new(AtomicBool::new(false));
+
     // Set up SIGHUP handler for config hot-reload
     #[cfg(unix)]
     {
@@ -476,9 +481,6 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 info!("Received SIGHUP, reloading configuration...");
                 match Config::load(config_path_for_reload.as_deref()) {
                     Ok(new_config) => {
-                        // SIGHUP reload: log new config values but note that
-                        // AppState.config is by-value — most changes require restart.
-                        // TODO: use ArcSwap<Config> to make reload actually effective
                         let level = &new_config.logging.level;
                         warn!(
                             level = %level,
@@ -491,6 +493,25 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     }
                 }
             }
+        });
+    }
+
+    // Set up SIGUSR2 handler for zero-downtime upgrade (re-exec)
+    #[cfg(unix)]
+    {
+        let token = shutdown.clone();
+        let reexec_flag = should_reexec.clone();
+        tasks.spawn(async move {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut sigusr2 =
+                signal(SignalKind::user_defined2()).expect("Failed to register SIGUSR2 handler");
+            tokio::select! {
+                _ = token.cancelled() => return,
+                _ = sigusr2.recv() => {}
+            }
+            info!("Received SIGUSR2 — initiating zero-downtime upgrade");
+            reexec_flag.store(true, Ordering::SeqCst);
+            token.cancel();
         });
     }
 
@@ -651,5 +672,48 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     }
     info!("Graceful shutdown complete");
 
+    // If SIGUSR2 triggered the shutdown, re-exec the new binary
+    if should_reexec.load(Ordering::SeqCst) {
+        info!("Re-executing with upgraded binary...");
+        reexec();
+    }
+
     Ok(())
+}
+
+/// Replace the current process with a fresh exec of the same binary + args.
+/// Same PID — systemd doesn't notice, zero downtime.
+#[cfg(unix)]
+fn reexec() -> ! {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let exe = std::env::current_exe().expect("cannot determine current exe path");
+    let args: Vec<CString> = std::env::args()
+        .map(|a| CString::new(a).expect("arg contains null byte"))
+        .collect();
+
+    // Notify systemd we're reloading (keeps watchdog happy during exec gap)
+    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Reloading]);
+
+    let exe_c = CString::new(exe.as_os_str().as_bytes()).expect("exe path contains null byte");
+    let arg_ptrs: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
+
+    // execv expects a null-terminated array
+    let mut argv = arg_ptrs;
+    argv.push(std::ptr::null());
+
+    unsafe {
+        libc::execv(exe_c.as_ptr(), argv.as_ptr());
+    }
+    // If execv returns, it failed
+    let err = std::io::Error::last_os_error();
+    eprintln!("execv failed: {}", err);
+    std::process::exit(1);
+}
+
+#[cfg(not(unix))]
+fn reexec() -> ! {
+    eprintln!("Re-exec is only supported on Unix");
+    std::process::exit(1);
 }

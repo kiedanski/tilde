@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use tilde_cli::UpdateCommands;
 use tilde_core::config::Config;
 
@@ -9,63 +10,7 @@ pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> a
             let current_version = env!("CARGO_PKG_VERSION");
             println!("Current version: {}", current_version);
 
-            let manifest_url = if !config.updates.manifest_mirror.is_empty() {
-                println!("Using manifest mirror: {}", config.updates.manifest_mirror);
-                config.updates.manifest_mirror.clone()
-            } else if !config.updates.manifest_url.is_empty() {
-                config.updates.manifest_url.clone()
-            } else {
-                println!(
-                    "No manifest URL configured. Set updates.manifest_url or updates.manifest_mirror in config."
-                );
-                println!("Update check: no updates available (manifest not configured)");
-                return Ok(());
-            };
-
-            println!("Checking for updates from: {}", manifest_url);
-
-            let client = reqwest::Client::new();
-
-            // Fetch manifest
-            let manifest_text = client
-                .get(&manifest_url)
-                .send()
-                .await?
-                .error_for_status()?
-                .text()
-                .await?;
-
-            // Fetch signature
-            let sig_url = format!("{}.minisig", manifest_url);
-            let sig_text = client
-                .get(&sig_url)
-                .send()
-                .await?
-                .error_for_status()?
-                .text()
-                .await?;
-
-            // Verify signature with minisign
-            if let Some(ref pubkey_str) = config.updates.public_key {
-                let pk = minisign_verify::PublicKey::from_base64(pubkey_str)
-                    .map_err(|e| anyhow::anyhow!("Invalid minisign public key: {}", e))?;
-                let sig = minisign_verify::Signature::decode(&sig_text)
-                    .map_err(|e| anyhow::anyhow!("Invalid minisign signature: {}", e))?;
-                pk.verify(manifest_text.as_bytes(), &sig, false)
-                    .map_err(|e| {
-                        anyhow::anyhow!("Manifest signature verification failed: {}", e)
-                    })?;
-                println!("Manifest signature verified.");
-            } else {
-                println!(
-                    "Warning: no updates.public_key configured, skipping signature verification"
-                );
-            }
-
-            // Parse manifest JSON
-            let manifest: serde_json::Value = serde_json::from_str(&manifest_text)
-                .map_err(|e| anyhow::anyhow!("Invalid manifest JSON: {}", e))?;
-
+            let manifest = fetch_manifest(&config).await?;
             let latest_version = manifest
                 .get("version")
                 .and_then(|v| v.as_str())
@@ -78,104 +23,267 @@ pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> a
                 if let Some(notes) = manifest.get("release_notes").and_then(|v| v.as_str()) {
                     println!("Release notes: {}", notes);
                 }
-                println!("Run `tilde update download` to fetch the new version.");
+                println!("Run `tilde update apply` to upgrade in-place.");
             } else {
                 println!("You are running the latest version.");
             }
         }
         UpdateCommands::Download => {
-            let current_version = env!("CARGO_PKG_VERSION");
-
-            let manifest_url = if !config.updates.manifest_mirror.is_empty() {
-                config.updates.manifest_mirror.clone()
-            } else if !config.updates.manifest_url.is_empty() {
-                config.updates.manifest_url.clone()
-            } else {
-                anyhow::bail!("No manifest URL configured. Set updates.manifest_url in config.");
-            };
-
-            let client = reqwest::Client::new();
-
-            // Fetch and verify manifest
-            let manifest_text = client
-                .get(&manifest_url)
-                .send()
-                .await?
-                .error_for_status()?
-                .text()
-                .await?;
-
-            if let Some(ref pubkey_str) = config.updates.public_key {
-                let sig_url = format!("{}.minisig", manifest_url);
-                let sig_text = client
-                    .get(&sig_url)
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .text()
-                    .await?;
-                let pk = minisign_verify::PublicKey::from_base64(pubkey_str)
-                    .map_err(|e| anyhow::anyhow!("Invalid minisign public key: {}", e))?;
-                let sig = minisign_verify::Signature::decode(&sig_text)
-                    .map_err(|e| anyhow::anyhow!("Invalid minisign signature: {}", e))?;
-                pk.verify(manifest_text.as_bytes(), &sig, false)
-                    .map_err(|e| {
-                        anyhow::anyhow!("Manifest signature verification failed: {}", e)
-                    })?;
-            }
-
-            let manifest: serde_json::Value = serde_json::from_str(&manifest_text)?;
-            let latest_version = manifest
-                .get("version")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Manifest missing 'version' field"))?;
-
-            if !version_is_newer(current_version, latest_version) {
-                println!("Already running latest version ({}).", current_version);
-                return Ok(());
-            }
-
-            // Determine download URL from manifest
-            let arch = std::env::consts::ARCH;
-            let download_key = format!("download_{}", arch);
-            let download_url = manifest
-                .get(&download_key)
-                .or_else(|| manifest.get("download_url"))
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("No download URL found in manifest for arch '{}'", arch)
-                })?;
-
-            println!(
-                "Downloading tilde {} from {}...",
-                latest_version, download_url
-            );
-
-            let response = client.get(download_url).send().await?.error_for_status()?;
-            let bytes = response.bytes().await?;
-
-            // Write to a staging path (do NOT auto-install)
-            let data_dir = config.data_dir();
-            let staging_path = data_dir.join(format!("tilde-{}", latest_version));
-            std::fs::write(&staging_path, &bytes)?;
-
-            // Make executable on Unix
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&staging_path)?.permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&staging_path, perms)?;
-            }
-
+            let staging_path = download_latest(&config).await?;
             println!("Downloaded to: {}", staging_path.display());
-            println!("To install: replace the current binary and restart the service.");
+            println!("To install manually:");
             println!("  sudo cp {} $(which tilde)", staging_path.display());
             println!("  sudo systemctl restart tilde");
+        }
+        UpdateCommands::Apply => {
+            let current_version = env!("CARGO_PKG_VERSION");
+            println!("Current version: {}", current_version);
+
+            // Download new binary
+            let staging_path = download_latest(&config).await?;
+
+            // Validate the new binary
+            println!("Validating new binary...");
+            let output = std::process::Command::new(&staging_path)
+                .arg("--version")
+                .output();
+            match output {
+                Ok(o) if o.status.success() => {
+                    let version_out = String::from_utf8_lossy(&o.stdout);
+                    println!("New binary: {}", version_out.trim());
+                }
+                Ok(o) => {
+                    let _ = std::fs::remove_file(&staging_path);
+                    anyhow::bail!(
+                        "New binary failed validation (exit {})",
+                        o.status.code().unwrap_or(-1)
+                    );
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&staging_path);
+                    anyhow::bail!("New binary is not executable: {}", e);
+                }
+            }
+
+            // Atomic replace: rename staging binary over current exe
+            let current_exe = std::env::current_exe()?;
+            println!(
+                "Replacing {} → {}",
+                staging_path.display(),
+                current_exe.display()
+            );
+            atomic_replace(&staging_path, &current_exe)?;
+            println!("Binary replaced successfully.");
+
+            // Signal the running server to re-exec
+            match find_server_pid() {
+                Some(pid) => {
+                    println!("Sending upgrade signal to tilde server (PID {})...", pid);
+                    #[cfg(unix)]
+                    {
+                        let ret = unsafe { libc::kill(pid, libc::SIGUSR2) };
+                        if ret != 0 {
+                            let err = std::io::Error::last_os_error();
+                            anyhow::bail!("Failed to send SIGUSR2 to PID {}: {}", pid, err);
+                        }
+                    }
+                    println!("Server will re-exec with the new binary. Check logs:");
+                    println!("  journalctl -u tilde -f");
+                }
+                None => {
+                    println!("No running tilde server found.");
+                    println!("Start it with: sudo systemctl start tilde");
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+// ── Shared helpers ──────────────────────────────────────────────────────────
+
+/// Fetch and verify the update manifest.
+async fn fetch_manifest(config: &Config) -> anyhow::Result<serde_json::Value> {
+    let manifest_url = if !config.updates.manifest_mirror.is_empty() {
+        println!("Using manifest mirror: {}", config.updates.manifest_mirror);
+        config.updates.manifest_mirror.clone()
+    } else if !config.updates.manifest_url.is_empty() {
+        config.updates.manifest_url.clone()
+    } else {
+        anyhow::bail!("No manifest URL configured. Set updates.manifest_url in config.");
+    };
+
+    println!("Checking for updates from: {}", manifest_url);
+    let client = reqwest::Client::new();
+
+    let manifest_text = client
+        .get(&manifest_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+
+    // Verify signature if public key is configured
+    let sig_url = format!("{}.minisig", manifest_url);
+    let sig_text = client
+        .get(&sig_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+
+    if let Some(ref pubkey_str) = config.updates.public_key {
+        let pk = minisign_verify::PublicKey::from_base64(pubkey_str)
+            .map_err(|e| anyhow::anyhow!("Invalid minisign public key: {}", e))?;
+        let sig = minisign_verify::Signature::decode(&sig_text)
+            .map_err(|e| anyhow::anyhow!("Invalid minisign signature: {}", e))?;
+        pk.verify(manifest_text.as_bytes(), &sig, false)
+            .map_err(|e| anyhow::anyhow!("Manifest signature verification failed: {}", e))?;
+        println!("Manifest signature verified.");
+    } else {
+        println!("Warning: no updates.public_key configured, skipping signature verification");
+    }
+
+    serde_json::from_str(&manifest_text)
+        .map_err(|e| anyhow::anyhow!("Invalid manifest JSON: {}", e))
+}
+
+/// Download the latest binary to a staging path. Returns the staging path.
+async fn download_latest(config: &Config) -> anyhow::Result<PathBuf> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let manifest = fetch_manifest(config).await?;
+
+    let latest_version = manifest
+        .get("version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Manifest missing 'version' field"))?;
+
+    if !version_is_newer(current_version, latest_version) {
+        anyhow::bail!("Already running latest version ({}).", current_version);
+    }
+
+    let arch = std::env::consts::ARCH;
+    let download_key = format!("download_{}", arch);
+    let download_url = manifest
+        .get(&download_key)
+        .or_else(|| manifest.get("download_url"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("No download URL found in manifest for arch '{}'", arch))?;
+
+    println!(
+        "Downloading tilde {} from {}...",
+        latest_version, download_url
+    );
+
+    let client = reqwest::Client::new();
+    let response = client.get(download_url).send().await?.error_for_status()?;
+    let bytes = response.bytes().await?;
+
+    let data_dir = config.data_dir();
+    let staging_path = data_dir.join(format!("tilde-{}", latest_version));
+    std::fs::write(&staging_path, &bytes)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&staging_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&staging_path, perms)?;
+    }
+
+    Ok(staging_path)
+}
+
+/// Atomically replace `dst` with `src`.
+///
+/// Tries `rename` first (instant, same filesystem). Falls back to
+/// copy-to-temp + rename for cross-filesystem moves.
+fn atomic_replace(src: &PathBuf, dst: &PathBuf) -> anyhow::Result<()> {
+    // Try direct rename (only works on same filesystem)
+    if std::fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+
+    // Cross-filesystem: copy src next to dst, then rename
+    let tmp = dst.with_extension("new");
+    std::fs::copy(src, &tmp)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&tmp)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&tmp, perms)?;
+    }
+
+    std::fs::rename(&tmp, dst).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        anyhow::anyhow!("Failed to rename into place: {}", e)
+    })?;
+
+    let _ = std::fs::remove_file(src);
+    Ok(())
+}
+
+/// Find the PID of a running `tilde serve` process.
+fn find_server_pid() -> Option<i32> {
+    // Try systemd first
+    if let Ok(output) = std::process::Command::new("systemctl")
+        .args(["show", "tilde", "-p", "MainPID", "--value"])
+        .output()
+    {
+        if output.status.success() {
+            let pid_str = String::from_utf8_lossy(&output.stdout);
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                if pid > 0 {
+                    return Some(pid);
+                }
+            }
+        }
+    }
+
+    // Fallback: pgrep
+    if let Ok(output) = std::process::Command::new("pgrep")
+        .args(["-f", "tilde serve"])
+        .output()
+    {
+        if output.status.success() {
+            let pid_str = String::from_utf8_lossy(&output.stdout);
+            // Take the first PID (skip our own process)
+            let my_pid = std::process::id();
+            for line in pid_str.lines() {
+                if let Ok(pid) = line.trim().parse::<i32>() {
+                    if pid > 0 && pid as u32 != my_pid {
+                        return Some(pid);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Compare two semver-like version strings. Returns true if `latest` is newer than `current`.
+fn version_is_newer(current: &str, latest: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
+    let c = parse(current);
+    let l = parse(latest);
+    l > c
+}
+
+fn nix_is_root() -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::geteuid() == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 pub async fn run_install() -> anyhow::Result<()> {
@@ -254,27 +362,6 @@ pub async fn run_install() -> anyhow::Result<()> {
     println!("  journalctl -u tilde -f               — Follow logs");
 
     Ok(())
-}
-
-// --- Private helper functions ---
-
-/// Compare two semver-like version strings. Returns true if `latest` is newer than `current`.
-fn version_is_newer(current: &str, latest: &str) -> bool {
-    let parse = |v: &str| -> Vec<u64> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
-    let c = parse(current);
-    let l = parse(latest);
-    l > c
-}
-
-fn nix_is_root() -> bool {
-    #[cfg(unix)]
-    {
-        unsafe { libc::geteuid() == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
 }
 
 fn generate_systemd_unit(binary_path: &str) -> String {
@@ -356,5 +443,14 @@ mod tests {
         let unit1 = generate_systemd_unit("/usr/bin/tilde");
         let unit2 = generate_systemd_unit("/usr/bin/tilde");
         assert_eq!(unit1, unit2);
+    }
+
+    #[test]
+    fn test_version_is_newer() {
+        assert!(version_is_newer("0.1.0", "0.2.0"));
+        assert!(version_is_newer("0.1.0", "1.0.0"));
+        assert!(version_is_newer("0.1.0", "0.1.1"));
+        assert!(!version_is_newer("0.2.0", "0.1.0"));
+        assert!(!version_is_newer("0.1.0", "0.1.0"));
     }
 }

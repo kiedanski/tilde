@@ -458,8 +458,12 @@ pub enum WebhookTokenCommands {
 
 #[derive(clap::Subcommand)]
 pub enum UpdateCommands {
+    /// Check if a newer version is available
     Check,
+    /// Download the latest version to a staging path
     Download,
+    /// Download, replace binary, and signal the running server to re-exec
+    Apply,
 }
 
 /// Find the migrations directory
