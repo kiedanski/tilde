@@ -228,8 +228,20 @@ pub fn run_embedded_migrations(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Get list of applied migrations
+/// Get list of applied migrations.
+/// Returns an empty list if the migrations table doesn't exist yet
+/// (database exists but `tilde init` / `tilde serve` hasn't run).
 pub fn get_applied_migrations(conn: &Connection) -> anyhow::Result<Vec<(i64, String, String)>> {
+    // Check if the migrations table exists before querying it
+    let table_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='migrations'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(Vec::new());
+    }
+
     let mut stmt =
         conn.prepare("SELECT version, name, applied_at FROM migrations ORDER BY version")?;
     let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
