@@ -10,19 +10,11 @@ pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> a
             let current_version = env!("CARGO_PKG_VERSION");
             println!("Current version: {}", current_version);
 
-            let manifest = fetch_manifest(&config).await?;
-            let latest_version = manifest
-                .get("version")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Manifest missing 'version' field"))?;
+            let info = check_latest(&config).await?;
+            println!("Latest version: {}", info.version);
 
-            println!("Latest version: {}", latest_version);
-
-            if version_is_newer(current_version, latest_version) {
-                println!("Update available: {} → {}", current_version, latest_version);
-                if let Some(notes) = manifest.get("release_notes").and_then(|v| v.as_str()) {
-                    println!("Release notes: {}", notes);
-                }
+            if version_is_newer(current_version, &info.version) {
+                println!("Update available: {} → {}", current_version, info.version);
                 println!("Run `tilde update apply` to upgrade in-place.");
             } else {
                 println!("You are running the latest version.");
@@ -103,15 +95,34 @@ pub async fn run_update(config_path: Option<&str>, command: UpdateCommands) -> a
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
-/// Fetch and verify the update manifest.
-async fn fetch_manifest(config: &Config) -> anyhow::Result<serde_json::Value> {
+/// Resolved update info: version + download URL.
+struct UpdateInfo {
+    version: String,
+    download_url: String,
+}
+
+/// Check for the latest version, trying manifest first, then GitHub Releases.
+async fn check_latest(config: &Config) -> anyhow::Result<UpdateInfo> {
+    // Try manifest-based update if configured
+    if !config.updates.manifest_mirror.is_empty() || !config.updates.manifest_url.is_empty() {
+        return check_latest_manifest(config).await;
+    }
+
+    // Fall back to GitHub Releases
+    if !config.updates.github_repo.is_empty() {
+        return check_latest_github(&config.updates.github_repo).await;
+    }
+
+    anyhow::bail!("No update source configured. Set updates.github_repo or updates.manifest_url.")
+}
+
+/// Check latest version from a signed manifest.
+async fn check_latest_manifest(config: &Config) -> anyhow::Result<UpdateInfo> {
     let manifest_url = if !config.updates.manifest_mirror.is_empty() {
         println!("Using manifest mirror: {}", config.updates.manifest_mirror);
         config.updates.manifest_mirror.clone()
-    } else if !config.updates.manifest_url.is_empty() {
-        config.updates.manifest_url.clone()
     } else {
-        anyhow::bail!("No manifest URL configured. Set updates.manifest_url in config.");
+        config.updates.manifest_url.clone()
     };
 
     println!("Checking for updates from: {}", manifest_url);
@@ -126,16 +137,15 @@ async fn fetch_manifest(config: &Config) -> anyhow::Result<serde_json::Value> {
         .await?;
 
     // Verify signature if public key is configured
-    let sig_url = format!("{}.minisig", manifest_url);
-    let sig_text = client
-        .get(&sig_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
-
     if let Some(ref pubkey_str) = config.updates.public_key {
+        let sig_url = format!("{}.minisig", manifest_url);
+        let sig_text = client
+            .get(&sig_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
         let pk = minisign_verify::PublicKey::from_base64(pubkey_str)
             .map_err(|e| anyhow::anyhow!("Invalid minisign public key: {}", e))?;
         let sig = minisign_verify::Signature::decode(&sig_text)
@@ -143,27 +153,14 @@ async fn fetch_manifest(config: &Config) -> anyhow::Result<serde_json::Value> {
         pk.verify(manifest_text.as_bytes(), &sig, false)
             .map_err(|e| anyhow::anyhow!("Manifest signature verification failed: {}", e))?;
         println!("Manifest signature verified.");
-    } else {
-        println!("Warning: no updates.public_key configured, skipping signature verification");
     }
 
-    serde_json::from_str(&manifest_text)
-        .map_err(|e| anyhow::anyhow!("Invalid manifest JSON: {}", e))
-}
-
-/// Download the latest binary to a staging path. Returns the staging path.
-async fn download_latest(config: &Config) -> anyhow::Result<PathBuf> {
-    let current_version = env!("CARGO_PKG_VERSION");
-    let manifest = fetch_manifest(config).await?;
-
-    let latest_version = manifest
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_text)?;
+    let version = manifest
         .get("version")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Manifest missing 'version' field"))?;
-
-    if !version_is_newer(current_version, latest_version) {
-        anyhow::bail!("Already running latest version ({}).", current_version);
-    }
+        .ok_or_else(|| anyhow::anyhow!("Manifest missing 'version' field"))?
+        .to_string();
 
     let arch = std::env::consts::ARCH;
     let download_key = format!("download_{}", arch);
@@ -171,19 +168,104 @@ async fn download_latest(config: &Config) -> anyhow::Result<PathBuf> {
         .get(&download_key)
         .or_else(|| manifest.get("download_url"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("No download URL found in manifest for arch '{}'", arch))?;
+        .ok_or_else(|| anyhow::anyhow!("No download URL for arch '{}'", arch))?
+        .to_string();
+
+    Ok(UpdateInfo {
+        version,
+        download_url,
+    })
+}
+
+/// Check latest version from GitHub Releases API.
+async fn check_latest_github(repo: &str) -> anyhow::Result<UpdateInfo> {
+    let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+    println!("Checking GitHub releases: {}", repo);
+
+    let client = reqwest::Client::builder()
+        .user_agent("tilde-updater")
+        .build()?;
+
+    let response = client.get(&api_url).send().await?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        anyhow::bail!(
+            "No releases found for {}. Create one by pushing a tag: git tag v0.1.1 && git push --tags",
+            repo
+        );
+    }
+    let release: serde_json::Value = response.error_for_status()?.json().await?;
+
+    let tag = release
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Release missing tag_name"))?;
+    // Strip leading 'v' from tag to get semver
+    let version = tag.strip_prefix('v').unwrap_or(tag).to_string();
+
+    // Find the asset matching our architecture
+    let arch = std::env::consts::ARCH;
+    let os = std::env::consts::OS;
+    let asset_name = format!("tilde-{}-{}", os, arch);
+
+    let assets = release
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("Release has no assets"))?;
+
+    let download_url = assets
+        .iter()
+        .find(|a| {
+            a.get("name")
+                .and_then(|n| n.as_str())
+                .map_or(false, |n| n == asset_name)
+        })
+        .and_then(|a| a.get("browser_download_url"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            let available: Vec<&str> = assets
+                .iter()
+                .filter_map(|a| a.get("name").and_then(|n| n.as_str()))
+                .collect();
+            anyhow::anyhow!(
+                "No asset '{}' in release. Available: {:?}",
+                asset_name,
+                available
+            )
+        })?
+        .to_string();
+
+    Ok(UpdateInfo {
+        version,
+        download_url,
+    })
+}
+
+/// Download the latest binary to a staging path. Returns the staging path.
+async fn download_latest(config: &Config) -> anyhow::Result<PathBuf> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let info = check_latest(config).await?;
+
+    if !version_is_newer(current_version, &info.version) {
+        anyhow::bail!("Already running latest version ({}).", current_version);
+    }
 
     println!(
         "Downloading tilde {} from {}...",
-        latest_version, download_url
+        info.version, info.download_url
     );
 
-    let client = reqwest::Client::new();
-    let response = client.get(download_url).send().await?.error_for_status()?;
+    let client = reqwest::Client::builder()
+        .user_agent("tilde-updater")
+        .build()?;
+    let response = client
+        .get(&info.download_url)
+        .send()
+        .await?
+        .error_for_status()?;
     let bytes = response.bytes().await?;
 
     let data_dir = config.data_dir();
-    let staging_path = data_dir.join(format!("tilde-{}", latest_version));
+    let staging_path = data_dir.join(format!("tilde-{}", info.version));
     std::fs::write(&staging_path, &bytes)?;
 
     #[cfg(unix)]

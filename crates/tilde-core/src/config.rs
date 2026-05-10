@@ -345,6 +345,14 @@ pub struct UpdatesConfig {
     pub manifest_mirror: String,
     #[serde(default)]
     pub public_key: Option<String>,
+    /// GitHub repo (owner/name) for release-based updates.
+    /// Used when no manifest_url is configured.
+    #[serde(default = "default_github_repo")]
+    pub github_repo: String,
+}
+
+fn default_github_repo() -> String {
+    "kiedanski/tilde".to_string()
 }
 
 impl Default for UpdatesConfig {
@@ -355,6 +363,7 @@ impl Default for UpdatesConfig {
             manifest_url: String::new(),
             manifest_mirror: String::new(),
             public_key: None,
+            github_repo: default_github_repo(),
         }
     }
 }
