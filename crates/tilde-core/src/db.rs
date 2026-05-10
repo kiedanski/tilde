@@ -107,6 +107,10 @@ const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         "007_drop_fts_tables",
         include_str!("../../../migrations/007_drop_fts_tables.sql"),
     ),
+    (
+        "008_untriaged_sentinel_date",
+        include_str!("../../../migrations/008_untriaged_sentinel_date.sql"),
+    ),
 ];
 
 /// Load embedded migrations (compiled into the binary).

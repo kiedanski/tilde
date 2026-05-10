@@ -180,7 +180,10 @@ pub fn index_photo_with_hash(
         None
     };
 
-    let taken_at = exif.as_ref().and_then(|e| e.date_time_original.clone());
+    let taken_at = exif
+        .as_ref()
+        .and_then(|e| e.date_time_original.clone())
+        .or_else(|| Some("1800-01-01T00:00:00+00:00".to_string()));
     let camera_make = exif.as_ref().and_then(|e| e.camera_make.clone());
     let camera_model = exif.as_ref().and_then(|e| e.camera_model.clone());
     let lens = exif.as_ref().and_then(|e| e.lens.clone());
