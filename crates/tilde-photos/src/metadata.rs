@@ -432,6 +432,11 @@ fn write_exif_date(path: &Path, iso_date: &str) -> Result<()> {
 fn parse_date_from_filename(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_str()?;
 
+    // Skip dotfiles (e.g. .nfs.20051026.3f4c) — not real photos
+    if stem.starts_with('.') {
+        return None;
+    }
+
     // Look for an 8-digit date (YYYYMMDD) anywhere in the filename
     let digits: Vec<(usize, &str)> = stem.match_indices(|c: char| c.is_ascii_digit()).collect();
 
@@ -606,6 +611,16 @@ mod tests {
             parse_date_from_filename(Path::new("IMG-20261309-WA0001.jpg")),
             None
         );
+    }
+
+    #[test]
+    fn test_parse_date_from_filename_dotfiles_skipped() {
+        // Dotfiles with digits should not be treated as photos
+        assert_eq!(
+            parse_date_from_filename(Path::new(".nfs.20051026.3f4c")),
+            None
+        );
+        assert_eq!(parse_date_from_filename(Path::new(".DS_Store")), None);
     }
 
     #[test]

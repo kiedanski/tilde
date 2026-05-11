@@ -291,15 +291,22 @@ fn sync_cycle(
 
 /// Run the email sync loop for one account (async wrapper).
 /// Handles IDLE, polling fallback, and retry with exponential backoff.
+/// The `shutdown` token allows graceful termination — the loop checks it
+/// between sync cycles and uses short IDLE timeouts so it can exit promptly.
 pub async fn run_sync_loop(
     config: ImapAccountConfig,
     db: DbPool,
     maildir_base: std::path::PathBuf,
+    shutdown: tokio_util::sync::CancellationToken,
 ) {
     let mut retry_delay = std::time::Duration::from_secs(5);
     let max_retry_delay = std::time::Duration::from_secs(300);
 
     loop {
+        if shutdown.is_cancelled() {
+            info!(account = %config.name, "Shutting down email sync");
+            return;
+        }
         // Run sync in blocking thread
         let config_clone = config.clone();
         let db_clone = db.clone();
@@ -336,12 +343,22 @@ pub async fn run_sync_loop(
 
         // After successful sync: IDLE or poll
         if config.idle_enabled {
+            // Use short IDLE cycles (30s) so we can check the shutdown token
+            // between iterations. IMAP IDLE is a blocking TCP read that can't
+            // be interrupted, so this is the maximum shutdown delay.
             let config_for_idle = config.clone();
+            let shutdown_flag = shutdown.clone();
             let idle_result = tokio::task::spawn_blocking(move || {
                 let mut session = connect_and_login(&config_for_idle)?;
                 session.select("INBOX")?;
-                info!(timeout_secs = 1740, "Entering IMAP IDLE mode on INBOX");
-                session.idle_wait(1740)?; // 29 min
+                info!("Entering IMAP IDLE mode on INBOX (30s cycles)");
+                // Loop with short timeouts until shutdown or server notification
+                loop {
+                    if shutdown_flag.is_cancelled() {
+                        break;
+                    }
+                    session.idle_wait(30)?;
+                }
                 session.logout()?;
                 Ok::<_, anyhow::Error>(())
             })
@@ -349,6 +366,9 @@ pub async fn run_sync_loop(
 
             match idle_result {
                 Ok(Ok(())) => {
+                    if shutdown.is_cancelled() {
+                        return;
+                    }
                     info!(account = %config.name, "IDLE notification — re-syncing");
                 }
                 Ok(Err(e)) => {
@@ -367,7 +387,10 @@ pub async fn run_sync_loop(
                 interval_secs = config.poll_interval_seconds,
                 "IDLE disabled — polling fallback"
             );
-            tokio::time::sleep(std::time::Duration::from_secs(config.poll_interval_seconds)).await;
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(config.poll_interval_seconds)) => {},
+            }
         }
     }
 }

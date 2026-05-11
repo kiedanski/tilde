@@ -150,7 +150,7 @@ pub fn log_notification(
 
 /// Send a notification through all configured sinks, respecting priority and rate limits
 pub fn notify(
-    sinks: &[Box<dyn NotificationSink>],
+    sinks: &[Box<dyn NotificationSink + Send + Sync>],
     rate_limiter: &NotificationRateLimiter,
     conn: &Connection,
     event: NotificationEvent,
@@ -494,7 +494,7 @@ pub fn create_file_sink(data_dir: &Path) -> FileSink {
 /// Check disk usage for a path and fire notifications at 80% and 90% thresholds
 pub fn check_disk_usage(
     path: &Path,
-    sinks: &[Box<dyn NotificationSink>],
+    sinks: &[Box<dyn NotificationSink + Send + Sync>],
     rate_limiter: &NotificationRateLimiter,
     conn: &Connection,
 ) {

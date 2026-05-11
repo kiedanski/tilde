@@ -172,6 +172,78 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     let shutdown = CancellationToken::new();
     let mut tasks = tokio::task::JoinSet::new();
 
+    // ── Notification sinks ────────────────────────────────────────────────
+    let notification_sinks: std::sync::Arc<
+        Vec<Box<dyn tilde_notify::NotificationSink + Send + Sync>>,
+    > = {
+        let mut sinks: Vec<Box<dyn tilde_notify::NotificationSink + Send + Sync>> = Vec::new();
+
+        // Always add a file sink
+        sinks.push(Box::new(tilde_notify::create_file_sink(&data_dir)));
+
+        // ntfy sink from env vars
+        if let Ok(topic) = std::env::var("TILDE_NTFY_TOPIC")
+            && !topic.is_empty()
+        {
+            let token = std::env::var("TILDE_NTFY_TOKEN")
+                .ok()
+                .filter(|t| !t.is_empty());
+            sinks.push(Box::new(tilde_notify::NtfySink::new(
+                topic,
+                token,
+                tilde_notify::Priority::Medium,
+            )));
+            info!("Notification sink: ntfy");
+        }
+
+        info!(count = sinks.len(), "Notification sinks configured");
+        std::sync::Arc::new(sinks)
+    };
+    let notification_rate_limiter =
+        std::sync::Arc::new(tilde_notify::NotificationRateLimiter::new(10));
+
+    // Send startup notification
+    {
+        let hostname = &state.config().server.hostname;
+        let label = if hostname.is_empty() {
+            "localhost"
+        } else {
+            hostname
+        };
+        let conn = state.db.get().unwrap();
+        tilde_notify::notify(
+            &notification_sinks,
+            &notification_rate_limiter,
+            &conn,
+            tilde_notify::NotificationEvent {
+                event_type: "server_started".into(),
+                priority: tilde_notify::Priority::Low,
+                message: format!("tilde started on {}", label),
+            },
+        );
+    }
+
+    // Periodic disk usage check (every 6 hours)
+    {
+        let disk_sinks = notification_sinks.clone();
+        let disk_limiter = notification_rate_limiter.clone();
+        let disk_db = state.db.clone();
+        let disk_path = data_dir.clone();
+        let token = shutdown.clone();
+        tasks.spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)) => {
+                        if let Ok(conn) = disk_db.get() {
+                            tilde_notify::check_disk_usage(&disk_path, &disk_sinks, &disk_limiter, &conn);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // Start background job processor for thumbnail generation etc.
     // Fetches batches of pending jobs and processes them concurrently
     // (up to 4 at a time). Only HEIC decoding is serialized (OOM protection);
@@ -316,6 +388,8 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         let backup_db = state.db.clone();
         let backup_data_dir = data_dir.clone();
         let backup_encrypt_recipient = state.config().backup.encrypt_recipient.clone();
+        let backup_sinks = notification_sinks.clone();
+        let backup_limiter = notification_rate_limiter.clone();
         let token = shutdown.clone();
         tasks.spawn(async move {
             let interval_secs = parse_schedule_interval(&backup_schedule);
@@ -386,6 +460,12 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "Scheduled backup failed");
+                            tilde_notify::notify(
+                                &backup_sinks,
+                                &backup_limiter,
+                                &conn,
+                                tilde_notify::events::backup_failed(&e.to_string()),
+                            );
                         }
                     }
                 }
@@ -537,10 +617,8 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             info!(account = %imap_config.name, host = %imap_config.imap_host, "Starting email sync");
             let token = shutdown.clone();
             tasks.spawn(async move {
-                tokio::select! {
-                    _ = token.cancelled() => {},
-                    _ = tilde_email::imap::run_sync_loop(imap_config, email_db, email_mail_dir) => {},
-                }
+                tilde_email::imap::run_sync_loop(imap_config, email_db, email_mail_dir, token)
+                    .await;
             });
         }
         if !accounts.is_empty() {
