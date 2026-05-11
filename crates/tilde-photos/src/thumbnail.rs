@@ -111,7 +111,15 @@ fn open_image(path: &Path) -> Result<DynamicImage> {
         // No libheif — try generic decoder anyway (handles misnamed JPEGs)
         debug!(path = %path.display(), "No HEIC support, trying generic decoder");
     }
-    image::open(path).context("Failed to open image for thumbnail generation")
+    // Use content-based format detection (not extension) so misnamed files
+    // (e.g. JPEG with .heic extension) are handled correctly.
+    let reader = image::ImageReader::open(path)
+        .context("Failed to open image file")?
+        .with_guessed_format()
+        .context("Failed to guess image format")?;
+    reader
+        .decode()
+        .context("Failed to decode image for thumbnail generation")
 }
 
 /// Generate a 256px square-crop thumbnail for a photo.
