@@ -350,10 +350,25 @@ pub fn generate_video_thumbnail(
     result
 }
 
-/// Save an image as WebP
-fn save_webp(img: &image::DynamicImage, path: &Path, _quality: u8) -> Result<()> {
-    // The image crate supports WebP encoding
-    img.save(path).context("Failed to save WebP thumbnail")?;
+/// Save a thumbnail image as JPEG with the specified quality (0-100).
+/// We use JPEG instead of WebP because the `image` crate's WebP encoder
+/// only supports lossless mode, which produces ~90 KB per 256px thumbnail.
+/// JPEG at quality 80 gives ~10-20 KB — a 5-8x reduction.
+fn save_webp(img: &image::DynamicImage, path: &Path, quality: u8) -> Result<()> {
+    // Save as JPEG despite the .webp extension (clients don't care about
+    // the extension — they use Content-Type from the DAV response).
+    // Convert to RGB8 since JPEG doesn't support alpha.
+    let rgb = img.to_rgb8();
+    let file = std::fs::File::create(path).context("Failed to create thumbnail file")?;
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality);
+    encoder
+        .encode(
+            &rgb,
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .context("Failed to encode JPEG thumbnail")?;
     Ok(())
 }
 
