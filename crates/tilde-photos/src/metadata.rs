@@ -59,6 +59,16 @@ pub fn read_metadata(path: &Path) -> Result<PhotoMetadata> {
         Err(e) => debug!(path = %path.display(), error = %e, "No XMP tags found"),
     }
 
+    // Fallback: if no date from EXIF/container, try to parse from filename.
+    // Covers WhatsApp (IMG-20260509-WA0013.jpg), screenshots (Screenshot_20260101-123456.png),
+    // and other apps that embed dates in filenames but strip EXIF.
+    if meta.date_time_original.is_none()
+        && let Some(date) = parse_date_from_filename(path)
+    {
+        debug!(path = %path.display(), date = %date, "Date extracted from filename");
+        meta.date_time_original = Some(date);
+    }
+
     Ok(meta)
 }
 
@@ -356,6 +366,88 @@ fn gps_to_decimal_lon(gps: &nom_exif::GPSInfo) -> f64 {
     }
 }
 
+/// Try to extract a date from common filename patterns when EXIF is missing.
+///
+/// Supported patterns:
+/// - `IMG-20260509-WA0013.jpg`  (WhatsApp)
+/// - `VID-20260509-WA0001.mp4`  (WhatsApp video)
+/// - `IMG_20260509_143456.jpg`  (Android camera)
+/// - `Screenshot_20260509-143456.png` (Android screenshot)
+/// - `PXL_20260509_143456789.jpg` (Pixel camera)
+/// - `20260509_143456.jpg` (bare timestamp)
+fn parse_date_from_filename(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+
+    // Look for an 8-digit date (YYYYMMDD) anywhere in the filename
+    let digits: Vec<(usize, &str)> = stem.match_indices(|c: char| c.is_ascii_digit()).collect();
+
+    // Find runs of 8+ consecutive digits
+    let mut i = 0;
+    while i < digits.len() {
+        // Find the start of a digit run
+        let run_start = digits[i].0;
+        let mut run_end = run_start + 1;
+        let mut j = i + 1;
+        while j < digits.len() && digits[j].0 == run_end {
+            run_end += 1;
+            j += 1;
+        }
+        let run_len = run_end - run_start;
+
+        if run_len >= 8 {
+            let date_part = &stem[run_start..run_start + 8];
+            let year: u32 = date_part[0..4].parse().ok()?;
+            let month: u32 = date_part[4..6].parse().ok()?;
+            let day: u32 = date_part[6..8].parse().ok()?;
+
+            if (1900..=2100).contains(&year) && (1..=12).contains(&month) && (1..=31).contains(&day)
+            {
+                // Try to extract time if there are 6 more digits (HHMMSS)
+                if run_len >= 14 {
+                    let time_part = &stem[run_start + 8..run_start + 14];
+                    let hour: u32 = time_part[0..2].parse().unwrap_or(0);
+                    let min: u32 = time_part[2..4].parse().unwrap_or(0);
+                    let sec: u32 = time_part[4..6].parse().unwrap_or(0);
+                    if hour < 24 && min < 60 && sec < 60 {
+                        return Some(format!(
+                            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+                            year, month, day, hour, min, sec
+                        ));
+                    }
+                }
+                // Also check if time follows after a separator (- or _)
+                let after_date = run_start + 8;
+                if after_date < stem.len() {
+                    let sep = stem.as_bytes().get(after_date).copied();
+                    if matches!(sep, Some(b'-') | Some(b'_')) && after_date + 7 <= stem.len() {
+                        let time_candidate = &stem[after_date + 1..];
+                        if time_candidate.len() >= 6 {
+                            let time_part = &time_candidate[..6];
+                            if time_part.chars().all(|c| c.is_ascii_digit()) {
+                                let hour: u32 = time_part[0..2].parse().unwrap_or(99);
+                                let min: u32 = time_part[2..4].parse().unwrap_or(99);
+                                let sec: u32 = time_part[4..6].parse().unwrap_or(99);
+                                if hour < 24 && min < 60 && sec < 60 {
+                                    return Some(format!(
+                                        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+                                        year, month, day, hour, min, sec
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                // Date only, no time
+                return Some(format!("{:04}-{:02}-{:02}T00:00:00", year, month, day));
+            }
+        }
+
+        i = j;
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +483,74 @@ mod tests {
             Some("favorite".to_string())
         );
         assert_eq!(classify_tag_prefix("landscape"), None);
+    }
+
+    #[test]
+    fn test_parse_date_from_filename_whatsapp() {
+        let path = Path::new("IMG-20260509-WA0013.jpg");
+        assert_eq!(
+            parse_date_from_filename(path),
+            Some("2026-05-09T00:00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_date_from_filename_whatsapp_video() {
+        let path = Path::new("VID-20260325-WA0001.mp4");
+        assert_eq!(
+            parse_date_from_filename(path),
+            Some("2026-03-25T00:00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_date_from_filename_android_camera() {
+        let path = Path::new("IMG_20260320_204959055.jpg");
+        assert_eq!(
+            parse_date_from_filename(path),
+            Some("2026-03-20T20:49:59".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_date_from_filename_screenshot() {
+        let path = Path::new("Screenshot_20260101-143456.png");
+        assert_eq!(
+            parse_date_from_filename(path),
+            Some("2026-01-01T14:34:56".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_date_from_filename_pixel() {
+        let path = Path::new("PXL_20260509_143456789.jpg");
+        assert_eq!(
+            parse_date_from_filename(path),
+            Some("2026-05-09T14:34:56".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_date_from_filename_bare_timestamp() {
+        let path = Path::new("20260509_143456.jpg");
+        assert_eq!(
+            parse_date_from_filename(path),
+            Some("2026-05-09T14:34:56".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_date_from_filename_no_date() {
+        assert_eq!(parse_date_from_filename(Path::new("photo.jpg")), None);
+        assert_eq!(parse_date_from_filename(Path::new("DSC_1234.jpg")), None);
+    }
+
+    #[test]
+    fn test_parse_date_from_filename_invalid_date() {
+        // Month 13 — invalid
+        assert_eq!(
+            parse_date_from_filename(Path::new("IMG-20261309-WA0001.jpg")),
+            None
+        );
     }
 }
