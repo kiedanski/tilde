@@ -84,7 +84,7 @@ directories = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif"] }
 
 # HEIC/HEIF decoding
-libheif-rs = "2.7"
+libheif-rs = { version = "2.7", default-features = false, features = ["v1_17"] }
 
 # Photo/video metadata
 nom-exif = "2"
