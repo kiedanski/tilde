@@ -134,6 +134,9 @@ imap = "2"
 native-tls = "0.2"
 openssl = { version = "0.10", features = ["vendored"] }
 
+# EXIF writing (for embedding dates parsed from filenames)
+little_exif = "0.6"
+
 # HTTP client (for notifications)
 reqwest = { version = "0.12", features = ["json"] }
 

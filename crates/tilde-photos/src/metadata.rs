@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Metadata extracted from a photo or video file
 #[derive(Debug, Clone, Default)]
@@ -66,6 +66,11 @@ pub fn read_metadata(path: &Path) -> Result<PhotoMetadata> {
         && let Some(date) = parse_date_from_filename(path)
     {
         debug!(path = %path.display(), date = %date, "Date extracted from filename");
+        // Write the date into the file's EXIF so other apps can read it
+        // and re-ingestion doesn't lose the date.
+        if let Err(e) = write_exif_date(path, &date) {
+            debug!(path = %path.display(), error = %e, "Could not write EXIF date (non-fatal)");
+        }
         meta.date_time_original = Some(date);
     }
 
@@ -366,6 +371,55 @@ fn gps_to_decimal_lon(gps: &nom_exif::GPSInfo) -> f64 {
     }
 }
 
+/// Write DateTimeOriginal (and CreateDate) into a JPEG file's EXIF data.
+/// The date string should be ISO 8601 format (e.g. "2026-05-09T00:00:00").
+/// Converts to EXIF format "YYYY:MM:DD HH:MM:SS" before writing.
+/// Non-JPEG files are silently skipped (EXIF writing only supports JPEG).
+fn write_exif_date(path: &Path, iso_date: &str) -> Result<()> {
+    use little_exif::exif_tag::ExifTag;
+    use little_exif::metadata::Metadata;
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if ext != "jpg" && ext != "jpeg" {
+        return Ok(()); // Only JPEG supported for EXIF writing
+    }
+
+    // Convert "2026-05-09T14:30:00" → "2026:05:09 14:30:00"
+    let exif_date = if iso_date.len() >= 19 {
+        format!(
+            "{}:{}:{} {}",
+            &iso_date[0..4],
+            &iso_date[5..7],
+            &iso_date[8..10],
+            &iso_date[11..19]
+        )
+    } else if iso_date.len() >= 10 {
+        format!(
+            "{}:{}:{} 00:00:00",
+            &iso_date[0..4],
+            &iso_date[5..7],
+            &iso_date[8..10]
+        )
+    } else {
+        return Ok(());
+    };
+
+    let mut metadata = Metadata::new();
+    metadata.set_tag(ExifTag::DateTimeOriginal(exif_date.clone()));
+    metadata.set_tag(ExifTag::CreateDate(exif_date));
+
+    metadata
+        .write_to_file(path)
+        .map_err(|e| anyhow::anyhow!("Failed to write EXIF: {:?}", e))?;
+
+    info!(path = %path.display(), "Wrote EXIF DateTimeOriginal from filename");
+    Ok(())
+}
+
 /// Try to extract a date from common filename patterns when EXIF is missing.
 ///
 /// Supported patterns:
@@ -552,5 +606,36 @@ mod tests {
             parse_date_from_filename(Path::new("IMG-20261309-WA0001.jpg")),
             None
         );
+    }
+
+    #[test]
+    fn test_write_exif_date_roundtrip() {
+        // Create a minimal JPEG, write EXIF date, read it back
+        let dir = std::env::temp_dir().join("tilde_exif_write_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let jpeg_path = dir.join("test.jpg");
+        // Create a tiny valid JPEG using the image crate
+        let img = image::RgbImage::new(8, 8);
+        img.save(&jpeg_path).unwrap();
+
+        // Write EXIF date
+        write_exif_date(&jpeg_path, "2026-05-09T14:30:00").unwrap();
+
+        // Read it back with nom-exif to verify
+        let meta = read_metadata(&jpeg_path).unwrap();
+        assert!(
+            meta.date_time_original.is_some(),
+            "DateTimeOriginal should be present after writing"
+        );
+        let date = meta.date_time_original.unwrap();
+        assert!(
+            date.contains("2026") && date.contains("05") && date.contains("09"),
+            "Date should contain 2026-05-09, got: {}",
+            date
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
