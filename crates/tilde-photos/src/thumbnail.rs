@@ -6,12 +6,15 @@ use anyhow::{Context, Result, bail};
 use image::DynamicImage;
 use image::imageops::FilterType;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "heic")]
 use std::sync::Mutex;
 use tracing::{debug, info};
 
-/// Single-slot semaphore for thumbnail generation.
-/// Prevents OOM when multiple large HEIC files are being decoded simultaneously.
-static THUMBNAIL_LOCK: Mutex<()> = Mutex::new(());
+/// Single-slot semaphore for HEIC decoding only.
+/// HEIC files can use 200+ MB during decode (20 MP × 3 bytes × overhead),
+/// so we serialize them to prevent OOM. JPEG/PNG are cheap and run freely.
+#[cfg(feature = "heic")]
+static HEIC_DECODE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Check if a file is HEIC/HEIF based on extension
 fn is_heic(path: &Path) -> bool {
@@ -84,11 +87,16 @@ fn decode_heic(path: &Path) -> Result<DynamicImage> {
     Ok(DynamicImage::ImageRgb8(img_buf))
 }
 
-/// Open an image, using libheif-rs for HEIC/HEIF files when available
+/// Open an image, using libheif-rs for HEIC/HEIF files when available.
+/// HEIC decoding is serialized via HEIC_DECODE_LOCK to prevent OOM.
+/// JPEG/PNG run without any lock.
 fn open_image(path: &Path) -> Result<DynamicImage> {
     #[cfg(feature = "heic")]
     if is_heic(path) {
-        debug!(path = %path.display(), "Decoding HEIC via libheif");
+        debug!(path = %path.display(), "Decoding HEIC via libheif (serialized)");
+        let _guard = HEIC_DECODE_LOCK
+            .lock()
+            .map_err(|e| anyhow::anyhow!("HEIC decode lock poisoned: {}", e))?;
         return decode_heic(path);
     }
     #[cfg(not(feature = "heic"))]
@@ -108,11 +116,6 @@ pub fn generate_thumbnails(
     cache_dir: &Path,
     quality: u8,
 ) -> Result<ThumbnailResult> {
-    // Acquire single-slot semaphore to prevent OOM on large HEIC files
-    let _guard = THUMBNAIL_LOCK
-        .lock()
-        .map_err(|e| anyhow::anyhow!("Thumbnail lock poisoned: {}", e))?;
-
     generate_thumbnails_inner(source, photo_uuid, cache_dir, quality)
 }
 
@@ -310,11 +313,6 @@ pub fn generate_video_thumbnail(
     quality: u8,
     _timeout_secs: u64,
 ) -> Result<ThumbnailResult> {
-    // Acquire single-slot semaphore (shared with generate_thumbnails)
-    let _guard = THUMBNAIL_LOCK
-        .lock()
-        .map_err(|e| anyhow::anyhow!("Thumbnail lock poisoned: {}", e))?;
-
     let thumb_dir = cache_dir.join("thumbnails").join(photo_uuid);
     std::fs::create_dir_all(&thumb_dir)?;
 

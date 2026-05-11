@@ -172,29 +172,118 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     let mut tasks = tokio::task::JoinSet::new();
 
     // Start background job processor for thumbnail generation etc.
+    // Fetches batches of pending jobs and processes them concurrently
+    // (up to 4 at a time). Only HEIC decoding is serialized (OOM protection);
+    // JPEG/PNG thumbnails run in parallel.
     {
         let job_db = state.db.clone();
         let job_photos_base = data_dir.join("photos");
         let job_cache_dir = state.config().cache_dir();
         let job_thumb_quality = state.config().photos.thumbnail_quality;
         let token = shutdown.clone();
+        const JOB_CONCURRENCY: usize = 4;
         tasks.spawn(async move {
             loop {
-                tokio::select! {
-                    _ = token.cancelled() => break,
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                        if let Ok(conn) = job_db.get() {
-                            match tilde_photos::process_pending_jobs(&conn, 5, &job_photos_base, &job_cache_dir, job_thumb_quality) {
-                                Ok(0) => {}
-                                Ok(n) => info!(count = n, "Processed background jobs"),
-                                Err(e) => tracing::debug!(error = %e, "Job processor error"),
+                if token.is_cancelled() {
+                    break;
+                }
+
+                // Fetch a batch of pending jobs
+                let batch: Vec<(i64, String, String, i64, i64)> = {
+                    let conn = match job_db.get() {
+                        Ok(c) => c,
+                        Err(_) => {
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            continue;
+                        }
+                    };
+                    let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+                    let mut stmt = conn.prepare(
+                        "SELECT id, job_type, payload_json, attempts, max_attempts FROM jobs WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?1"
+                    ).unwrap();
+                    let jobs: Vec<_> = stmt.query_map([JOB_CONCURRENCY as i64 * 2], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?))
+                    }).unwrap().flatten().collect();
+                    // Mark them as running
+                    for (id, _, _, _, _) in &jobs {
+                        conn.execute(
+                            "UPDATE jobs SET status = 'running', started_at = ?1, attempts = attempts + 1 WHERE id = ?2",
+                            rusqlite::params![now, id],
+                        ).ok();
+                    }
+                    jobs
+                };
+
+                if batch.is_empty() {
+                    // No work — sleep before polling again
+                    tokio::select! {
+                        _ = token.cancelled() => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                    }
+                    continue;
+                }
+
+                // Process batch concurrently
+                let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(JOB_CONCURRENCY));
+                let mut handles = Vec::new();
+
+                for (job_id, job_type, payload_json, attempts, max_attempts) in batch {
+                    let permit = sem.clone().acquire_owned().await.unwrap();
+                    let db = job_db.clone();
+                    let photos = job_photos_base.clone();
+                    let cache = job_cache_dir.clone();
+                    let quality = job_thumb_quality;
+                    handles.push(tokio::task::spawn_blocking(move || {
+                        let _permit = permit;
+                        let conn = db.get().unwrap();
+                        let result = match job_type.as_str() {
+                            "thumbnail" => tilde_photos::process_thumbnail_job_standalone(
+                                &payload_json, &conn, &photos, &cache, quality,
+                            ),
+                            _ => Err(anyhow::anyhow!("Unknown job type: {}", job_type)),
+                        };
+                        let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+                        match result {
+                            Ok(()) => {
+                                conn.execute(
+                                    "UPDATE jobs SET status = 'completed', completed_at = ?1 WHERE id = ?2",
+                                    rusqlite::params![now, job_id],
+                                ).ok();
+                            }
+                            Err(e) => {
+                                let error_msg = format!("{}", e);
+                                if attempts + 1 >= max_attempts {
+                                    conn.execute(
+                                        "UPDATE jobs SET status = 'failed', error_message = ?1 WHERE id = ?2",
+                                        rusqlite::params![error_msg, job_id],
+                                    ).ok();
+                                } else {
+                                    conn.execute(
+                                        "UPDATE jobs SET status = 'pending', error_message = ?1, started_at = NULL WHERE id = ?2",
+                                        rusqlite::params![error_msg, job_id],
+                                    ).ok();
+                                }
                             }
                         }
+                    }));
+                }
+
+                let mut completed = 0;
+                for handle in handles {
+                    if handle.await.is_ok() {
+                        completed += 1;
                     }
                 }
+                if completed > 0 {
+                    info!(count = completed, "Processed background jobs");
+                }
+                // Loop immediately to check for more work
             }
         });
-        info!("Background job processor started");
+        info!(
+            "Background job processor started (concurrency={})",
+            JOB_CONCURRENCY
+        );
     }
 
     // Start trash purge scheduler (daily, purges entries older than 30 days)

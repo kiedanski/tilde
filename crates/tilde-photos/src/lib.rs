@@ -315,7 +315,7 @@ pub fn process_pending_jobs(
         )?;
 
         let result = match job_type.as_str() {
-            "thumbnail" => process_thumbnail_job(
+            "thumbnail" => process_thumbnail_job_standalone(
                 &payload_json,
                 conn,
                 photos_base,
@@ -354,9 +354,9 @@ pub fn process_pending_jobs(
     Ok(processed)
 }
 
-/// Process a thumbnail job. Resolves file path from DB (not from payload),
-/// so jobs are portable across backup/restore.
-fn process_thumbnail_job(
+/// Process a single thumbnail job. Callable directly for concurrent processing.
+/// Resolves file path from DB (not from payload), so jobs are portable across backup/restore.
+pub fn process_thumbnail_job_standalone(
     payload_json: &str,
     conn: &Connection,
     photos_base: &Path,
