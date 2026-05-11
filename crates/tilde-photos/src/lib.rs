@@ -250,20 +250,8 @@ pub fn index_photo_with_hash(
         }
     }
 
-    // Compute blurhash if the file is a readable image
-    if !encrypted {
-        match thumbnail::compute_blurhash(file_path) {
-            Ok(hash) => {
-                conn.execute(
-                    "UPDATE photos SET blurhash = ?1 WHERE id = ?2",
-                    rusqlite::params![hash, photo_id],
-                )?;
-            }
-            Err(e) => {
-                tracing::debug!(error = %e, "Failed to compute blurhash (non-fatal)");
-            }
-        }
-    }
+    // Blurhash is now computed during thumbnail generation (from the 256px thumbnail)
+    // instead of here, avoiding a redundant full-image decode during ingestion.
 
     Ok(photo_id)
 }
@@ -400,10 +388,26 @@ fn process_thumbnail_job(
 
     let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    if is_photo_ext(ext) {
-        thumbnail::generate_thumbnails(&file, photo_id, cache_dir, quality)?;
+    let result = if is_photo_ext(ext) {
+        Some(thumbnail::generate_thumbnails(
+            &file, photo_id, cache_dir, quality,
+        )?)
     } else if is_video_ext(ext) {
-        thumbnail::generate_video_thumbnail(&file, photo_id, cache_dir, quality, 60)?;
+        Some(thumbnail::generate_video_thumbnail(
+            &file, photo_id, cache_dir, quality, 60,
+        )?)
+    } else {
+        None
+    };
+
+    // Save blurhash computed from the thumbnail (avoids re-reading the full image)
+    if let Some(ref r) = result
+        && let Some(ref hash) = r.blurhash
+    {
+        conn.execute(
+            "UPDATE photos SET blurhash = ?1 WHERE id = ?2",
+            rusqlite::params![hash, photo_id],
+        )?;
     }
 
     // Mark as generated and create browseable symlink

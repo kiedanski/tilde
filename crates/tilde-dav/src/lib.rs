@@ -98,9 +98,11 @@ fn ensure_within_root(
         if resolved.starts_with(&canon_root) {
             return true;
         }
-        allowed_extras
-            .iter()
-            .any(|extra| extra.canonicalize().map_or(false, |ce| resolved.starts_with(&ce)))
+        allowed_extras.iter().any(|extra| {
+            extra
+                .canonicalize()
+                .is_ok_and(|ce| resolved.starts_with(&ce))
+        })
     };
 
     // If target exists, canonicalize it directly (follows symlinks)
@@ -226,7 +228,11 @@ async fn handle_get(state: &SharedDavState, rel_path: &str, head_only: bool) -> 
     }
 
     // Symlink escape check — canonicalize and verify within root
-    if !ensure_within_root(&state.files_root, &disk_path, &state.allowed_symlink_targets) {
+    if !ensure_within_root(
+        &state.files_root,
+        &disk_path,
+        &state.allowed_symlink_targets,
+    ) {
         warn!(path = rel_path, "Symlink escape blocked on GET");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -302,7 +308,11 @@ async fn handle_put(
     let disk_path = state.files_root.join(rel_path);
 
     // Symlink escape check
-    if !ensure_within_root(&state.files_root, &disk_path, &state.allowed_symlink_targets) {
+    if !ensure_within_root(
+        &state.files_root,
+        &disk_path,
+        &state.allowed_symlink_targets,
+    ) {
         warn!(path = rel_path, "Symlink escape blocked on PUT");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -578,7 +588,11 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
     }
 
     // Symlink escape check
-    if !ensure_within_root(&state.files_root, &disk_path, &state.allowed_symlink_targets) {
+    if !ensure_within_root(
+        &state.files_root,
+        &disk_path,
+        &state.allowed_symlink_targets,
+    ) {
         warn!(path = rel_path, "Symlink escape blocked on DELETE");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -691,7 +705,11 @@ async fn handle_mkcol(state: &SharedDavState, rel_path: &str) -> Response {
     let disk_path = state.files_root.join(rel_path);
 
     // Symlink escape check (checks nearest existing ancestor)
-    if !ensure_within_root(&state.files_root, &disk_path, &state.allowed_symlink_targets) {
+    if !ensure_within_root(
+        &state.files_root,
+        &disk_path,
+        &state.allowed_symlink_targets,
+    ) {
         warn!(path = rel_path, "Symlink escape blocked on MKCOL");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -965,7 +983,13 @@ async fn handle_propfind(state: &SharedDavState, rel_path: &str, headers: &Heade
     }
 
     // Symlink escape check
-    if disk_path.exists() && !ensure_within_root(&state.files_root, &disk_path, &state.allowed_symlink_targets) {
+    if disk_path.exists()
+        && !ensure_within_root(
+            &state.files_root,
+            &disk_path,
+            &state.allowed_symlink_targets,
+        )
+    {
         warn!(path = rel_path, "Symlink escape blocked on PROPFIND");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -1503,7 +1527,11 @@ async fn uploads_handler(
             let dest_path = state.files_root.join(&dest);
 
             // Symlink escape check on destination
-            if !ensure_within_root(&state.files_root, &dest_path, &state.allowed_symlink_targets) {
+            if !ensure_within_root(
+                &state.files_root,
+                &dest_path,
+                &state.allowed_symlink_targets,
+            ) {
                 warn!(dest = %dest, "Symlink escape blocked on chunked upload destination");
                 return StatusCode::FORBIDDEN.into_response();
             }
@@ -1733,7 +1761,7 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
 
     // Try to get oc:id and etag from DB
     let db_path = state.db_path(rel_path);
-    let (oc_id, etag) = {
+    let (oc_id, mut etag) = {
         let db = state.db.get().unwrap();
         db.query_row(
             "SELECT id, etag FROM files WHERE path = ?1",
@@ -1742,6 +1770,53 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
         )
         .unwrap_or_else(|_| (Uuid::new_v4().to_string(), format!("{:x}", size)))
     };
+
+    // For directories, compute ETag from child names + their content ETags.
+    // This changes when files are added, removed, OR modified — which is what
+    // WebDAV clients (e.g. the webgallery app) rely on to detect changes.
+    // Cost: one readdir + one DB query per directory.
+    if is_dir {
+        let target = if rel_path.is_empty() {
+            &state.files_root
+        } else {
+            &disk_path
+        };
+
+        // Build a map of child name → content ETag from the DB
+        let parent_path_query = db_path.trim_end_matches('/');
+        let child_etags: std::collections::HashMap<String, String> = {
+            let db = state.db.get().unwrap();
+            let mut stmt = db
+                .prepare("SELECT name, etag FROM files WHERE parent_path = ?1")
+                .unwrap();
+            stmt.query_map([parent_path_query], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .flatten()
+            .collect()
+        };
+
+        let mut hasher = Sha256::new();
+        if let Ok(entries) = std::fs::read_dir(target) {
+            let mut names: Vec<String> = entries
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| !n.starts_with('.'))
+                .collect();
+            names.sort();
+            for name in &names {
+                hasher.update(name.as_bytes());
+                // Include the child's content ETag so modifications propagate
+                if let Some(child_etag) = child_etags.get(name) {
+                    hasher.update(child_etag.as_bytes());
+                }
+                hasher.update(b"\0");
+            }
+        }
+        let hash = format!("{:x}", hasher.finalize());
+        etag = hash[..16].to_string();
+    }
 
     // Load custom properties
     let custom_properties = {

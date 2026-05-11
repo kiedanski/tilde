@@ -152,7 +152,7 @@ impl Config {
     fn default_config_paths() -> Vec<PathBuf> {
         let mut paths = Vec::new();
 
-        // Systemd mode
+        // Systemd mode (highest priority)
         if Self::is_systemd_mode() {
             paths.push(PathBuf::from("/etc/tilde/config.toml"));
         }
@@ -170,6 +170,14 @@ impl Config {
         // directories crate fallback
         if let Some(proj_dirs) = directories::ProjectDirs::from("", "", "tilde") {
             paths.push(proj_dirs.config_dir().join("config.toml"));
+        }
+
+        // System-wide fallback (for Linux servers without systemd env vars)
+        if !Self::is_systemd_mode() {
+            let etc_path = PathBuf::from("/etc/tilde/config.toml");
+            if !paths.contains(&etc_path) {
+                paths.push(etc_path);
+            }
         }
 
         // Current directory fallback

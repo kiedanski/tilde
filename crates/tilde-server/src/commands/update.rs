@@ -217,7 +217,7 @@ async fn check_latest_github(repo: &str) -> anyhow::Result<UpdateInfo> {
         .find(|a| {
             a.get("name")
                 .and_then(|n| n.as_str())
-                .map_or(false, |n| n == asset_name)
+                .is_some_and(|n| n == asset_name)
         })
         .and_then(|a| a.get("browser_download_url"))
         .and_then(|v| v.as_str())
@@ -316,14 +316,13 @@ fn find_server_pid() -> Option<i32> {
     if let Ok(output) = std::process::Command::new("systemctl")
         .args(["show", "tilde", "-p", "MainPID", "--value"])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let pid_str = String::from_utf8_lossy(&output.stdout);
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                if pid > 0 {
-                    return Some(pid);
-                }
-            }
+        let pid_str = String::from_utf8_lossy(&output.stdout);
+        if let Ok(pid) = pid_str.trim().parse::<i32>()
+            && pid > 0
+        {
+            return Some(pid);
         }
     }
 
@@ -331,17 +330,17 @@ fn find_server_pid() -> Option<i32> {
     if let Ok(output) = std::process::Command::new("pgrep")
         .args(["-f", "tilde serve"])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let pid_str = String::from_utf8_lossy(&output.stdout);
-            // Take the first PID (skip our own process)
-            let my_pid = std::process::id();
-            for line in pid_str.lines() {
-                if let Ok(pid) = line.trim().parse::<i32>() {
-                    if pid > 0 && pid as u32 != my_pid {
-                        return Some(pid);
-                    }
-                }
+        let pid_str = String::from_utf8_lossy(&output.stdout);
+        // Take the first PID (skip our own process)
+        let my_pid = std::process::id();
+        for line in pid_str.lines() {
+            if let Ok(pid) = line.trim().parse::<i32>()
+                && pid > 0
+                && pid as u32 != my_pid
+            {
+                return Some(pid);
             }
         }
     }

@@ -16,7 +16,7 @@ fn sample_vcard(fn_name: &str, email: &str) -> String {
 #[tokio::test]
 async fn propfind_admin_principal() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -31,7 +31,7 @@ async fn propfind_admin_principal() {
 #[tokio::test]
 async fn propfind_depth_1_lists_addressbooks() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -49,7 +49,7 @@ async fn propfind_depth_1_lists_addressbooks() {
 #[tokio::test]
 async fn mkcol_addressbook() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -68,7 +68,7 @@ async fn mkcol_addressbook() {
 #[tokio::test]
 async fn put_get_delete_contact() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let vcard = sample_vcard("Alice Test", "alice@example.com");
@@ -114,7 +114,7 @@ async fn put_get_delete_contact() {
 #[tokio::test]
 async fn report_addressbook_multiget() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let vcard = sample_vcard("Bob Multiget", "bob@example.com");
@@ -152,7 +152,7 @@ async fn report_addressbook_multiget() {
 #[tokio::test]
 async fn report_addressbook_query_text_match() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let vcard1 = sample_vcard("Charlie Alpha", "charlie@example.com");
@@ -204,7 +204,7 @@ async fn report_addressbook_query_text_match() {
 #[tokio::test]
 async fn report_sync_collection() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let vcard = sample_vcard("Sync Contact", "sync@example.com");
@@ -246,7 +246,7 @@ async fn report_sync_collection() {
 #[tokio::test]
 async fn if_none_match_star_on_existing_returns_412() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let vcard = sample_vcard("Eve Existing", "eve@example.com");
@@ -273,7 +273,7 @@ async fn if_none_match_star_on_existing_returns_412() {
 #[tokio::test]
 async fn wrong_content_type_returns_415() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -291,7 +291,7 @@ async fn wrong_content_type_returns_415() {
 #[tokio::test]
 async fn wrong_principal_returns_404() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -308,7 +308,7 @@ async fn wrong_principal_returns_404() {
 #[tokio::test]
 async fn delete_addressbook() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     env.server
@@ -330,7 +330,7 @@ async fn delete_addressbook() {
 #[tokio::test]
 async fn proppatch_addressbook() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let body = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -358,7 +358,7 @@ async fn proppatch_addressbook() {
 #[tokio::test]
 async fn options_addressbook() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -374,7 +374,7 @@ async fn options_addressbook() {
 #[tokio::test]
 async fn propfind_single_contact() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let vcard = sample_vcard("Propfind Contact", "pf@example.com");
@@ -402,7 +402,7 @@ async fn propfind_single_contact() {
 #[tokio::test]
 async fn propfind_addressbook_depth1_lists_contacts() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "card-rw", "/carddav/*");
+    let pw = common::create_app_password(&env.pool, "card-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let vcard = sample_vcard("Depth1 Contact", "d1@example.com");

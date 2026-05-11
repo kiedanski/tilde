@@ -21,7 +21,7 @@ fn sample_event(uid: &str, summary: &str) -> String {
 #[tokio::test]
 async fn propfind_admin_principal() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -36,7 +36,7 @@ async fn propfind_admin_principal() {
 #[tokio::test]
 async fn propfind_depth_1_lists_calendars() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -54,7 +54,7 @@ async fn propfind_depth_1_lists_calendars() {
 #[tokio::test]
 async fn mkcalendar() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -71,7 +71,7 @@ async fn mkcalendar() {
 #[tokio::test]
 async fn put_get_delete_event() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let ics = sample_event("event1", "Test Event");
@@ -117,7 +117,7 @@ async fn put_get_delete_event() {
 #[tokio::test]
 async fn put_update_event_with_if_match() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let ics1 = sample_event("update-ev1", "Original");
@@ -163,7 +163,7 @@ async fn put_update_event_with_if_match() {
 #[tokio::test]
 async fn report_calendar_multiget() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let ics = sample_event("mg-event1", "Multiget Event");
@@ -201,7 +201,7 @@ async fn report_calendar_multiget() {
 #[tokio::test]
 async fn report_calendar_query_time_range() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n\
@@ -248,7 +248,7 @@ async fn report_calendar_query_time_range() {
 #[tokio::test]
 async fn report_sync_collection() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let ics = sample_event("sync-ev1", "Sync Test");
@@ -290,7 +290,7 @@ async fn report_sync_collection() {
 #[tokio::test]
 async fn if_none_match_star_on_existing_returns_412() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let ics = sample_event("inm-event1", "First");
@@ -318,7 +318,7 @@ async fn if_none_match_star_on_existing_returns_412() {
 #[tokio::test]
 async fn wrong_content_type_returns_415() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -336,7 +336,7 @@ async fn wrong_content_type_returns_415() {
 #[tokio::test]
 async fn wrong_principal_returns_404() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -353,7 +353,7 @@ async fn wrong_principal_returns_404() {
 #[tokio::test]
 async fn delete_calendar() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     env.server
@@ -375,7 +375,7 @@ async fn delete_calendar() {
 #[tokio::test]
 async fn proppatch_calendar() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let body = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -403,7 +403,7 @@ async fn proppatch_calendar() {
 #[tokio::test]
 async fn options_calendar() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let resp = env
@@ -419,7 +419,7 @@ async fn options_calendar() {
 #[tokio::test]
 async fn propfind_depth_1_lists_events() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let ics = sample_event("listed-ev", "Listed Event");
@@ -447,7 +447,7 @@ async fn propfind_depth_1_lists_events() {
 #[tokio::test]
 async fn propfind_single_event() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let ics = sample_event("single-ev", "Single Event");
@@ -477,7 +477,7 @@ async fn propfind_single_event() {
 #[tokio::test]
 async fn vtodo_put_and_get() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "cal-rw", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "cal-rw", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n\
@@ -509,7 +509,7 @@ async fn vtodo_put_and_get() {
 #[tokio::test]
 async fn delete_calendar_cascades_to_objects() {
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "test", "/caldav/*");
+    let pw = common::create_app_password(&env.pool, "test", "/dav/*");
     let auth = common::basic_auth_header(&pw);
 
     env.server

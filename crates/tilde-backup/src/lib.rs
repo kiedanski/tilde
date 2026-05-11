@@ -364,6 +364,85 @@ pub fn restore_from_archive(archive_path: &Path, target_dir: &Path) -> Result<()
     Ok(())
 }
 
+/// Post-restore fixup: clean up stale state that doesn't transfer across machines.
+///
+/// After restoring a backup on a different machine (or after a fresh restore),
+/// the database contains references to state that no longer exists:
+/// - Jobs from the source machine (stale, will fail with "file not found")
+/// - Thumbnail flags (thumbnails live in cache, not in the backup)
+/// - Orphaned FTS tables from old email indexing
+///
+/// This function cleans all of that up so the server starts fresh.
+pub fn post_restore_fixup(conn: &Connection) -> Result<PostRestoreReport> {
+    // 1. Delete all stale jobs
+    let jobs_deleted = conn.execute("DELETE FROM jobs", []).unwrap_or(0);
+    if jobs_deleted > 0 {
+        info!(count = jobs_deleted, "Deleted stale jobs");
+    }
+
+    // 2. Reset thumbnail flags (thumbnails are in cache, not in backup)
+    let thumbnails_reset = conn
+        .execute("UPDATE photos SET thumbnail_256_generated = 0", [])
+        .unwrap_or(0);
+    if thumbnails_reset > 0 {
+        info!(
+            count = thumbnails_reset,
+            "Reset thumbnail flags for regeneration"
+        );
+    }
+
+    // 3. Drop orphaned FTS tables (from old email indexing)
+    let fts_tables: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts%'")
+            .unwrap();
+        stmt.query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    };
+    let mut fts_tables_dropped = 0;
+    for table in &fts_tables {
+        if conn
+            .execute(&format!("DROP TABLE IF EXISTS \"{}\"", table), [])
+            .is_ok()
+        {
+            fts_tables_dropped += 1;
+        }
+    }
+    if fts_tables_dropped > 0 {
+        info!(count = fts_tables_dropped, "Dropped orphaned FTS tables");
+    }
+
+    // 4. Clear backup_snapshots (archive paths from source machine are invalid)
+    let snapshots_cleared = conn
+        .execute("DELETE FROM backup_snapshots", [])
+        .unwrap_or(0);
+    if snapshots_cleared > 0 {
+        info!(
+            count = snapshots_cleared,
+            "Cleared stale backup snapshot records"
+        );
+    }
+
+    info!("Post-restore fixup complete");
+    Ok(PostRestoreReport {
+        jobs_deleted,
+        thumbnails_reset,
+        fts_tables_dropped,
+        snapshots_cleared,
+    })
+}
+
+/// Summary of what the post-restore fixup cleaned up.
+#[derive(Debug, Default)]
+pub struct PostRestoreReport {
+    pub jobs_deleted: usize,
+    pub thumbnails_reset: usize,
+    pub fts_tables_dropped: usize,
+    pub snapshots_cleared: usize,
+}
+
 /// Apply retention policy: keep the specified number of snapshots per time class,
 /// prune the rest (unless pinned).
 ///

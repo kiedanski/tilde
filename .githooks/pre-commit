@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Pre-commit hook: format check + clippy
+# Enable with: git config core.hooksPath .githooks
+set -e
+
+# Only check files that are staged (avoids formatting unrelated work)
+STAGED_RS=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')
+
+if [ -z "$STAGED_RS" ]; then
+    exit 0
+fi
+
+# 1. Check formatting
+if ! cargo fmt --check 2>/dev/null; then
+    echo ""
+    echo "pre-commit: formatting issues detected"
+    echo "Run 'cargo fmt' to fix, then re-stage."
+    echo ""
+    exit 1
+fi
+
+# 2. Run clippy on the workspace (same flags as CI)
+if ! cargo clippy --no-default-features -- -D warnings 2>/dev/null; then
+    echo ""
+    echo "pre-commit: clippy warnings detected"
+    echo "Fix the warnings above, then re-stage."
+    echo ""
+    exit 1
+fi

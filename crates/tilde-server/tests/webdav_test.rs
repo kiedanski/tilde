@@ -756,3 +756,156 @@ async fn copy_dir_depth_zero_no_children() {
         .await;
     resp.assert_status(StatusCode::NOT_FOUND);
 }
+
+// ─── Directory ETag changes when contents change ──────────────────────────────
+
+/// Directory ETags must change when a file is added, so sync clients
+/// (e.g. webgallery) can detect new photos via PROPFIND.
+#[tokio::test]
+async fn directory_etag_changes_on_file_add() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "dav-rw", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+
+    // Create a directory
+    env.server
+        .method(Method::from_bytes(b"MKCOL").unwrap(), "/dav/files/etag-dir")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    // PROPFIND the directory to get its initial ETag
+    let resp = env
+        .server
+        .method(
+            Method::from_bytes(b"PROPFIND").unwrap(),
+            "/dav/files/etag-dir",
+        )
+        .add_header(header::AUTHORIZATION, &auth)
+        .add_header("depth", "0")
+        .await;
+    resp.assert_status(StatusCode::MULTI_STATUS);
+    let body1 = resp.text();
+    let etag1 = extract_etag_from_propfind(&body1);
+
+    // Add a file to the directory
+    env.server
+        .method(Method::PUT, "/dav/files/etag-dir/photo.jpg")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("fake photo data")
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    // PROPFIND again — ETag must have changed
+    let resp = env
+        .server
+        .method(
+            Method::from_bytes(b"PROPFIND").unwrap(),
+            "/dav/files/etag-dir",
+        )
+        .add_header(header::AUTHORIZATION, &auth)
+        .add_header("depth", "0")
+        .await;
+    resp.assert_status(StatusCode::MULTI_STATUS);
+    let body2 = resp.text();
+    let etag2 = extract_etag_from_propfind(&body2);
+
+    assert_ne!(
+        etag1, etag2,
+        "Directory ETag must change after adding a file.\nBefore: {}\nAfter: {}",
+        etag1, etag2,
+    );
+
+    // Delete the file
+    env.server
+        .method(Method::DELETE, "/dav/files/etag-dir/photo.jpg")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    // PROPFIND again — ETag must have changed again
+    let resp = env
+        .server
+        .method(
+            Method::from_bytes(b"PROPFIND").unwrap(),
+            "/dav/files/etag-dir",
+        )
+        .add_header(header::AUTHORIZATION, &auth)
+        .add_header("depth", "0")
+        .await;
+    let body3 = resp.text();
+    let etag3 = extract_etag_from_propfind(&body3);
+
+    assert_ne!(
+        etag2, etag3,
+        "Directory ETag must change after deleting a file.\nBefore: {}\nAfter: {}",
+        etag2, etag3,
+    );
+}
+
+/// Directory ETag must change when a child file's content is modified in place.
+#[tokio::test]
+async fn directory_etag_changes_on_file_modify() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "dav-rw", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+
+    // Create dir + file
+    env.server
+        .method(Method::from_bytes(b"MKCOL").unwrap(), "/dav/files/mod-dir")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    env.server
+        .method(Method::PUT, "/dav/files/mod-dir/data.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("version 1")
+        .await;
+
+    // Get directory ETag
+    let resp = env
+        .server
+        .method(
+            Method::from_bytes(b"PROPFIND").unwrap(),
+            "/dav/files/mod-dir",
+        )
+        .add_header(header::AUTHORIZATION, &auth)
+        .add_header("depth", "0")
+        .await;
+    let etag1 = extract_etag_from_propfind(&resp.text());
+
+    // Overwrite the file with different content
+    env.server
+        .method(Method::PUT, "/dav/files/mod-dir/data.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("version 2")
+        .await;
+
+    // Directory ETag must have changed
+    let resp = env
+        .server
+        .method(
+            Method::from_bytes(b"PROPFIND").unwrap(),
+            "/dav/files/mod-dir",
+        )
+        .add_header(header::AUTHORIZATION, &auth)
+        .add_header("depth", "0")
+        .await;
+    let etag2 = extract_etag_from_propfind(&resp.text());
+
+    assert_ne!(
+        etag1, etag2,
+        "Directory ETag must change when a child file is modified.\nBefore: {}\nAfter: {}",
+        etag1, etag2,
+    );
+}
+
+/// Extract the first getetag value from a PROPFIND multistatus XML response.
+fn extract_etag_from_propfind(xml: &str) -> String {
+    // Look for <d:getetag>"value"</d:getetag>
+    let marker = "<d:getetag>";
+    let start = xml.find(marker).expect("No getetag in response") + marker.len();
+    let end = xml[start..]
+        .find("</d:getetag>")
+        .expect("No closing getetag");
+    xml[start..start + end].trim().trim_matches('"').to_string()
+}

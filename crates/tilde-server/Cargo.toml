@@ -73,3 +73,5 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 axum-test = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+libc = { workspace = true }

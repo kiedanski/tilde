@@ -54,9 +54,10 @@ async fn correct_app_password_authenticates() {
 }
 
 #[tokio::test]
-async fn dav_scoped_password_rejected_on_caldav() {
+async fn dav_scoped_password_works_on_caldav() {
+    // Issue #8: /dav/* scope should cover CalDAV since it's a DAV protocol
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "dav-only", "/dav/");
+    let pw = common::create_app_password(&env.pool, "dav-only", "/dav/*");
 
     let resp = env
         .server
@@ -65,22 +66,23 @@ async fn dav_scoped_password_rejected_on_caldav() {
         .add_header(header::AUTHORIZATION, common::basic_auth_header(&pw))
         .await;
 
-    resp.assert_status(StatusCode::UNAUTHORIZED);
+    resp.assert_status(StatusCode::MULTI_STATUS);
 }
 
 #[tokio::test]
-async fn caldav_scoped_password_rejected_on_dav() {
+async fn dav_scoped_password_works_on_carddav() {
+    // Issue #8: /dav/* scope should cover CardDAV since it's a DAV protocol
     let env = common::create_test_server();
-    let pw = common::create_app_password(&env.pool, "caldav-only", "/caldav/");
+    let pw = common::create_app_password(&env.pool, "dav-only-2", "/dav/*");
 
     let resp = env
         .server
-        .method(Method::from_bytes(b"PROPFIND").unwrap(), "/dav/files/")
+        .method(Method::from_bytes(b"PROPFIND").unwrap(), "/carddav/admin/")
         .add_header("depth", "0")
         .add_header(header::AUTHORIZATION, common::basic_auth_header(&pw))
         .await;
 
-    resp.assert_status(StatusCode::UNAUTHORIZED);
+    resp.assert_status(StatusCode::MULTI_STATUS);
 }
 
 #[tokio::test]

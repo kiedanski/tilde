@@ -261,6 +261,21 @@ pub async fn run_restore(
     if from_path.is_file() {
         println!("Restoring from archive {} to {}...", from, target_path);
         tilde_backup::restore_from_archive(from_path, target_dir)?;
+
+        // Run post-restore fixup on the restored database
+        let restored_db = target_dir.join("tilde.db");
+        if restored_db.exists() {
+            println!("Running post-restore fixup...");
+            let conn = db::init_db(restored_db.to_str().unwrap())?;
+            let migrations_dir = tilde_cli::find_migrations_dir();
+            db::run_migrations(&conn, &migrations_dir)?;
+            let report = tilde_backup::post_restore_fixup(&conn)?;
+            println!(
+                "Fixup: {} jobs deleted, {} thumbnail flags reset, {} FTS tables dropped",
+                report.jobs_deleted, report.thumbnails_reset, report.fts_tables_dropped,
+            );
+        }
+
         println!("Restore completed successfully to {}", target_path);
         return Ok(());
     }
@@ -289,6 +304,21 @@ pub async fn run_restore(
     println!("Restoring snapshot {} to {}...", snapshot_id, target_path);
     let backup_dir = config.data_dir().join("backup");
     tilde_backup::restore_snapshot(&conn, snapshot_id, &backup_dir, target_dir)?;
+
+    // Run post-restore fixup on the restored database
+    let restored_db = target_dir.join("tilde.db");
+    if restored_db.exists() {
+        println!("Running post-restore fixup...");
+        let restored_conn = db::init_db(restored_db.to_str().unwrap())?;
+        let migrations_dir = tilde_cli::find_migrations_dir();
+        db::run_migrations(&restored_conn, &migrations_dir)?;
+        let report = tilde_backup::post_restore_fixup(&restored_conn)?;
+        println!(
+            "Fixup: {} jobs deleted, {} thumbnail flags reset, {} FTS tables dropped",
+            report.jobs_deleted, report.thumbnails_reset, report.fts_tables_dropped,
+        );
+    }
+
     println!("Restore completed successfully to {}", target_path);
 
     Ok(())

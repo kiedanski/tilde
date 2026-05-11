@@ -116,7 +116,7 @@ async fn handle_caldav_request(
     req: axum::extract::Request,
 ) -> axum::response::Response {
     // Auth check
-    if !check_auth(state, &req, "/caldav/") {
+    if !check_auth(state, &req, "/dav/") {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Basic realm=\"tilde\"")],

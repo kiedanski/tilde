@@ -112,7 +112,7 @@ async fn handle_request(
     path: &str,
     req: axum::extract::Request,
 ) -> axum::response::Response {
-    if !check_auth(state, &req, "/carddav/") {
+    if !check_auth(state, &req, "/dav/") {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Basic realm=\"tilde\"")],

@@ -107,7 +107,7 @@ pub fn generate_thumbnails(
     photo_uuid: &str,
     cache_dir: &Path,
     quality: u8,
-) -> Result<PathBuf> {
+) -> Result<ThumbnailResult> {
     // Acquire single-slot semaphore to prevent OOM on large HEIC files
     let _guard = THUMBNAIL_LOCK
         .lock()
@@ -116,13 +116,20 @@ pub fn generate_thumbnails(
     generate_thumbnails_inner(source, photo_uuid, cache_dir, quality)
 }
 
+/// Result of thumbnail generation, includes the path and an optional blurhash
+/// computed from the already-loaded 256px thumbnail (avoids re-reading the full image).
+pub struct ThumbnailResult {
+    pub path_256: PathBuf,
+    pub blurhash: Option<String>,
+}
+
 /// Inner implementation without the lock (called from generate_video_thumbnail too)
 fn generate_thumbnails_inner(
     source: &Path,
     photo_uuid: &str,
     cache_dir: &Path,
     quality: u8,
-) -> Result<PathBuf> {
+) -> Result<ThumbnailResult> {
     let thumb_dir = cache_dir.join("thumbnails").join(photo_uuid);
     std::fs::create_dir_all(&thumb_dir)?;
 
@@ -136,9 +143,61 @@ fn generate_thumbnails_inner(
     let thumb_256 = img.resize_to_fill(256, 256, FilterType::Lanczos3);
     save_webp(&thumb_256, &path_256, quality)?;
 
+    // Compute blurhash from the already-loaded 256px thumbnail (not the full image)
+    let blurhash = compute_blurhash_from_image(&thumb_256);
+
     info!(uuid = %photo_uuid, "Thumbnails generated");
 
-    Ok(path_256)
+    Ok(ThumbnailResult { path_256, blurhash })
+}
+
+/// Compute a blurhash string from an already-loaded image (e.g. the 256px thumbnail).
+/// This avoids re-reading the full-resolution source file.
+fn compute_blurhash_from_image(img: &DynamicImage) -> Option<String> {
+    let small = img.resize_exact(32, 32, FilterType::Nearest);
+    let rgba = small.to_rgba8();
+    let pixels = rgba.as_raw();
+
+    let x_comp = 4;
+    let y_comp = 3;
+
+    let mut dc_r: f64 = 0.0;
+    let mut dc_g: f64 = 0.0;
+    let mut dc_b: f64 = 0.0;
+
+    for y in 0..32_u32 {
+        for x in 0..32_u32 {
+            let idx = ((y * 32 + x) * 4) as usize;
+            let r = srgb_to_linear(pixels[idx]);
+            let g = srgb_to_linear(pixels[idx + 1]);
+            let b = srgb_to_linear(pixels[idx + 2]);
+            dc_r += r;
+            dc_g += g;
+            dc_b += b;
+        }
+    }
+
+    let count = 1024.0;
+    dc_r /= count;
+    dc_g /= count;
+    dc_b /= count;
+
+    let size_flag = (x_comp - 1) + (y_comp - 1) * 9;
+    let mut result = String::new();
+    result.push(BASE83_CHARS[size_flag as usize]);
+    result.push(BASE83_CHARS[0]);
+    let dc_value = encode_dc(dc_r, dc_g, dc_b);
+    result.push_str(&encode_base83(dc_value, 4));
+    for _j in 0..y_comp {
+        for _i in 0..x_comp {
+            if _i == 0 && _j == 0 {
+                continue;
+            }
+            result.push_str(&encode_base83(0, 1));
+        }
+    }
+
+    Some(result)
 }
 
 /// Compute a blurhash string from an image file.
@@ -250,7 +309,7 @@ pub fn generate_video_thumbnail(
     cache_dir: &Path,
     quality: u8,
     _timeout_secs: u64,
-) -> Result<PathBuf> {
+) -> Result<ThumbnailResult> {
     // Acquire single-slot semaphore (shared with generate_thumbnails)
     let _guard = THUMBNAIL_LOCK
         .lock()
@@ -354,12 +413,16 @@ mod tests {
 
         // Test thumbnail generation
         let cache_dir = temp_dir.join("cache");
-        let p256 = generate_thumbnails(&heic_path, "test-heic-uuid", &cache_dir, 80).unwrap();
+        let result = generate_thumbnails(&heic_path, "test-heic-uuid", &cache_dir, 80).unwrap();
 
-        assert!(p256.exists(), "256px thumbnail should exist");
+        assert!(result.path_256.exists(), "256px thumbnail should exist");
         assert!(
-            std::fs::metadata(&p256).unwrap().len() > 0,
+            std::fs::metadata(&result.path_256).unwrap().len() > 0,
             "256px thumbnail should not be empty"
+        );
+        assert!(
+            result.blurhash.is_some(),
+            "Blurhash should be computed from thumbnail"
         );
 
         // Clean up
