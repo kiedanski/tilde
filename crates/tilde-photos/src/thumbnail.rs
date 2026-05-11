@@ -97,11 +97,19 @@ fn open_image(path: &Path) -> Result<DynamicImage> {
         let _guard = HEIC_DECODE_LOCK
             .lock()
             .map_err(|e| anyhow::anyhow!("HEIC decode lock poisoned: {}", e))?;
-        return decode_heic(path);
+        match decode_heic(path) {
+            Ok(img) => return Ok(img),
+            Err(e) => {
+                // Many .heic files are actually JPEGs with wrong extension
+                // (iPhone export artifacts). Fall back to generic image decoder.
+                debug!(path = %path.display(), error = %e, "HEIC decode failed, trying generic decoder");
+            }
+        }
     }
     #[cfg(not(feature = "heic"))]
     if is_heic(path) {
-        bail!("HEIC support not available (built without 'heic' feature)");
+        // No libheif — try generic decoder anyway (handles misnamed JPEGs)
+        debug!(path = %path.display(), "No HEIC support, trying generic decoder");
     }
     image::open(path).context("Failed to open image for thumbnail generation")
 }
