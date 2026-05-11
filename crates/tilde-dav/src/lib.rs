@@ -1907,16 +1907,33 @@ fn propfind_entry(state: &SharedDavState, rel_path: &str, href: &str) -> Propfin
 
         let mut hasher = Sha256::new();
         if let Ok(entries) = std::fs::read_dir(target) {
-            let mut names: Vec<String> = entries
+            let mut children: Vec<(String, bool, u64)> = entries
                 .flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|n| !n.starts_with('.'))
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.starts_with('.') {
+                        return None;
+                    }
+                    let meta = e.metadata().ok()?;
+                    let is_dir = meta.is_dir();
+                    let mtime = meta
+                        .modified()
+                        .ok()?
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()?
+                        .as_secs();
+                    Some((name, is_dir, mtime))
+                })
                 .collect();
-            names.sort();
-            for name in &names {
+            children.sort_by(|a, b| a.0.cmp(&b.0));
+            for (name, is_child_dir, mtime) in &children {
                 hasher.update(name.as_bytes());
-                // Include the child's content ETag so modifications propagate
-                if let Some(child_etag) = child_etags.get(name) {
+                if *is_child_dir {
+                    // For subdirectories, include mtime so changes inside
+                    // propagate up (e.g. adding a file in 05/ changes 2026/ ETag)
+                    hasher.update(mtime.to_le_bytes());
+                } else if let Some(child_etag) = child_etags.get(name) {
+                    // For files, include content ETag so modifications propagate
                     hasher.update(child_etag.as_bytes());
                 }
                 hasher.update(b"\0");
