@@ -90,6 +90,7 @@ pub fn create_test_server() -> TestEnv {
         scope_prefix: "/dav/".to_string(),
         organization_pattern: String::new(),
         allowed_symlink_targets: vec![],
+        cache_dir: None,
     });
 
     let caldav_state: tilde_cal::SharedCalDavState =

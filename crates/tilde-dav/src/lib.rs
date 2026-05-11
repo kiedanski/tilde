@@ -32,6 +32,9 @@ pub struct DavState {
     /// Extra directories that symlinks are allowed to resolve into.
     /// Used by the photos mount to allow thumbnail symlinks pointing to the cache dir.
     pub allowed_symlink_targets: Vec<PathBuf>,
+    /// Cache directory for thumbnails. When set (photos mount), DELETE will
+    /// clean up thumbnails and photo DB records alongside the file.
+    pub cache_dir: Option<PathBuf>,
 }
 
 pub type SharedDavState = Arc<DavState>;
@@ -628,6 +631,59 @@ async fn handle_delete(state: &SharedDavState, rel_path: &str) -> Response {
         }
     }
 
+    // Clean up photo-specific records (thumbnails, photo_tags, photos row)
+    if state.db_path_prefix == "photos/" && !rel_path.starts_with('_') {
+        let db = state.db.get().unwrap();
+        // Find the photo UUID via the file record
+        let photo_info: Option<(String, String)> = db
+            .query_row(
+                "SELECT p.id, f.id FROM photos p JOIN files f ON p.file_id = f.id WHERE f.path = ?1",
+                [&db_path],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .ok();
+
+        if let Some((photo_id, _file_id)) = photo_info {
+            // Delete thumbnail symlink: _thumbnails/{rel_path_stem}.webp
+            let original = std::path::Path::new(rel_path);
+            let stem = original
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let parent = original.parent().unwrap_or(std::path::Path::new(""));
+            let symlink_path = state
+                .files_root
+                .join("_thumbnails")
+                .join(parent)
+                .join(format!("{}.webp", stem));
+            if symlink_path.exists() || symlink_path.symlink_metadata().is_ok() {
+                let _ = tokio::fs::remove_file(&symlink_path).await;
+            }
+
+            // Delete thumbnail cache directory
+            if let Some(ref cache_dir) = state.cache_dir {
+                let thumb_dir = cache_dir.join("thumbnails").join(&photo_id);
+                if thumb_dir.exists() {
+                    let _ = tokio::fs::remove_dir_all(&thumb_dir).await;
+                }
+            }
+
+            // Delete photo_tags and photos row
+            db.execute("DELETE FROM photo_tags WHERE photo_id = ?1", [&photo_id])
+                .ok();
+            db.execute("DELETE FROM photos WHERE id = ?1", [&photo_id])
+                .ok();
+            // Delete any pending thumbnail jobs for this photo
+            let payload_match = format!("%{}%", photo_id);
+            db.execute(
+                "DELETE FROM jobs WHERE job_type = 'thumbnail' AND payload_json LIKE ?1 AND status = 'pending'",
+                [&payload_match],
+            ).ok();
+
+            info!(photo_id = %photo_id, "Cleaned up photo record, thumbnails, and tags");
+        }
+    }
+
     // Remove from DB (file disappears from listings)
     if disk_path.is_dir() {
         let db = state.db.get().unwrap();
@@ -835,6 +891,58 @@ async fn handle_move(state: &SharedDavState, rel_path: &str, headers: &HeaderMap
                 rusqlite::params![now, fid],
             )
             .ok();
+        }
+
+        // Update thumbnail symlink if this is a photo being moved
+        if state.db_path_prefix == "photos/"
+            && !rel_path.starts_with('_')
+            && !dest.starts_with('_')
+            && let Some(ref fid) = file_id
+            && let Some(ref pid) = db
+                .query_row("SELECT id FROM photos WHERE file_id = ?1", [fid], |row| {
+                    row.get::<_, String>(0)
+                })
+                .ok()
+            && let Some(ref cache_dir) = state.cache_dir
+        {
+            let thumb_source = cache_dir.join("thumbnails").join(pid).join("256.webp");
+            if thumb_source.exists() {
+                // Remove old symlink
+                let old_stem = std::path::Path::new(rel_path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let old_parent = std::path::Path::new(rel_path)
+                    .parent()
+                    .unwrap_or(std::path::Path::new(""));
+                let old_link = state
+                    .files_root
+                    .join("_thumbnails")
+                    .join(old_parent)
+                    .join(format!("{}.webp", old_stem));
+                let _ = std::fs::remove_file(&old_link);
+
+                // Create new symlink
+                let new_stem = std::path::Path::new(&dest)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let new_parent = std::path::Path::new(&dest)
+                    .parent()
+                    .unwrap_or(std::path::Path::new(""));
+                let new_link = state
+                    .files_root
+                    .join("_thumbnails")
+                    .join(new_parent)
+                    .join(format!("{}.webp", new_stem));
+                if let Some(dir) = new_link.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                #[cfg(unix)]
+                {
+                    let _ = std::os::unix::fs::symlink(&thumb_source, &new_link);
+                }
+            }
         }
 
         // If directory, update children paths too
