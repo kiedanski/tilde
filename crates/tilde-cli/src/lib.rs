@@ -144,6 +144,8 @@ pub enum Commands {
         #[command(subcommand)]
         command: UpdateCommands,
     },
+    /// Show file counts, storage breakdown, and recent activity
+    Usage,
     /// Install systemd unit file and configure system service
     Install,
     /// Generate shell completions

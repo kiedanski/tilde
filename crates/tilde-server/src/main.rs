@@ -34,6 +34,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Init) => commands::run_init(config_path.as_deref()).await,
         Some(Commands::Serve) => commands::run_serve(config_path.as_deref()).await,
         Some(Commands::Status) => commands::run_status(config_path.as_deref(), cli.json).await,
+        Some(Commands::Usage) => commands::run_usage(config_path.as_deref(), cli.json).await,
         Some(Commands::Diagnose) => commands::run_diagnose(config_path.as_deref()).await,
         Some(Commands::Auth { command }) => {
             commands::run_auth(config_path.as_deref(), command).await

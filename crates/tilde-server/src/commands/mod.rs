@@ -17,6 +17,7 @@ mod reindex;
 mod serve;
 mod status;
 mod update;
+mod usage;
 mod webhooks;
 
 pub use auth::*;
@@ -36,6 +37,7 @@ pub use reindex::*;
 pub use serve::*;
 pub use status::*;
 pub use update::*;
+pub use usage::*;
 pub use webhooks::*;
 
 /// Read a line from stdin, returning the default if empty
