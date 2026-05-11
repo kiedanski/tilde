@@ -539,8 +539,14 @@ pub fn create_thumbnail_symlink(
         std::fs::create_dir_all(dir)?;
     }
 
-    // Create symlink (remove existing if present)
-    if symlink_path.exists() || symlink_path.symlink_metadata().is_ok() {
+    // Skip if symlink already exists and points to the correct target
+    if let Ok(existing_target) = std::fs::read_link(&symlink_path) {
+        if existing_target == thumb_source {
+            return Ok(());
+        }
+        // Wrong target — remove and recreate
+        let _ = std::fs::remove_file(&symlink_path);
+    } else if symlink_path.exists() || symlink_path.symlink_metadata().is_ok() {
         let _ = std::fs::remove_file(&symlink_path);
     }
 
@@ -551,18 +557,16 @@ pub fn create_thumbnail_symlink(
     Ok(())
 }
 
-/// Rebuild the entire _thumbnails/ mirror directory from the database.
+/// Rebuild the _thumbnails/ mirror directory from the database.
+/// Only creates missing symlinks — does NOT delete the existing tree.
+/// This preserves directory mtimes so WebDAV clients (webgallery) can
+/// use ETags to detect actual changes instead of seeing a full reset.
 pub fn rebuild_thumbnail_mirror(
     conn: &rusqlite::Connection,
     photos_base: &Path,
     cache_dir: &Path,
 ) -> Result<u32> {
     let thumbnails_dir = photos_base.join("_thumbnails");
-
-    // Clean existing mirror
-    if thumbnails_dir.exists() {
-        std::fs::remove_dir_all(&thumbnails_dir)?;
-    }
     std::fs::create_dir_all(&thumbnails_dir)?;
 
     // Query all photos with thumbnails generated
