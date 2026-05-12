@@ -224,6 +224,78 @@ footer {
   </div>
 </div>
 
+<!-- Getting Started -->
+<section class="alt">
+<div class="container">
+  <h2>Getting started</h2>
+  <p class="subtitle">From zero to your own cloud in 5 minutes.</p>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <h3>Get a server</h3>
+        <p>Any Linux VPS with a public IP. We recommend <a href="https://www.hetzner.com/cloud">Hetzner</a> ($5/mo) — add a volume for persistent storage so your data survives if you rebuild the server.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <h3>Point your domain</h3>
+        <p>Create a DNS A record pointing your domain to the server IP. Example: <code>cloud.example.com → 1.2.3.4</code></p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <h3>Run the installer</h3>
+        <p>SSH into your server and run:</p>
+        <div class="install-box" onclick="copyInstall(this)" style="margin-top: 0.5rem; display: block; text-align: left;">
+          curl -fsSL https://kiedanski.github.io/tilde/install.sh | bash
+          <span class="copied">copied!</span>
+        </div>
+        <p style="margin-top: 0.75rem; color: var(--muted); font-size: 0.9rem;">The installer downloads the binary, sets up TLS certificates (Let's Encrypt), creates a systemd service, and gives you an app password. If you have a backup on Backblaze B2, it can restore from there automatically.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <h3>Connect your devices</h3>
+        <p><strong>iPhone/Mac:</strong> Open <code>https://cloud.example.com/apple-mobileconfig</code> in Safari — auto-configures Calendar &amp; Contacts.</p>
+        <p><strong>Android:</strong> Install <a href="https://www.davx5.com/">DAVx5</a> for calendar/contacts sync. Install <a href="https://github.com/kiedanski/webgallery">WebGallery</a> for photo browsing and auto-upload from your camera roll.</p>
+        <p><strong>Desktop:</strong> Mount files via <a href="https://rclone.org/">rclone</a> or any Nextcloud client. Notes work with any WebDAV-capable editor.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <h3>Upload your photos</h3>
+        <p>Drop photos into <code>/dav/photos/_inbox/</code> via any WebDAV client, rclone, or the WebGallery app. Tilde reads EXIF dates, organizes into <code>year/month/</code> folders, and generates thumbnails automatically.</p>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<style>
+.steps { display: flex; flex-direction: column; gap: 1.5rem; }
+.step { display: flex; gap: 1rem; align-items: flex-start; }
+.step-num {
+  flex-shrink: 0;
+  width: 2rem; height: 2rem;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700;
+  font-size: 0.9rem;
+  margin-top: 0.1rem;
+}
+.step-content h3 { font-size: 1rem; font-weight: 600; margin-bottom: 0.25rem; }
+.step-content p { font-size: 0.9rem; color: var(--muted); margin-bottom: 0.4rem; }
+.step-content p strong { color: var(--fg); }
+.step-content a { color: var(--accent); }
+</style>
+
 <!-- Stats -->
 <div class="stats">
   <div class="stat"><div class="stat-num">&lt;100 MB</div><div class="stat-label">RAM at idle</div></div>
@@ -466,6 +538,11 @@ tilde backup now</pre>
       <h3>DAVx5 (Android)</h3>
       <p>CalDAV + CardDAV sync</p>
       <code>Base URL: https://your.domain</code>
+    </div>
+    <div class="client">
+      <h3>WebGallery (Android)</h3>
+      <p>Photo browsing &amp; auto-upload</p>
+      <code>github.com/kiedanski/webgallery</code>
     </div>
     <div class="client">
       <h3>Nextcloud Client</h3>
