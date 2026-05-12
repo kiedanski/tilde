@@ -379,26 +379,129 @@ footer {
 <div class="container">
   <h2>Architecture</h2>
   <p class="subtitle">No containers. No microservices. Just a binary and SQLite.</p>
-  <div class="arch-box">
-                    ┌─────────────────────────────────┐
-                    │         tilde (single binary)    │
-  HTTPS :443       │                                  │
-  ──────────────►  │  ┌──────────┐  ┌─────────────┐  │
-                    │  │ WebDAV   │  │ CalDAV      │  │    ┌──────────┐
-  Nextcloud client  │  │ files/   │  │ calendars   │  │    │          │
-  rclone            │  │ photos/  │  │ events      │  ├───►│ SQLite   │
-  DAVx5             │  │ notes/   │  │ tasks       │  │    │ tilde.db │
-  Apple Calendar    │  ├──────────┤  ├─────────────┤  │    │          │
-  iOS Contacts      │  │ CardDAV  │  │ IMAP Sync   │  │    └──────────┘
-                    │  │ contacts │  │ email       │  │
-                    │  ├──────────┤  ├─────────────┤  │    ┌──────────┐
-                    │  │ MCP      │  │ Backup      │  ├───►│ Disk     │
-                    │  │ AI tools │  │ B2/S3       │  │    │ photos/  │
-                    │  └──────────┘  └─────────────┘  │    │ files/   │
-                    │         ACME TLS (Let's Encrypt) │    └──────────┘
-                    └─────────────────────────────────┘</div>
+  <div class="arch">
+    <div class="arch-center">
+      <div class="arch-label">tilde <span>(single binary)</span></div>
+      <div class="arch-modules">
+        <div class="arch-mod">
+          <strong>WebDAV</strong>
+          <span>files / photos / notes</span>
+        </div>
+        <div class="arch-mod">
+          <strong>CalDAV</strong>
+          <span>calendars / events / tasks</span>
+        </div>
+        <div class="arch-mod">
+          <strong>CardDAV</strong>
+          <span>contacts / address books</span>
+        </div>
+        <div class="arch-mod">
+          <strong>IMAP Sync</strong>
+          <span>email archive</span>
+        </div>
+        <div class="arch-mod">
+          <strong>MCP</strong>
+          <span>AI tool integration</span>
+        </div>
+        <div class="arch-mod">
+          <strong>Backup</strong>
+          <span>scheduled / B2 / S3</span>
+        </div>
+      </div>
+      <div class="arch-bottom">ACME TLS (Let's Encrypt) on port 443</div>
+    </div>
+    <div class="arch-sides">
+      <div class="arch-side arch-left">
+        <div class="arch-side-label">Clients</div>
+        <span>Nextcloud</span>
+        <span>rclone</span>
+        <span>DAVx5</span>
+        <span>Apple Calendar</span>
+        <span>iOS Contacts</span>
+        <span>WebGallery</span>
+      </div>
+      <div class="arch-side arch-right">
+        <div class="arch-side-label">Storage</div>
+        <span>SQLite (tilde.db)</span>
+        <span>photos/</span>
+        <span>files/</span>
+        <span>notes/</span>
+        <span>backup/</span>
+      </div>
+    </div>
+  </div>
 </div>
 </section>
+
+<style>
+.arch {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  align-items: center;
+}
+.arch-center {
+  background: var(--card-bg);
+  border: 2px solid var(--accent);
+  border-radius: 12px;
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 600px;
+}
+.arch-label {
+  text-align: center;
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+.arch-label span { font-weight: 400; color: var(--muted); }
+.arch-modules {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+}
+.arch-mod {
+  background: var(--section-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem;
+  text-align: center;
+}
+.arch-mod strong { display: block; font-size: 0.85rem; }
+.arch-mod span { font-size: 0.75rem; color: var(--muted); }
+.arch-bottom {
+  margin-top: 1rem;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.arch-sides {
+  display: flex;
+  justify-content: center;
+  gap: 3rem;
+  width: 100%;
+  max-width: 600px;
+}
+.arch-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.arch-side-label {
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 0.25rem;
+  font-size: 0.9rem;
+}
+@media (max-width: 500px) {
+  .arch-modules { grid-template-columns: repeat(2, 1fr); }
+  .arch-sides { gap: 1.5rem; }
+}
+</style>
 
 <!-- Installation -->
 <section class="alt">
