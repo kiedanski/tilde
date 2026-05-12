@@ -138,6 +138,9 @@ pub enum Commands {
     Reindex {
         #[arg(long, default_value = "all")]
         r#type: String,
+        /// Remove DB entries for files that no longer exist on disk
+        #[arg(long)]
+        prune: bool,
     },
     /// Update management
     Update {

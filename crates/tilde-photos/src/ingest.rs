@@ -29,6 +29,17 @@ pub fn process_inbox_file(
 
     info!(file = %filename, "Processing inbox file");
 
+    // Skip non-media files (e.g. .xmp sidecars, .txt, .DS_Store)
+    let ext = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !is_photo_ext(&ext) && !is_video_ext(&ext) && ext != "age" {
+        debug!(file = %filename, "Skipping non-media file in inbox");
+        return Ok(IngestResult::AlreadyProcessed);
+    }
+
     // Dedup: skip files already processed (prevents re-processing on restart)
     let sha256 = crate::compute_sha256(file_path)?;
     let already_processed: bool = conn.query_row(
@@ -92,7 +103,7 @@ pub fn process_inbox_file(
         std::fs::create_dir_all(&untriaged_dir)?;
         let dest = untriaged_dir.join(&filename);
         let dest = unique_path(&dest);
-        std::fs::copy(file_path, &dest).context("Failed to copy file to untriaged")?;
+        atomic_move(file_path, &dest).context("Failed to move file to untriaged")?;
         let photo_id =
             crate::index_photo_with_hash(conn, &dest, photos_base, &content_type, Some(&sha256))?;
         return Ok(IngestResult::Untriaged {
@@ -112,9 +123,9 @@ pub fn process_inbox_file(
         std::fs::create_dir_all(parent)?;
     }
 
-    // Step 6: Copy file (keep original in inbox so upload clients don't re-upload)
+    // Step 6: Move file from inbox to organized destination
     let dest = unique_path(&dest);
-    std::fs::copy(file_path, &dest).context("Failed to copy file to organized destination")?;
+    atomic_move(file_path, &dest).context("Failed to move file to organized destination")?;
 
     // Step 7: Index in database (pass precomputed SHA-256 to avoid re-reading)
     let photo_id =
@@ -143,6 +154,17 @@ pub fn process_library_drop_file(
         .to_string();
 
     info!(file = %filename, "Processing library-drop file");
+
+    // Skip non-media files (e.g. .xmp sidecars, .txt)
+    let ext = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !is_photo_ext(&ext) && !is_video_ext(&ext) && ext != "age" {
+        debug!(file = %filename, "Skipping non-media file in library-drop");
+        return Ok(IngestResult::AlreadyProcessed);
+    }
 
     // Dedup: skip files already processed
     let sha256 = crate::compute_sha256(file_path)?;

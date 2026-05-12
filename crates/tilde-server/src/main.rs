@@ -62,8 +62,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Notifications { command }) => {
             commands::run_notifications(config_path.as_deref(), command).await
         }
-        Some(Commands::Reindex { r#type }) => {
-            commands::run_reindex(config_path.as_deref(), &r#type).await
+        Some(Commands::Reindex { r#type, prune }) => {
+            commands::run_reindex(config_path.as_deref(), &r#type, prune).await
         }
         Some(Commands::Photos { command }) => {
             commands::run_photos(config_path.as_deref(), command).await

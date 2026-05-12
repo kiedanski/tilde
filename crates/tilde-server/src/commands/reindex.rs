@@ -2,7 +2,11 @@ use tilde_core::{config::Config, db};
 
 use super::{count_media_files, reindex_photos_from_dir_progress};
 
-pub async fn run_reindex(config_path: Option<&str>, index_type: &str) -> anyhow::Result<()> {
+pub async fn run_reindex(
+    config_path: Option<&str>,
+    index_type: &str,
+    prune: bool,
+) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     let conn = db::init_db(config.db_path().to_str().unwrap())?;
     let migrations_dir = tilde_cli::find_migrations_dir();
@@ -22,6 +26,55 @@ pub async fn run_reindex(config_path: Option<&str>, index_type: &str) -> anyhow:
         "photos" | "all" => {
             let photos_dir = config.data_dir().join("photos");
             if photos_dir.exists() {
+                // Prune: remove DB entries for files that no longer exist on disk
+                if prune {
+                    print!("Pruning orphaned photo records... ");
+                    let mut stmt = conn.prepare(
+                        "SELECT p.id, f.path FROM photos p JOIN files f ON p.file_id = f.id",
+                    )?;
+                    let all_photos: Vec<(String, String)> = stmt
+                        .query_map([], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })
+                        .unwrap()
+                        .flatten()
+                        .collect();
+
+                    let mut pruned = 0;
+                    let data_dir = config.data_dir();
+                    for (photo_id, file_path) in &all_photos {
+                        // file_path is like "photos/2024/03/photo.jpg"
+                        let full_path = data_dir.join(file_path);
+                        if !full_path.exists() {
+                            // Clean up: photo_tags, photos, files, thumbnail cache, symlink
+                            conn.execute("DELETE FROM photo_tags WHERE photo_id = ?1", [photo_id])
+                                .ok();
+                            conn.execute("DELETE FROM photos WHERE id = ?1", [photo_id])
+                                .ok();
+                            conn.execute("DELETE FROM files WHERE path = ?1", [file_path])
+                                .ok();
+                            // Delete pending jobs
+                            let job_match = format!("%{}%", photo_id);
+                            conn.execute(
+                                "DELETE FROM jobs WHERE job_type = 'thumbnail' AND payload_json LIKE ?1",
+                                [&job_match],
+                            ).ok();
+                            // Delete thumbnail cache
+                            let cache_dir = config.cache_dir();
+                            let thumb_dir = cache_dir.join("thumbnails").join(photo_id);
+                            if thumb_dir.exists() {
+                                let _ = std::fs::remove_dir_all(&thumb_dir);
+                            }
+                            pruned += 1;
+                        }
+                    }
+                    println!(
+                        "removed {} orphaned records (of {} total)",
+                        pruned,
+                        all_photos.len()
+                    );
+                }
+
                 let total = count_media_files(&photos_dir);
                 println!(
                     "Rebuilding photos index from disk ({} files found)...",
