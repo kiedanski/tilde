@@ -131,12 +131,54 @@ else
     echo ""
     warn "No existing data found at $DATA_DIR"
     echo ""
-    echo "  1) Restore from backup archive (.tar.gz)"
-    echo "  2) Start fresh"
+    echo "  1) Restore from Backblaze B2 (or S3-compatible storage)"
+    echo "  2) Restore from local backup file (.tar.gz)"
+    echo "  3) Start fresh"
     echo ""
-    read -rp "Choose [1/2]: " RESTORE_CHOICE
+    read -rp "Choose [1/2/3]: " RESTORE_CHOICE
 
     if [ "$RESTORE_CHOICE" = "1" ]; then
+        # Install s3 CLI tool if needed
+        if ! command -v aws &>/dev/null; then
+            info "Installing AWS CLI for S3 download..."
+            if command -v apt-get &>/dev/null; then
+                apt-get install -y -qq awscli 2>/dev/null || pip3 install awscli 2>/dev/null
+            elif command -v pip3 &>/dev/null; then
+                pip3 install awscli 2>/dev/null
+            fi
+        fi
+
+        echo ""
+        read -rp "S3 endpoint (e.g., https://s3.us-east-005.backblazeb2.com): " B2_ENDPOINT
+        read -rp "Bucket name: " B2_BUCKET
+        read -rp "Key ID: " B2_KEY_ID
+        read -rsp "Application key: " B2_KEY
+        echo ""
+
+        info "Listing available backups..."
+        LATEST_BACKUP=$(AWS_ACCESS_KEY_ID="$B2_KEY_ID" AWS_SECRET_ACCESS_KEY="$B2_KEY" \
+            aws s3 ls "s3://$B2_BUCKET/" --endpoint-url "$B2_ENDPOINT" 2>/dev/null \
+            | grep '\.tar\.gz' | sort | tail -1 | awk '{print $NF}')
+
+        if [ -z "$LATEST_BACKUP" ]; then
+            err "No backup archives found in s3://$B2_BUCKET/"
+            exit 1
+        fi
+
+        ok "Latest backup: $LATEST_BACKUP"
+        info "Downloading (this may take a while for large backups)..."
+        AWS_ACCESS_KEY_ID="$B2_KEY_ID" AWS_SECRET_ACCESS_KEY="$B2_KEY" \
+            aws s3 cp "s3://$B2_BUCKET/$LATEST_BACKUP" "/tmp/$LATEST_BACKUP" \
+            --endpoint-url "$B2_ENDPOINT"
+        ok "Downloaded to /tmp/$LATEST_BACKUP"
+
+        info "Restoring..."
+        tilde restore --from "/tmp/$LATEST_BACKUP" --at "" --to "$DATA_DIR"
+        rm -f "/tmp/$LATEST_BACKUP"
+        ok "Backup restored and temp file cleaned up"
+        FRESH=false
+
+    elif [ "$RESTORE_CHOICE" = "2" ]; then
         read -rp "Path to backup archive: " BACKUP_PATH
         if [ ! -f "$BACKUP_PATH" ]; then
             err "File not found: $BACKUP_PATH"
