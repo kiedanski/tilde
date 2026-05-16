@@ -131,51 +131,63 @@ else
     echo ""
     warn "No existing data found at $DATA_DIR"
     echo ""
-    echo "  1) Restore from Backblaze B2 (or S3-compatible storage)"
+    echo "  1) Restore from restic backup (Backblaze B2)"
     echo "  2) Restore from local backup file (.tar.gz)"
     echo "  3) Start fresh"
     echo ""
     read -rp "Choose [1/2/3]: " RESTORE_CHOICE
 
     if [ "$RESTORE_CHOICE" = "1" ]; then
-        # Install s3 CLI tool if needed
-        if ! command -v aws &>/dev/null; then
-            info "Installing AWS CLI for S3 download..."
+        # Install restic if needed
+        if ! command -v restic &>/dev/null; then
+            info "Installing restic..."
             if command -v apt-get &>/dev/null; then
-                apt-get install -y -qq awscli 2>/dev/null || pip3 install awscli 2>/dev/null
-            elif command -v pip3 &>/dev/null; then
-                pip3 install awscli 2>/dev/null
+                apt-get install -y -qq restic 2>/dev/null
+                restic self-update 2>/dev/null || true
             fi
         fi
 
-        echo ""
-        read -rp "S3 endpoint (e.g., https://s3.us-east-005.backblazeb2.com): " B2_ENDPOINT
-        read -rp "Bucket name: " B2_BUCKET
-        read -rp "Key ID: " B2_KEY_ID
-        read -rsp "Application key: " B2_KEY
-        echo ""
-
-        info "Listing available backups..."
-        LATEST_BACKUP=$(AWS_ACCESS_KEY_ID="$B2_KEY_ID" AWS_SECRET_ACCESS_KEY="$B2_KEY" \
-            aws s3 ls "s3://$B2_BUCKET/" --endpoint-url "$B2_ENDPOINT" 2>/dev/null \
-            | grep '\.tar\.gz' | sort | tail -1 | awk '{print $NF}')
-
-        if [ -z "$LATEST_BACKUP" ]; then
-            err "No backup archives found in s3://$B2_BUCKET/"
+        if ! command -v restic &>/dev/null; then
+            err "restic is required for backup restore. Install it manually."
             exit 1
         fi
 
-        ok "Latest backup: $LATEST_BACKUP"
-        info "Downloading (this may take a while for large backups)..."
-        AWS_ACCESS_KEY_ID="$B2_KEY_ID" AWS_SECRET_ACCESS_KEY="$B2_KEY" \
-            aws s3 cp "s3://$B2_BUCKET/$LATEST_BACKUP" "/tmp/$LATEST_BACKUP" \
-            --endpoint-url "$B2_ENDPOINT"
-        ok "Downloaded to /tmp/$LATEST_BACKUP"
+        echo ""
+        read -rp "Restic repository (e.g., b2:bucket-name:tilde-backups): " RESTIC_REPO
+        read -rp "B2 account ID: " RESTORE_B2_KEY_ID
+        read -rsp "B2 application key: " RESTORE_B2_KEY
+        echo ""
+        read -rsp "Restic password: " RESTIC_PW
+        echo ""
 
-        info "Restoring..."
-        tilde restore --from "/tmp/$LATEST_BACKUP" --at "" --to "$DATA_DIR"
-        rm -f "/tmp/$LATEST_BACKUP"
-        ok "Backup restored and temp file cleaned up"
+        info "Listing snapshots..."
+        RESTIC_REPOSITORY="$RESTIC_REPO" \
+        RESTIC_PASSWORD="$RESTIC_PW" \
+        B2_ACCOUNT_ID="$RESTORE_B2_KEY_ID" \
+        B2_ACCOUNT_KEY="$RESTORE_B2_KEY" \
+        restic snapshots --last --compact
+
+        echo ""
+        info "Restoring latest snapshot to $DATA_DIR (this may take a while)..."
+        RESTIC_REPOSITORY="$RESTIC_REPO" \
+        RESTIC_PASSWORD="$RESTIC_PW" \
+        B2_ACCOUNT_ID="$RESTORE_B2_KEY_ID" \
+        B2_ACCOUNT_KEY="$RESTORE_B2_KEY" \
+        restic restore latest --target /
+
+        # Rename DB snapshot
+        if [ -f "$DATA_DIR/.tilde-backup.db" ]; then
+            mv "$DATA_DIR/.tilde-backup.db" "$DATA_DIR/tilde.db"
+            ok "Restored database"
+        fi
+
+        ok "Backup restored from restic"
+
+        # Save B2 creds for ongoing backups
+        RESTORED_RESTIC_REPO="$RESTIC_REPO"
+        RESTORED_B2_KEY_ID="$RESTORE_B2_KEY_ID"
+        RESTORED_B2_KEY="$RESTORE_B2_KEY"
+        RESTORED_RESTIC_PW="$RESTIC_PW"
         FRESH=false
 
     elif [ "$RESTORE_CHOICE" = "2" ]; then
@@ -422,47 +434,66 @@ fi
 # ── Step 10b: Set up restic backup ────────────────────────────────────────────
 
 if command -v restic &>/dev/null; then
-    # Create restic password file if it doesn't exist
-    if [ ! -f "$CONFIG_DIR/restic-password" ]; then
-        head -c 32 /dev/urandom | base64 > "$CONFIG_DIR/restic-password"
+    # If we restored from restic, reuse those creds
+    if [ -n "${RESTORED_RESTIC_PW:-}" ]; then
+        echo "$RESTORED_RESTIC_PW" > "$CONFIG_DIR/restic-password"
         chmod 400 "$CONFIG_DIR/restic-password"
-        ok "Created restic password file"
-        echo ""
-        warn "IMPORTANT: Back up $CONFIG_DIR/restic-password somewhere safe!"
-        warn "If lost, your backup repository becomes unrecoverable."
-        echo ""
-    fi
+        ok "Restic password file created (from restore)"
 
-    # Prompt for B2 backup setup
-    echo ""
-    echo "  Set up Backblaze B2 backup? (recommended)"
-    echo ""
-    read -rp "Configure B2 backup? [Y/n]: " SETUP_B2
-
-    if [ "${SETUP_B2,,}" != "n" ]; then
-        read -rp "B2 bucket name: " B2_BUCKET
-        read -rp "B2 key ID: " B2_KEY_ID
-        read -rsp "B2 application key: " B2_KEY
-        echo ""
-
-        # Add B2 credentials to .env
-        {
+        if ! grep -q "RESTIC_REPOSITORY" "$CONFIG_DIR/.env" 2>/dev/null; then
+            {
+                echo ""
+                echo "# Restic backup to Backblaze B2"
+                echo "RESTIC_REPOSITORY=${RESTORED_RESTIC_REPO}"
+                echo "B2_ACCOUNT_ID=${RESTORED_B2_KEY_ID}"
+                echo "B2_ACCOUNT_KEY=${RESTORED_B2_KEY}"
+            } >> "$CONFIG_DIR/.env"
+            chmod 600 "$CONFIG_DIR/.env"
+            ok "B2 credentials saved to .env (from restore)"
+        fi
+    else
+        # Create restic password file if it doesn't exist
+        if [ ! -f "$CONFIG_DIR/restic-password" ]; then
+            head -c 32 /dev/urandom | base64 > "$CONFIG_DIR/restic-password"
+            chmod 400 "$CONFIG_DIR/restic-password"
+            ok "Created restic password file"
             echo ""
-            echo "# Restic backup to Backblaze B2"
-            echo "RESTIC_REPOSITORY=b2:${B2_BUCKET}:tilde-backups"
-            echo "B2_ACCOUNT_ID=${B2_KEY_ID}"
-            echo "B2_ACCOUNT_KEY=${B2_KEY}"
-        } >> "$CONFIG_DIR/.env"
-        chmod 600 "$CONFIG_DIR/.env"
-        ok "B2 credentials saved to .env"
+            warn "IMPORTANT: Back up $CONFIG_DIR/restic-password somewhere safe!"
+            warn "If lost, your backup repository becomes unrecoverable."
+            echo ""
+        fi
 
-        # Initialize the restic repo
-        info "Initializing restic backup repository..."
-        RESTIC_REPOSITORY="b2:${B2_BUCKET}:tilde-backups" \
-        RESTIC_PASSWORD_FILE="$CONFIG_DIR/restic-password" \
-        B2_ACCOUNT_ID="$B2_KEY_ID" \
-        B2_ACCOUNT_KEY="$B2_KEY" \
-        restic init 2>/dev/null && ok "Restic repo initialized" || ok "Restic repo already exists"
+        # Prompt for B2 backup setup
+        echo ""
+        echo "  Set up Backblaze B2 backup? (recommended)"
+        echo ""
+        read -rp "Configure B2 backup? [Y/n]: " SETUP_B2
+
+        if [ "${SETUP_B2,,}" != "n" ]; then
+            read -rp "B2 bucket name: " B2_BUCKET
+            read -rp "B2 key ID: " B2_KEY_ID
+            read -rsp "B2 application key: " B2_KEY
+            echo ""
+
+            # Add B2 credentials to .env
+            {
+                echo ""
+                echo "# Restic backup to Backblaze B2"
+                echo "RESTIC_REPOSITORY=b2:${B2_BUCKET}:tilde-backups"
+                echo "B2_ACCOUNT_ID=${B2_KEY_ID}"
+                echo "B2_ACCOUNT_KEY=${B2_KEY}"
+            } >> "$CONFIG_DIR/.env"
+            chmod 600 "$CONFIG_DIR/.env"
+            ok "B2 credentials saved to .env"
+
+            # Initialize the restic repo
+            info "Initializing restic backup repository..."
+            RESTIC_REPOSITORY="b2:${B2_BUCKET}:tilde-backups" \
+            RESTIC_PASSWORD_FILE="$CONFIG_DIR/restic-password" \
+            B2_ACCOUNT_ID="$B2_KEY_ID" \
+            B2_ACCOUNT_KEY="$B2_KEY" \
+            restic init 2>/dev/null && ok "Restic repo initialized" || ok "Restic repo already exists"
+        fi
     fi
 fi
 

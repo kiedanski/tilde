@@ -1,98 +1,60 @@
-# Installing tilde on a Proxmox LXC Container
+# Installing tilde
 
-This guide covers deploying tilde as a Nextcloud replacement on a Proxmox server, running in an unprivileged LXC container with systemd.
+## Quick Install (any VPS)
 
-## Requirements
-
-- Proxmox VE host with a Debian/Ubuntu LXC template
-- A domain name pointing to your server (e.g., `cloud.example.com`)
-- Port 443 open and forwarded to the container
-- ~1 GB disk minimum (more for photos/files)
-- 256-512 MB RAM
-
-## 1. Create the LXC Container
-
-On the Proxmox host:
+SSH into a fresh Ubuntu 24.04 server and run:
 
 ```bash
-# Create a Debian 12 container (adjust storage/ID as needed)
-pct create 110 local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
-  --hostname tilde \
-  --memory 512 \
-  --swap 512 \
-  --cores 2 \
-  --rootfs local-lvm:8 \
-  --net0 name=eth0,bridge=vmbr0,ip=192.168.0.110/24,gw=192.168.0.1 \
-  --unprivileged 1 \
-  --onboot 1
+curl -fsSL https://raw.githubusercontent.com/kiedanski/tilde/main/install.sh | sudo bash
 ```
 
-If you want to share a ZFS volume for photos/files storage, add a mount point:
+The installer will:
+1. Download the latest binary
+2. Ask for your data directory and domain
+3. Set up systemd, firewall, and restic backups
+4. Create your first app password
+
+**Requirements:** Linux (x86_64 or aarch64), systemd, port 443 available.
+
+After the installer finishes, set up nginx as a reverse proxy for TLS (see below).
+
+---
+
+## Step-by-Step Manual Install
+
+### 1. Download the binary
 
 ```bash
-# Optional: mount existing ZFS subvolume for data
-# mp0: data:subvol-100-disk-1,mp=/data,backup=0,ro=0
+ARCH=$(uname -m)  # x86_64 or aarch64
+curl -fsSL "https://github.com/kiedanski/tilde/releases/latest/download/tilde-linux-${ARCH}" \
+  -o /usr/local/bin/tilde
+chmod +x /usr/local/bin/tilde
 ```
 
-## 2. Start and Enter the Container
+### 2. Create system user and directories
 
 ```bash
-pct start 110
-pct enter 110
+useradd --system --no-create-home --shell /usr/sbin/nologin tilde
+mkdir -p /data/tilde /etc/tilde /home/tilde/.cache/tilde
+chown -R tilde:tilde /data/tilde /etc/tilde /home/tilde
 ```
 
-## 3. Install tilde Binary
+Use a separate volume for `/data` so your data survives server rebuilds.
 
-**Option A: Copy pre-built binary (recommended)**
+### 3. Write config
 
-From your build machine (the one with the cross-compiled binary):
-
-```bash
-# From the machine where you built tilde:
-scp target/x86_64-unknown-linux-musl/release/tilde root@proxmox-ip:/tmp/
-
-# On the Proxmox host, copy into the container:
-pct push 110 /tmp/tilde /usr/bin/tilde
-pct exec 110 -- chmod +x /usr/bin/tilde
-```
-
-**Option B: Build on the container itself**
-
-```bash
-apt update && apt install -y curl build-essential pkg-config libheif-dev
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source ~/.cargo/env
-# Clone and build
-git clone <your-repo-url> /tmp/tilde-src
-cd /tmp/tilde-src
-cargo build --release
-cp target/release/tilde /usr/bin/tilde
-```
-
-## 4. Configure
-
-### Create config directory and environment file
-
-```bash
-mkdir -p /etc/tilde
-```
-
-### Write `/etc/tilde/config.toml`
+**/etc/tilde/config.toml:**
 
 ```toml
 [server]
-hostname = "cloud.example.com"   # YOUR DOMAIN HERE
+hostname = "cloud.example.com"
 listen_addr = "0.0.0.0"
-listen_port = 443
+listen_port = 8080
 
 [tls]
-mode = "acme"
-# For reverse proxy setups, use mode = "upstream" and listen_port = 8080
+mode = "upstream"   # nginx handles TLS
 
-[auth]
-session_ttl_hours = 24
-webauthn_enabled = true
-webauthn_rp_id = "cloud.example.com"   # Must match hostname
+data_dir_override = "/data/tilde"
 
 [photos]
 enabled = true
@@ -107,258 +69,311 @@ enabled = true
 [notes]
 root_path = "notes"
 
-[email]
-enabled = false
-# Uncomment to enable email archival:
-# enabled = true
-# [[email.accounts]]
-# name = "personal"
-# imap_host = "imap.yourprovider.com"
-
 [mcp]
 enabled = true
 tool_allowlist = ["*"]
 
 [backup]
 enabled = true
-schedule = "hourly"
+schedule = "daily@04:00"
+password_file = "/etc/tilde/restic-password"
+keep_daily = 7
+keep_weekly = 4
+keep_monthly = 12
 
-# Optional: offsite backup to Backblaze B2
-# [[backup.offsite]]
-# name = "b2"
-# type = "s3"
-# endpoint = "https://s3.us-east-005.backblazeb2.com"  # Check your B2 region!
-# bucket_env = "TILDE_BACKUP_B2_BUCKET"
-# key_id_env = "TILDE_BACKUP_B2_KEY_ID"
-# key_env = "TILDE_BACKUP_B2_KEY"
-# schedule = "hourly"
+[logging]
+level = "info"
+format = "json"
 ```
 
-### Write `/etc/tilde/.env`
+**/etc/tilde/.env:**
 
 ```bash
-cat > /etc/tilde/.env << 'EOF'
-# REQUIRED
-TILDE_ADMIN_PASSWORD=CHANGE_ME_TO_A_STRONG_PASSWORD
-TILDE_HOSTNAME=cloud.example.com
-TILDE_ACME_EMAIL=you@example.com
-TILDE_BACKUP_PASSWORD=CHANGE_ME_RANDOM_STRING
+# Restic backup to Backblaze B2
+RESTIC_REPOSITORY=b2:your-bucket:tilde-backups
+B2_ACCOUNT_ID=your-key-id
+B2_ACCOUNT_KEY=your-key
 
-# OFFSITE BACKUP (optional)
-# TILDE_BACKUP_B2_KEY_ID=
-# TILDE_BACKUP_B2_KEY=
-# TILDE_BACKUP_B2_BUCKET=tilde-backups
-
-# EMAIL (optional)
-# TILDE_EMAIL_IMAP_HOST=imap.purelymail.com
-# TILDE_EMAIL_IMAP_PORT=993
+# Email archive (optional)
 # TILDE_EMAIL_USERNAME=you@example.com
-# TILDE_EMAIL_PASSWORD=
-EOF
+# TILDE_EMAIL_PASSWORD=your-imap-password
+
+# Notifications (optional)
+# TILDE_NTFY_TOPIC=https://ntfy.sh/your-topic
+```
+
+```bash
 chmod 600 /etc/tilde/.env
 ```
 
-## 5. Install systemd Service
+### 4. Set up restic backup
 
 ```bash
-tilde install
+# Generate a password (save this somewhere safe!)
+head -c 32 /dev/urandom | base64 > /etc/tilde/restic-password
+chmod 400 /etc/tilde/restic-password
+chown tilde:tilde /etc/tilde/restic-password
+
+# Initialize the repo
+source /etc/tilde/.env
+RESTIC_PASSWORD_FILE=/etc/tilde/restic-password restic init
 ```
 
-This creates a `tilde` system user, writes the systemd unit file, and reloads systemd.
+### 5. Install systemd service
 
-### Load environment variables
+**/etc/systemd/system/tilde.service:**
 
-Edit the systemd override to load the env file:
+```ini
+[Unit]
+Description=tilde personal cloud server
+After=network-online.target
+Wants=network-online.target
 
-```bash
-mkdir -p /etc/systemd/system/tilde.service.d
-cat > /etc/systemd/system/tilde.service.d/env.conf << 'EOF'
 [Service]
+Type=notify
+User=tilde
+ExecStart=/usr/local/bin/tilde --config /etc/tilde/config.toml serve
 EnvironmentFile=/etc/tilde/.env
-EOF
+Environment=TILDE_DATA_DIR=/data/tilde
+Environment=TILDE_CONFIG_DIR=/etc/tilde
+
+Restart=always
+RestartSec=5
+TimeoutStartSec=300
+TimeoutStopSec=30
+
+ProtectSystem=strict
+ReadWritePaths=/data/tilde /etc/tilde /home/tilde
+ProtectHome=false
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
 systemctl daemon-reload
-```
-
-## 6. Start the Service
-
-```bash
 systemctl enable --now tilde
-systemctl status tilde
-journalctl -u tilde -f   # Watch logs
 ```
 
-## 7. Verify
+### 6. Install nginx + TLS
 
 ```bash
-# Check health endpoint
-curl -s http://localhost:443/health | python3 -m json.tool
-
-# Check Nextcloud-compatible status
-curl -s http://localhost:443/status.php
-
-# Run built-in diagnostics
-tilde diagnose
+apt install -y nginx certbot python3-certbot-nginx
 ```
 
-## 8. Connect Clients
+**/etc/nginx/sites-available/tilde:**
 
-### Nextcloud Desktop/Mobile
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name cloud.example.com;
 
-1. Open Nextcloud client
-2. Enter your server URL: `https://cloud.example.com`
-3. It will open a browser for Login Flow v2
-4. Log in with username `admin` and your `TILDE_ADMIN_PASSWORD`
-5. The client will sync your files
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
 
-### iOS/macOS Calendar & Contacts
+        # WebDAV/CalDAV/CardDAV need large bodies
+        client_max_body_size 10G;
 
-Use the auto-config profile:
+        # WebSocket/streaming support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
 
-1. Open `https://cloud.example.com/apple-mobileconfig` in Safari
-2. Install the profile — it pre-configures CalDAV and CardDAV
+        # Stream responses (don't buffer)
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+}
+```
 
-Or manually:
-- CalDAV server: `https://cloud.example.com/caldav/`
-- CardDAV server: `https://cloud.example.com/carddav/`
-- Username: `admin`, Password: your admin password
+```bash
+ln -sf /etc/nginx/sites-available/tilde /etc/nginx/sites-enabled/tilde
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl restart nginx
 
-### DAVx5 (Android)
+# Get TLS certificate
+certbot --nginx -d cloud.example.com --non-interactive --agree-tos -m you@example.com
+```
+
+Certbot auto-renews via a systemd timer. To keep port 80 closed except during renewal:
+
+```bash
+# Close port 80
+ufw delete allow 80/tcp
+
+# Add hooks to open/close during renewal
+cat > /etc/letsencrypt/renewal-hooks/pre/open-80.sh << 'EOF'
+#!/bin/bash
+ufw allow 80/tcp >/dev/null 2>&1
+EOF
+
+cat > /etc/letsencrypt/renewal-hooks/post/close-80.sh << 'EOF'
+#!/bin/bash
+ufw delete allow 80/tcp >/dev/null 2>&1
+EOF
+
+chmod +x /etc/letsencrypt/renewal-hooks/pre/open-80.sh
+chmod +x /etc/letsencrypt/renewal-hooks/post/close-80.sh
+```
+
+### 7. Firewall
+
+```bash
+apt install -y ufw
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh
+ufw allow 443/tcp
+ufw --force enable
+```
+
+### 8. Harden SSH
+
+```bash
+cat > /etc/ssh/sshd_config.d/99-harden.conf << 'EOF'
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin prohibit-password
+EOF
+systemctl restart ssh
+```
+
+Install fail2ban:
+
+```bash
+apt install -y fail2ban
+systemctl enable --now fail2ban
+```
+
+### 9. Create app passwords
+
+```bash
+sudo -u tilde tilde --config /etc/tilde/config.toml auth app-password create \
+  --name "phone" --scope "/dav/*"
+
+sudo -u tilde tilde --config /etc/tilde/config.toml auth app-password create \
+  --name "desktop" --scope "*"
+```
+
+Save each token — they cannot be retrieved later.
+
+### 10. Install optional dependencies
+
+```bash
+apt install -y ffmpeg    # Video thumbnails
+apt install -y restic    # Backups (already installed if using install.sh)
+restic self-update       # Get latest version
+```
+
+---
+
+## Connect Clients
+
+### iOS/macOS (Calendar + Contacts)
+
+Open in Safari to auto-configure:
+```
+https://cloud.example.com/apple-mobileconfig
+```
+
+### Android (DAVx5)
 
 - Base URL: `https://cloud.example.com`
-- Use CalDAV/CardDAV auto-discovery
+- Use app password with `/dav/*` scope
 
-### Notes (Joplin, iA Writer, etc.)
+### Files (rclone, Roundsync, any WebDAV client)
 
-Any WebDAV-capable notes app:
-- URL: `https://cloud.example.com/dav/notes/`
-- Username: `admin`, Password: your admin password
+- WebDAV URL: `https://cloud.example.com/dav/files/`
 
-### MCP (AI Integration)
+### Notes (any WebDAV-capable app)
 
-Generate an MCP token:
+- WebDAV URL: `https://cloud.example.com/dav/notes/`
 
-```bash
-tilde mcp create-token --name "my-ai" --tools "*"
-```
+---
 
-Use the returned token as a Bearer token with endpoint:
-`https://cloud.example.com/mcp`
+## Backups
 
-## 9. Backups
-
-### Local backup status
+tilde uses [restic](https://restic.net) for incremental, encrypted, deduplicated backups to Backblaze B2.
 
 ```bash
-tilde backup status
-tilde backup list
-```
+# Check status
+sudo -u tilde tilde --config /etc/tilde/config.toml backup status
 
-### Manual backup with offsite upload
+# Run a backup now
+sudo -u tilde tilde --config /etc/tilde/config.toml backup now
 
-```bash
-tilde backup now --offsite b2
+# List snapshots
+sudo -u tilde tilde --config /etc/tilde/config.toml backup list
+
+# Verify repository integrity
+sudo -u tilde tilde --config /etc/tilde/config.toml backup verify
 ```
 
 ### Restore from backup
 
-```bash
-tilde backup list
-tilde backup restore <snapshot-id>
-```
-
-## 10. Updating
+On a new server, install tilde and restic, then:
 
 ```bash
-# Copy new binary
-scp tilde root@proxmox-ip:/tmp/
-pct push 110 /tmp/tilde /usr/bin/tilde
+export RESTIC_REPOSITORY=b2:your-bucket:tilde-backups
+export RESTIC_PASSWORD_FILE=/etc/tilde/restic-password
+export B2_ACCOUNT_ID=your-key-id
+export B2_ACCOUNT_KEY=your-key
 
-# Restart
-pct exec 110 -- systemctl restart tilde
+# List available snapshots
+restic snapshots --last
+
+# Restore latest
+restic restore latest --target /
+
+# Rename the database snapshot
+mv /data/tilde/.tilde-backup.db /data/tilde/tilde.db
 ```
 
-Or use the built-in self-update (if configured):
+Then start tilde normally.
+
+---
+
+## Updating
 
 ```bash
-tilde self-update
+sudo -u tilde tilde --config /etc/tilde/config.toml update apply
 ```
 
-## Reverse Proxy Setup (Alternative to ACME)
+This downloads the latest release from GitHub and performs a zero-downtime restart.
 
-If you already have a reverse proxy (nginx, Caddy, Traefik) handling TLS:
-
-```toml
-# In config.toml:
-[server]
-listen_port = 8080
-trusted_proxies = ["10.0.0.1/32"]  # Your proxy IP
-
-[tls]
-mode = "upstream"
-```
-
-Then proxy `https://cloud.example.com` to `http://<container-ip>:8080`.
+---
 
 ## Data Locations
-
-When running as a systemd service:
 
 | What | Path |
 |------|------|
 | Config | `/etc/tilde/config.toml` |
 | Secrets | `/etc/tilde/.env` |
-| Database | `/var/lib/tilde/tilde.db` |
-| Files | `/var/lib/tilde/files/` |
-| Photos | `/var/lib/tilde/photos/` |
-| Notes | `/var/lib/tilde/files/notes/` |
-| Backups | `/var/lib/tilde/backup/` |
-| Thumbnails | `/var/cache/tilde/thumbnails/` |
-| ACME certs | `/var/lib/tilde/acme/` |
+| Database | `/data/tilde/tilde.db` |
+| Files | `/data/tilde/files/` |
+| Photos | `/data/tilde/photos/` |
+| Notes | `/data/tilde/notes/` |
+| Calendars | `/data/tilde/calendars/` |
+| Contacts | `/data/tilde/contacts/` |
+| Thumbnails | `~tilde/.cache/tilde/thumbnails/` |
 | Logs | `journalctl -u tilde` |
 
-## Migrating from Nextcloud
+---
 
-1. **Files:** Copy your Nextcloud data directory contents into `/var/lib/tilde/files/`
-2. **Calendar:** Export `.ics` files from Nextcloud, import via CalDAV client
-3. **Contacts:** Export `.vcf` files from Nextcloud, import via CardDAV client
-4. **Photos:** Copy into `/var/lib/tilde/photos/_inbox/` — tilde auto-organizes them
-5. **Notes:** Copy markdown files into `/var/lib/tilde/files/notes/`
+## Security Checklist
 
-After copying files, let tilde index them:
-
-```bash
-systemctl restart tilde   # Triggers re-scan
-```
-
-## Troubleshooting
-
-### ACME certificate not provisioning
-
-- Ensure port 443 is reachable from the internet
-- Check DNS resolves to your server: `dig cloud.example.com`
-- Check logs: `journalctl -u tilde | grep -i acme`
-- The first request may take 10-30 seconds while the cert is provisioned
-
-### Nextcloud client can't connect
-
-- Verify `status.php` works: `curl https://cloud.example.com/status.php`
-- Check the client is using your server URL (not `localhost`)
-- Try the Login Flow v2 URL in a browser: `https://cloud.example.com/login/v2`
-
-### Out of memory
-
-tilde is configured with `MemoryMax=512M` in systemd. If you're processing many large HEIC photos simultaneously, you may need to increase this:
-
-```bash
-systemctl edit tilde
-# Add: [Service]
-#      MemoryMax=1G
-```
-
-### Database locked
-
-Only one instance of tilde should run at a time. Check for stale processes:
-
-```bash
-ps aux | grep tilde
-```
+- [ ] SSH: password auth disabled, key-only
+- [ ] Firewall: only 22 and 443 open
+- [ ] TLS: valid cert, auto-renewing
+- [ ] fail2ban installed
+- [ ] unattended-upgrades enabled
+- [ ] Secrets: `.env` is 600, `restic-password` is 400
+- [ ] tilde runs as unprivileged user
+- [ ] Backup password stored in password manager
