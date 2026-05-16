@@ -152,10 +152,8 @@ impl Config {
     fn default_config_paths() -> Vec<PathBuf> {
         let mut paths = Vec::new();
 
-        // Systemd mode (highest priority)
-        if Self::is_systemd_mode() {
-            paths.push(PathBuf::from("/etc/tilde/config.toml"));
-        }
+        // System-wide config (always checked)
+        paths.push(PathBuf::from("/etc/tilde/config.toml"));
 
         // Explicit TILDE_CONFIG_DIR
         if let Ok(dir) = std::env::var("TILDE_CONFIG_DIR") {
