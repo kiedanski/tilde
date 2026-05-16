@@ -447,6 +447,49 @@ B2_SETUP
     ok "B2 backup configured — daily at 04:00"
 fi
 
+# ── Create admin user (don't run as root) ─────────────────────────────────────
+
+echo ""
+read -rp "Create an admin user? (replaces root SSH) [Y/n]: " CREATE_USER
+if [ "${CREATE_USER,,}" != "n" ]; then
+    read -rp "Username: " ADMIN_USER
+    if [ -n "$ADMIN_USER" ]; then
+        info "Creating user '$ADMIN_USER'..."
+        ssh $SSH_OPTS "$SSH_TARGET" bash <<USER_SETUP
+set -euo pipefail
+
+# Create user with sudo
+adduser --disabled-password --gecos "" "$ADMIN_USER"
+usermod -aG sudo "$ADMIN_USER"
+
+# Copy SSH key from root
+mkdir -p /home/$ADMIN_USER/.ssh
+cp /root/.ssh/authorized_keys /home/$ADMIN_USER/.ssh/
+chown -R $ADMIN_USER:$ADMIN_USER /home/$ADMIN_USER/.ssh
+chmod 700 /home/$ADMIN_USER/.ssh
+chmod 600 /home/$ADMIN_USER/.ssh/authorized_keys
+
+# Add to tilde group for CLI access
+usermod -aG tilde $ADMIN_USER
+
+# Group-readable data dirs
+chmod -R g+rw /data/tilde
+chmod g+r /etc/tilde/config.toml
+find /data/tilde -type d -exec chmod g+s {} \;
+
+# Passwordless sudo
+echo "$ADMIN_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$ADMIN_USER
+
+# Disable root SSH
+sed -i '/^PermitRootLogin/d' /etc/ssh/sshd_config.d/99-harden.conf 2>/dev/null || true
+echo "PermitRootLogin no" >> /etc/ssh/sshd_config.d/99-harden.conf
+systemctl restart ssh
+USER_SETUP
+        ok "User '$ADMIN_USER' created, root SSH disabled"
+        SSH_USER_TARGET="$ADMIN_USER@$SERVER_IP"
+    fi
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -455,8 +498,8 @@ echo -e "${GREEN}║${NC}   tilde deployed!                                    $
 echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "  URL:      https://$DOMAIN"
-echo "  SSH:      ssh ${SSH_TARGET}"
-echo "  Logs:     ssh ${SSH_TARGET} journalctl -u tilde -f"
+echo "  SSH:      ssh ${SSH_USER_TARGET:-$SSH_TARGET}"
+echo "  Logs:     ssh ${SSH_USER_TARGET:-$SSH_TARGET} journalctl -u tilde -f"
 echo ""
 if [ "$RESTORE" = true ]; then
     echo "  Restored from: ${RESTIC_REPO}"

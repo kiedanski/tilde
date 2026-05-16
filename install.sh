@@ -301,6 +301,8 @@ mkdir -p "$CONFIG_DIR"
 
 if [ ! -f "$CONFIG_DIR/config.toml" ]; then
     cat > "$CONFIG_DIR/config.toml" << TOML
+data_dir_override = "$DATA_DIR"
+
 [server]
 hostname = "$HOSTNAME"
 listen_addr = "0.0.0.0"
@@ -308,8 +310,6 @@ listen_port = 443
 
 [tls]
 mode = "acme"
-
-data_dir_override = "$DATA_DIR"
 
 [photos]
 enabled = true
