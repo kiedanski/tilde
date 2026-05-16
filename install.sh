@@ -306,6 +306,10 @@ organization_pattern = "{year}/{month:02}"
 [backup]
 enabled = true
 schedule = "daily@04:00"
+password_file = "${CONFIG_DIR}/restic-password"
+keep_daily = 7
+keep_weekly = 4
+keep_monthly = 12
 TOML
     ok "Config written to $CONFIG_DIR/config.toml"
 else
@@ -411,6 +415,55 @@ echo ""
 info "Installing optional dependencies..."
 if command -v apt-get &>/dev/null; then
     apt-get install -y -qq ffmpeg 2>/dev/null && ok "ffmpeg installed (video thumbnails)" || warn "ffmpeg not available (video thumbnails disabled)"
+    apt-get install -y -qq restic 2>/dev/null && ok "restic installed (incremental backups)" || warn "restic not available (install manually for backup support)"
+    restic self-update 2>/dev/null || true
+fi
+
+# ── Step 10b: Set up restic backup ────────────────────────────────────────────
+
+if command -v restic &>/dev/null; then
+    # Create restic password file if it doesn't exist
+    if [ ! -f "$CONFIG_DIR/restic-password" ]; then
+        head -c 32 /dev/urandom | base64 > "$CONFIG_DIR/restic-password"
+        chmod 400 "$CONFIG_DIR/restic-password"
+        ok "Created restic password file"
+        echo ""
+        warn "IMPORTANT: Back up $CONFIG_DIR/restic-password somewhere safe!"
+        warn "If lost, your backup repository becomes unrecoverable."
+        echo ""
+    fi
+
+    # Prompt for B2 backup setup
+    echo ""
+    echo "  Set up Backblaze B2 backup? (recommended)"
+    echo ""
+    read -rp "Configure B2 backup? [Y/n]: " SETUP_B2
+
+    if [ "${SETUP_B2,,}" != "n" ]; then
+        read -rp "B2 bucket name: " B2_BUCKET
+        read -rp "B2 key ID: " B2_KEY_ID
+        read -rsp "B2 application key: " B2_KEY
+        echo ""
+
+        # Add B2 credentials to .env
+        {
+            echo ""
+            echo "# Restic backup to Backblaze B2"
+            echo "RESTIC_REPOSITORY=b2:${B2_BUCKET}:tilde-backups"
+            echo "B2_ACCOUNT_ID=${B2_KEY_ID}"
+            echo "B2_ACCOUNT_KEY=${B2_KEY}"
+        } >> "$CONFIG_DIR/.env"
+        chmod 600 "$CONFIG_DIR/.env"
+        ok "B2 credentials saved to .env"
+
+        # Initialize the restic repo
+        info "Initializing restic backup repository..."
+        RESTIC_REPOSITORY="b2:${B2_BUCKET}:tilde-backups" \
+        RESTIC_PASSWORD_FILE="$CONFIG_DIR/restic-password" \
+        B2_ACCOUNT_ID="$B2_KEY_ID" \
+        B2_ACCOUNT_KEY="$B2_KEY" \
+        restic init 2>/dev/null && ok "Restic repo initialized" || ok "Restic repo already exists"
+    fi
 fi
 
 # ── Step 11: Start ───────────────────────────────────────────────────────────

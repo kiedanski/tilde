@@ -385,9 +385,9 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     // Start backup scheduler if backup is enabled
     if state.config().backup.enabled {
         let backup_schedule = state.config().backup.schedule.clone();
+        let backup_config = state.config().backup.clone();
         let backup_db = state.db.clone();
         let backup_data_dir = data_dir.clone();
-        let backup_encrypt_recipient = state.config().backup.encrypt_recipient.clone();
         let backup_sinks = notification_sinks.clone();
         let backup_limiter = notification_rate_limiter.clone();
         let token = shutdown.clone();
@@ -422,7 +422,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             loop {
                 info!("Backup scheduler: triggering scheduled backup");
 
-                // Record the backup attempt
+                // Record the backup attempt and update next scheduled time
                 if let Ok(conn) = backup_db.get() {
                     let now_str = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
                     let _ = conn.execute(
@@ -430,7 +430,6 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                         rusqlite::params![&now_str, &now_str],
                     );
 
-                    // Update next scheduled time
                     let next_run = jiff::Zoned::now()
                         .checked_add(jiff::SignedDuration::from_secs(interval_secs as i64))
                         .unwrap_or_else(|_| jiff::Zoned::now());
@@ -439,27 +438,29 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                         "INSERT OR REPLACE INTO kv_meta (key, value, updated_at) VALUES ('backup:next_scheduled', ?1, ?2)",
                         rusqlite::params![&next_str, &now_str],
                     );
-                }
 
-                // Run actual backup
-                if let Ok(conn) = backup_db.get() {
-                    let backup_dir = backup_data_dir.join("backup");
-                    let encrypt = if backup_encrypt_recipient.is_empty() {
-                        None
-                    } else {
-                        Some(backup_encrypt_recipient.as_str())
-                    };
-                    match tilde_backup::create_snapshot_with_encryption(&conn, &backup_data_dir, &backup_dir, encrypt) {
-                        Ok(snapshot) => {
-                            info!(
-                                snapshot_id = %snapshot.id,
-                                size = %tilde_backup::format_size(snapshot.size_bytes),
-                                files = snapshot.file_count,
-                                "Scheduled backup completed"
-                            );
+                    match tilde_backup::restic::ResticConfig::from_backup_config(&backup_config) {
+                        Ok(restic_config) => {
+                            match tilde_backup::restic::backup(&restic_config, &backup_data_dir, &conn) {
+                                Ok(()) => {
+                                    info!("Scheduled backup completed");
+                                    if let Err(e) = tilde_backup::restic::forget_and_prune(&restic_config) {
+                                        warn!(error = %e, "Backup retention failed");
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = %e, "Scheduled backup failed");
+                                    tilde_notify::notify(
+                                        &backup_sinks,
+                                        &backup_limiter,
+                                        &conn,
+                                        tilde_notify::events::backup_failed(&e.to_string()),
+                                    );
+                                }
+                            }
                         }
                         Err(e) => {
-                            tracing::error!(error = %e, "Scheduled backup failed");
+                            tracing::error!(error = %e, "Backup config resolution failed");
                             tilde_notify::notify(
                                 &backup_sinks,
                                 &backup_limiter,

@@ -380,16 +380,32 @@ impl Default for UpdatesConfig {
 pub struct BackupConfig {
     #[serde(default)]
     pub enabled: bool,
-    /// Schedule: "hourly", "daily", "weekly", or cron-like expression
     #[serde(default = "default_backup_schedule")]
     pub schedule: String,
+    /// Path to restic binary
+    #[serde(default = "default_restic_binary")]
+    pub binary: String,
+    /// Env var name containing the repository URL (e.g. "b2:bucket:path")
+    #[serde(default = "default_restic_repository_env")]
+    pub repository_env: String,
+    /// Path to restic password file
     #[serde(default)]
-    pub local_retention: BackupRetention,
-    #[serde(default)]
-    pub offsite: Vec<BackupOffsiteConfig>,
-    /// Paranoid mode: encrypt backups with age public key (server cannot decrypt)
-    #[serde(default)]
-    pub encrypt_recipient: String,
+    pub password_file: String,
+    /// Env var name for B2 account ID
+    #[serde(default = "default_b2_account_id_env")]
+    pub b2_account_id_env: String,
+    /// Env var name for B2 account key
+    #[serde(default = "default_b2_account_key_env")]
+    pub b2_account_key_env: String,
+    /// Daily snapshots to keep
+    #[serde(default = "default_7")]
+    pub keep_daily: u32,
+    /// Weekly snapshots to keep
+    #[serde(default = "default_4")]
+    pub keep_weekly: u32,
+    /// Monthly snapshots to keep
+    #[serde(default = "default_12")]
+    pub keep_monthly: u32,
 }
 
 impl Default for BackupConfig {
@@ -397,39 +413,18 @@ impl Default for BackupConfig {
         Self {
             enabled: false,
             schedule: default_backup_schedule(),
-            local_retention: BackupRetention::default(),
-            offsite: Vec::new(),
-            encrypt_recipient: String::new(),
+            binary: default_restic_binary(),
+            repository_env: default_restic_repository_env(),
+            password_file: String::new(),
+            b2_account_id_env: default_b2_account_id_env(),
+            b2_account_key_env: default_b2_account_key_env(),
+            keep_daily: 7,
+            keep_weekly: 4,
+            keep_monthly: 12,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackupRetention {
-    #[serde(default = "default_24")]
-    pub hourly: u32,
-    #[serde(default = "default_7")]
-    pub daily: u32,
-    #[serde(default = "default_4")]
-    pub weekly: u32,
-    #[serde(default = "default_12")]
-    pub monthly: u32,
-}
-
-impl Default for BackupRetention {
-    fn default() -> Self {
-        Self {
-            hourly: 24,
-            daily: 7,
-            weekly: 4,
-            monthly: 12,
-        }
-    }
-}
-
-fn default_24() -> u32 {
-    24
-}
 fn default_7() -> u32 {
     7
 }
@@ -439,22 +434,17 @@ fn default_4() -> u32 {
 fn default_12() -> u32 {
     12
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackupOffsiteConfig {
-    pub name: String,
-    #[serde(default = "default_offsite_type")]
-    pub r#type: String,
-    #[serde(default)]
-    pub endpoint: String,
-    #[serde(default)]
-    pub bucket_env: String,
-    #[serde(default)]
-    pub key_id_env: String,
-    #[serde(default)]
-    pub key_env: String,
-    #[serde(default = "default_backup_schedule")]
-    pub schedule: String,
+fn default_restic_binary() -> String {
+    "restic".to_string()
+}
+fn default_restic_repository_env() -> String {
+    "RESTIC_REPOSITORY".to_string()
+}
+fn default_b2_account_id_env() -> String {
+    "B2_ACCOUNT_ID".to_string()
+}
+fn default_b2_account_key_env() -> String {
+    "B2_ACCOUNT_KEY".to_string()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -618,9 +608,6 @@ fn default_max_restart_delay() -> u64 {
     300
 }
 
-fn default_offsite_type() -> String {
-    "s3".to_string()
-}
 fn default_backup_schedule() -> String {
     "daily@04:00".to_string()
 }

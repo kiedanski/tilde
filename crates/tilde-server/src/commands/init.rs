@@ -231,10 +231,14 @@ default_rate_limit = 60
 audit_log_retention_days = 90
 
 [backup]
-# Backup is opt-in
+# Backup uses restic (incremental, encrypted, deduplicated)
 enabled = false
-# Local retention policies:
-# local_retention = { hourly = 24, daily = 7, weekly = 4, monthly = 12 }
+# schedule = "daily@04:00"
+# password_file = "/etc/tilde/restic-password"
+# keep_daily = 7
+# keep_weekly = 4
+# keep_monthly = 12
+# Set in .env: RESTIC_REPOSITORY, B2_ACCOUNT_ID, B2_ACCOUNT_KEY
 
 [notifications]
 # Configure notification sinks:

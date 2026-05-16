@@ -2988,23 +2988,14 @@ name = "tilde-backup"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "flate2",
- "hex",
- "hmac",
  "jiff",
- "quick-xml",
- "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
- "sha2",
  "tar",
  "tilde-core",
- "tokio",
  "tracing",
- "urlencoding",
- "uuid",
 ]
 
 [[package]]

@@ -410,24 +410,14 @@ pub enum EmailCommands {
 
 #[derive(clap::Subcommand)]
 pub enum BackupCommands {
+    /// Show backup status, repository info, and last run time
     Status,
-    Now {
-        #[arg(long)]
-        offsite: Option<String>,
-    },
-    List {
-        #[arg(long)]
-        offsite: Option<String>,
-    },
-    Verify {
-        #[arg(long)]
-        offsite: Option<String>,
-    },
-    Pin {
-        snapshot_id: String,
-        #[arg(long)]
-        reason: String,
-    },
+    /// Run a backup now (incremental, encrypted, uploaded to B2)
+    Now,
+    /// List snapshots in the backup repository
+    List,
+    /// Verify repository integrity
+    Verify,
 }
 
 #[derive(clap::Subcommand)]
