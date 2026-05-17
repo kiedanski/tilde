@@ -10,10 +10,12 @@ use tracing::info;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
-    /// Explicit data directory. If set in config or via TILDE_DATA_DIR env var,
-    /// takes precedence over XDG/platform defaults.
+    /// Explicit data directory override.
     #[serde(default)]
     pub data_dir_override: Option<String>,
+    /// Explicit cache directory override.
+    #[serde(default)]
+    pub cache_dir_override: Option<String>,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
@@ -105,13 +107,25 @@ impl Config {
 
     /// Resolve cache directory
     pub fn cache_dir(&self) -> PathBuf {
+        // 1. Config file field (highest priority)
+        if let Some(ref dir) = self.cache_dir_override {
+            return PathBuf::from(dir);
+        }
+        // 2. Systemd CacheDirectory
         if let Ok(cache_dir) = std::env::var("CACHE_DIRECTORY") {
-            PathBuf::from(cache_dir)
-        } else if Self::is_systemd_mode() {
-            PathBuf::from("/var/cache/tilde")
-        } else if let Ok(dir) = std::env::var("TILDE_CACHE_DIR") {
-            PathBuf::from(dir)
-        } else if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+            return PathBuf::from(cache_dir);
+        }
+        // 3. Env var
+        if let Ok(dir) = std::env::var("TILDE_CACHE_DIR") {
+            return PathBuf::from(dir);
+        }
+        // 4. Default to <data_dir>/.cache
+        let data_cache = self.data_dir().join(".cache");
+        if data_cache.exists() || self.data_dir_override.is_some() {
+            return data_cache;
+        }
+        // 5. XDG fallback (dev mode)
+        if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
             PathBuf::from(xdg).join("tilde")
         } else if let Some(cache_dir) =
             directories::ProjectDirs::from("", "", "tilde").map(|d| d.cache_dir().to_path_buf())
