@@ -284,6 +284,121 @@ fn all_tools() -> Vec<ToolDef> {
                 }
             }),
         },
+        ToolDef {
+            name: "calendar.list_calendars".into(),
+            description: "List available calendars.".into(),
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
+            name: "calendar.update_event".into(),
+            description: "Update fields on an existing event. Only fields provided are changed. Requires calendar:write scope.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "uid": {"type": "string", "description": "Event UID"},
+                    "summary": {"type": "string"},
+                    "start": {"type": "string", "description": "Start datetime (ISO 8601)"},
+                    "end": {"type": "string", "description": "End datetime (ISO 8601)"},
+                    "location": {"type": "string"},
+                    "description": {"type": "string"}
+                },
+                "required": ["uid"]
+            }),
+        },
+        ToolDef {
+            name: "calendar.delete_event".into(),
+            description: "Soft-delete an event by UID. Requires calendar:write scope.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "uid": {"type": "string", "description": "Event UID"}
+                },
+                "required": ["uid"]
+            }),
+        },
+        ToolDef {
+            name: "tasks.update".into(),
+            description: "Update fields on a task. Only fields provided are changed. Requires tasks:write scope.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "uid": {"type": "string", "description": "Task UID"},
+                    "summary": {"type": "string"},
+                    "due": {"type": "string", "description": "Due date (ISO 8601)"},
+                    "priority": {"type": "integer"},
+                    "status": {"type": "string", "description": "NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED"}
+                },
+                "required": ["uid"]
+            }),
+        },
+        ToolDef {
+            name: "tasks.complete".into(),
+            description: "Mark a task as COMPLETED. Requires tasks:write scope.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "uid": {"type": "string", "description": "Task UID"}
+                },
+                "required": ["uid"]
+            }),
+        },
+        ToolDef {
+            name: "tasks.delete".into(),
+            description: "Soft-delete a task by UID. Requires tasks:write scope.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "uid": {"type": "string", "description": "Task UID"}
+                },
+                "required": ["uid"]
+            }),
+        },
+        ToolDef {
+            name: "contacts.list_addressbooks".into(),
+            description: "List available address books.".into(),
+            input_schema: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
+            name: "contacts.create".into(),
+            description: "Create a new contact. Requires contacts:write scope.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "addressbook": {"type": "string", "description": "Address book name (default: 'default')"},
+                    "fn_name": {"type": "string", "description": "Formatted name"},
+                    "email": {"type": "string"},
+                    "phone": {"type": "string"},
+                    "org": {"type": "string"}
+                },
+                "required": ["fn_name"]
+            }),
+        },
+        ToolDef {
+            name: "contacts.update".into(),
+            description: "Update fields on a contact. Only fields provided are changed. Requires contacts:write scope.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "uid": {"type": "string", "description": "Contact UID"},
+                    "fn_name": {"type": "string"},
+                    "email": {"type": "string"},
+                    "phone": {"type": "string"},
+                    "org": {"type": "string"}
+                },
+                "required": ["uid"]
+            }),
+        },
+        ToolDef {
+            name: "contacts.delete".into(),
+            description: "Soft-delete a contact by UID. Requires contacts:write scope.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "uid": {"type": "string", "description": "Contact UID"}
+                },
+                "required": ["uid"]
+            }),
+        },
     ]
 }
 
@@ -296,11 +411,14 @@ fn tool_required_scope(tool_name: &str) -> &'static str {
         "files.list" | "files.read" | "files.search" => "files:read",
         "trackers.query" => "trackers:read",
         "trackers.log" => "trackers:write",
-        "calendar.list_events" => "calendar:read",
-        "calendar.create_event" => "calendar:write",
-        "contacts.search" => "contacts:read",
+        "calendar.list_events" | "calendar.list_calendars" => "calendar:read",
+        "calendar.create_event" | "calendar.update_event" | "calendar.delete_event" => {
+            "calendar:write"
+        }
+        "contacts.search" | "contacts.list_addressbooks" => "contacts:read",
+        "contacts.create" | "contacts.update" | "contacts.delete" => "contacts:write",
         "tasks.list" => "tasks:read",
-        "tasks.add" => "tasks:write",
+        "tasks.add" | "tasks.update" | "tasks.complete" | "tasks.delete" => "tasks:write",
         "email.search" | "email.thread" | "email.recent" => "email:read",
         _ => "unknown",
     }
@@ -888,9 +1006,19 @@ pub fn handle_mcp_request(
                     "trackers.query" => exec_trackers_query(&conn, &arguments),
                     "calendar.list_events" => exec_calendar_list_events(&conn, &arguments),
                     "calendar.create_event" => exec_calendar_create_event(&conn, &arguments),
+                    "calendar.list_calendars" => exec_calendar_list_calendars(&conn),
+                    "calendar.update_event" => exec_calendar_update_event(&conn, &arguments),
+                    "calendar.delete_event" => exec_calendar_delete_event(&conn, &arguments),
                     "contacts.search" => exec_contacts_search(&conn, &arguments),
+                    "contacts.list_addressbooks" => exec_contacts_list_addressbooks(&conn),
+                    "contacts.create" => exec_contacts_create(&conn, &arguments),
+                    "contacts.update" => exec_contacts_update(&conn, &arguments),
+                    "contacts.delete" => exec_contacts_delete(&conn, &arguments),
                     "tasks.list" => exec_tasks_list(&conn, &arguments),
                     "tasks.add" => exec_tasks_add(&conn, &arguments),
+                    "tasks.update" => exec_tasks_update(&conn, &arguments),
+                    "tasks.complete" => exec_tasks_complete(&conn, &arguments),
+                    "tasks.delete" => exec_tasks_delete(&conn, &arguments),
                     "email.search" => exec_email_search(&conn, &arguments),
                     "email.thread" => exec_email_thread(&conn, &arguments),
                     "email.recent" => exec_email_recent(&conn, &arguments),
@@ -1178,4 +1306,129 @@ fn exec_email_recent(conn: &Connection, args: &Value) -> Result<Value, String> {
         .collect();
 
     Ok(json!(results))
+}
+
+fn exec_calendar_list_calendars(conn: &Connection) -> Result<Value, String> {
+    let calendars = tilde_cal::list_calendars(conn);
+    let results: Vec<Value> = calendars
+        .iter()
+        .map(|(name, display_name, ctag, description)| {
+            json!({
+                "name": name,
+                "display_name": display_name,
+                "ctag": ctag,
+                "description": description,
+            })
+        })
+        .collect();
+    Ok(json!(results))
+}
+
+fn exec_calendar_update_event(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let uid = args
+        .get("uid")
+        .and_then(|v| v.as_str())
+        .ok_or("uid is required")?;
+    let summary = args.get("summary").and_then(|v| v.as_str());
+    let start = args.get("start").and_then(|v| v.as_str());
+    let end = args.get("end").and_then(|v| v.as_str());
+    let location = args.get("location").and_then(|v| v.as_str());
+    let description = args.get("description").and_then(|v| v.as_str());
+    tilde_cal::update_event(conn, uid, summary, start, end, location, description)
+        .map_err(|e| e.to_string())?;
+    Ok(json!({"uid": uid, "status": "updated"}))
+}
+
+fn exec_calendar_delete_event(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let uid = args
+        .get("uid")
+        .and_then(|v| v.as_str())
+        .ok_or("uid is required")?;
+    tilde_cal::delete_event(conn, uid).map_err(|e| e.to_string())?;
+    Ok(json!({"uid": uid, "status": "deleted"}))
+}
+
+fn exec_tasks_update(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let uid = args
+        .get("uid")
+        .and_then(|v| v.as_str())
+        .ok_or("uid is required")?;
+    let summary = args.get("summary").and_then(|v| v.as_str());
+    let due = args.get("due").and_then(|v| v.as_str());
+    let priority = args
+        .get("priority")
+        .and_then(|v| v.as_i64())
+        .map(|p| p as i32);
+    let status = args.get("status").and_then(|v| v.as_str());
+    tilde_cal::update_task(conn, uid, summary, due, priority, status).map_err(|e| e.to_string())?;
+    Ok(json!({"uid": uid, "status": "updated"}))
+}
+
+fn exec_tasks_complete(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let uid = args
+        .get("uid")
+        .and_then(|v| v.as_str())
+        .ok_or("uid is required")?;
+    tilde_cal::complete_task(conn, uid).map_err(|e| e.to_string())?;
+    Ok(json!({"uid": uid, "status": "completed"}))
+}
+
+fn exec_tasks_delete(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let uid = args
+        .get("uid")
+        .and_then(|v| v.as_str())
+        .ok_or("uid is required")?;
+    tilde_cal::delete_task(conn, uid).map_err(|e| e.to_string())?;
+    Ok(json!({"uid": uid, "status": "deleted"}))
+}
+
+fn exec_contacts_list_addressbooks(conn: &Connection) -> Result<Value, String> {
+    let books = tilde_card::list_addressbooks(conn);
+    let results: Vec<Value> = books
+        .iter()
+        .map(|(name, display_name, description)| {
+            json!({
+                "name": name,
+                "display_name": display_name,
+                "description": description,
+            })
+        })
+        .collect();
+    Ok(json!(results))
+}
+
+fn exec_contacts_create(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let fn_name = args
+        .get("fn_name")
+        .and_then(|v| v.as_str())
+        .ok_or("fn_name is required")?;
+    let addressbook = args.get("addressbook").and_then(|v| v.as_str());
+    let email = args.get("email").and_then(|v| v.as_str());
+    let phone = args.get("phone").and_then(|v| v.as_str());
+    let org = args.get("org").and_then(|v| v.as_str());
+    let uid = tilde_card::create_contact(conn, addressbook, fn_name, email, phone, org)
+        .map_err(|e| e.to_string())?;
+    Ok(json!({"uid": uid, "status": "created"}))
+}
+
+fn exec_contacts_update(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let uid = args
+        .get("uid")
+        .and_then(|v| v.as_str())
+        .ok_or("uid is required")?;
+    let fn_name = args.get("fn_name").and_then(|v| v.as_str());
+    let email = args.get("email").and_then(|v| v.as_str());
+    let phone = args.get("phone").and_then(|v| v.as_str());
+    let org = args.get("org").and_then(|v| v.as_str());
+    tilde_card::update_contact(conn, uid, fn_name, email, phone, org).map_err(|e| e.to_string())?;
+    Ok(json!({"uid": uid, "status": "updated"}))
+}
+
+fn exec_contacts_delete(conn: &Connection, args: &Value) -> Result<Value, String> {
+    let uid = args
+        .get("uid")
+        .and_then(|v| v.as_str())
+        .ok_or("uid is required")?;
+    tilde_card::delete_contact(conn, uid).map_err(|e| e.to_string())?;
+    Ok(json!({"uid": uid, "status": "deleted"}))
 }

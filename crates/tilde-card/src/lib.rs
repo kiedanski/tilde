@@ -1339,6 +1339,185 @@ pub fn list_addressbooks(db: &Connection) -> Vec<(String, String, Option<String>
     .collect()
 }
 
+// ─── Mutation API for CLI/MCP ──────────────────────────────────────────────
+
+fn bump_addressbook_change(db: &Connection, ab_id: &str, uid: &str, change_type: &str) {
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    let new_st: i64 = db
+        .query_row(
+            "SELECT sync_token FROM addressbooks WHERE id = ?1",
+            [ab_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+        + 1;
+    let _ = db.execute(
+        "UPDATE addressbooks SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![new_st, now, ab_id],
+    );
+    let object_uri = format!("{}.vcf", uid);
+    let _ = db.execute(
+        "DELETE FROM sync_changes WHERE collection_type = 'addressbook' AND collection_id = ?1 AND object_uri = ?2",
+        rusqlite::params![ab_id, &object_uri],
+    );
+    let _ = db.execute(
+        "INSERT INTO sync_changes (collection_type, collection_id, object_uri, change_type, sync_token, created_at)
+         VALUES ('addressbook', ?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![ab_id, &object_uri, change_type, new_st, now],
+    );
+}
+
+fn build_vcard(
+    uid: &str,
+    fn_name: &str,
+    email: Option<&str>,
+    phone: Option<&str>,
+    org: Option<&str>,
+) -> String {
+    let mut vcard = format!(
+        "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:{}\r\nFN:{}\r\n",
+        uid, fn_name
+    );
+    if let Some(e) = email {
+        vcard.push_str(&format!("EMAIL:{}\r\n", e));
+    }
+    if let Some(p) = phone {
+        vcard.push_str(&format!("TEL:{}\r\n", p));
+    }
+    if let Some(o) = org {
+        vcard.push_str(&format!("ORG:{}\r\n", o));
+    }
+    vcard.push_str("END:VCARD\r\n");
+    vcard
+}
+
+pub fn create_contact(
+    db: &Connection,
+    addressbook: Option<&str>,
+    fn_name: &str,
+    email: Option<&str>,
+    phone: Option<&str>,
+    org: Option<&str>,
+) -> anyhow::Result<String> {
+    let ab_name = addressbook.unwrap_or("default");
+    ensure_default_addressbook(db);
+    let ab_id: String = db
+        .query_row(
+            "SELECT id FROM addressbooks WHERE name = ?1",
+            [ab_name],
+            |row| row.get(0),
+        )
+        .map_err(|_| anyhow::anyhow!("addressbook '{}' not found", ab_name))?;
+
+    let uid = uuid::Uuid::new_v4().to_string();
+    let vcard = build_vcard(&uid, fn_name, email, phone, org);
+    let etag = compute_etag(&vcard);
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+
+    db.execute(
+        "INSERT INTO contacts (id, addressbook_id, uid, vcard_data, etag, fn_name, email, phone, org, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            ab_id,
+            uid,
+            vcard,
+            etag,
+            fn_name,
+            email,
+            phone,
+            org,
+            now,
+            now
+        ],
+    )?;
+
+    bump_addressbook_change(db, &ab_id, &uid, "created");
+    Ok(uid)
+}
+
+pub fn update_contact(
+    db: &Connection,
+    uid: &str,
+    fn_name: Option<&str>,
+    email: Option<&str>,
+    phone: Option<&str>,
+    org: Option<&str>,
+) -> anyhow::Result<()> {
+    let (ab_id, cur_fn, cur_email, cur_phone, cur_org): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = db
+        .query_row(
+            "SELECT addressbook_id, fn_name, email, phone, org
+             FROM contacts WHERE uid = ?1 AND deleted = 0",
+            [uid],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("contact '{}' not found", uid))?;
+
+    let new_fn = fn_name.map(String::from).or(cur_fn).unwrap_or_default();
+    let new_email = email.map(String::from).or(cur_email);
+    let new_phone = phone.map(String::from).or(cur_phone);
+    let new_org = org.map(String::from).or(cur_org);
+
+    let vcard = build_vcard(
+        uid,
+        &new_fn,
+        new_email.as_deref(),
+        new_phone.as_deref(),
+        new_org.as_deref(),
+    );
+    let etag = compute_etag(&vcard);
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+
+    db.execute(
+        "UPDATE contacts SET vcard_data = ?1, etag = ?2, fn_name = ?3, email = ?4, phone = ?5, org = ?6, updated_at = ?7
+         WHERE uid = ?8 AND deleted = 0",
+        rusqlite::params![vcard, etag, new_fn, new_email, new_phone, new_org, now, uid],
+    )?;
+
+    bump_addressbook_change(db, &ab_id, uid, "modified");
+    Ok(())
+}
+
+pub fn delete_contact(db: &Connection, uid: &str) -> anyhow::Result<()> {
+    let ab_id: String = db
+        .query_row(
+            "SELECT addressbook_id FROM contacts WHERE uid = ?1 AND deleted = 0",
+            [uid],
+            |row| row.get(0),
+        )
+        .map_err(|_| anyhow::anyhow!("contact '{}' not found", uid))?;
+
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    db.execute(
+        "UPDATE contacts SET deleted = 1, updated_at = ?1 WHERE uid = ?2 AND deleted = 0",
+        rusqlite::params![now, uid],
+    )?;
+    bump_addressbook_change(db, &ab_id, uid, "deleted");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

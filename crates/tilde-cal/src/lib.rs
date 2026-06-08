@@ -1527,17 +1527,7 @@ pub fn create_event(
     let now = jiff::Zoned::now()
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
-    let mut ics = format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//tilde//EN\r\nBEGIN:VEVENT\r\nUID:{}\r\nSUMMARY:{}\r\nDTSTART:{}\r\nDTEND:{}\r\n",
-        uid, summary, start, end
-    );
-    if let Some(loc) = location {
-        ics.push_str(&format!("LOCATION:{}\r\n", loc));
-    }
-    if let Some(desc) = description {
-        ics.push_str(&format!("DESCRIPTION:{}\r\n", desc));
-    }
-    ics.push_str("END:VEVENT\r\nEND:VCALENDAR\r\n");
+    let ics = build_event_ics(&uid, summary, start, end, location, description);
     let etag = compute_etag(&ics);
 
     db.execute(
@@ -1546,15 +1536,7 @@ pub fn create_event(
         rusqlite::params![uuid::Uuid::new_v4().to_string(), cal_id, uid, ics, etag, summary, start, end, location, description, now, now],
     )?;
 
-    let new_st: i64 = db
-        .query_row(
-            "SELECT sync_token FROM calendars WHERE id = ?1",
-            [&cal_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(0)
-        + 1;
-    db.execute("UPDATE calendars SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![new_st, now, cal_id])?;
+    bump_calendar_change(db, &cal_id, &uid, "created");
     Ok(uid)
 }
 
@@ -1579,17 +1561,7 @@ pub fn create_task(
     let now = jiff::Zoned::now()
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
-    let mut ics = format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//tilde//EN\r\nBEGIN:VTODO\r\nUID:{}\r\nSUMMARY:{}\r\nSTATUS:NEEDS-ACTION\r\n",
-        uid, summary
-    );
-    if let Some(d) = due {
-        ics.push_str(&format!("DUE:{}\r\n", d));
-    }
-    if let Some(p) = priority {
-        ics.push_str(&format!("PRIORITY:{}\r\n", p));
-    }
-    ics.push_str("END:VTODO\r\nEND:VCALENDAR\r\n");
+    let ics = build_task_ics(&uid, summary, due, priority, "NEEDS-ACTION");
     let etag = compute_etag(&ics);
 
     db.execute(
@@ -1598,15 +1570,7 @@ pub fn create_task(
         rusqlite::params![uuid::Uuid::new_v4().to_string(), cal_id, uid, ics, etag, summary, due, priority, now, now],
     )?;
 
-    let new_st: i64 = db
-        .query_row(
-            "SELECT sync_token FROM calendars WHERE id = ?1",
-            [&cal_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(0)
-        + 1;
-    db.execute("UPDATE calendars SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![new_st, now, cal_id])?;
+    bump_calendar_change(db, &cal_id, &uid, "created");
     Ok(uid)
 }
 
@@ -1653,4 +1617,275 @@ pub fn list_tasks(
     .unwrap()
     .flatten()
     .collect()
+}
+
+// ─── Mutation API for CLI/MCP ──────────────────────────────────────────────
+
+fn bump_calendar_change(db: &Connection, cal_id: &str, uid: &str, change_type: &str) {
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    let new_st: i64 = db
+        .query_row(
+            "SELECT sync_token FROM calendars WHERE id = ?1",
+            [cal_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+        + 1;
+    let _ = db.execute(
+        "UPDATE calendars SET ctag = CAST(?1 AS TEXT), sync_token = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![new_st, now, cal_id],
+    );
+    let object_uri = format!("{}.ics", uid);
+    let _ = db.execute(
+        "DELETE FROM sync_changes WHERE collection_type = 'calendar' AND collection_id = ?1 AND object_uri = ?2",
+        rusqlite::params![cal_id, &object_uri],
+    );
+    let _ = db.execute(
+        "INSERT INTO sync_changes (collection_type, collection_id, object_uri, change_type, sync_token, created_at)
+         VALUES ('calendar', ?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![cal_id, &object_uri, change_type, new_st, now],
+    );
+    push::notify_change(db, "calendar", cal_id, change_type, &object_uri);
+}
+
+fn build_event_ics(
+    uid: &str,
+    summary: &str,
+    start: &str,
+    end: &str,
+    location: Option<&str>,
+    description: Option<&str>,
+) -> String {
+    let mut ics = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//tilde//EN\r\nBEGIN:VEVENT\r\nUID:{}\r\nSUMMARY:{}\r\nDTSTART:{}\r\nDTEND:{}\r\n",
+        uid, summary, start, end
+    );
+    if let Some(loc) = location {
+        ics.push_str(&format!("LOCATION:{}\r\n", loc));
+    }
+    if let Some(desc) = description {
+        ics.push_str(&format!("DESCRIPTION:{}\r\n", desc));
+    }
+    ics.push_str("END:VEVENT\r\nEND:VCALENDAR\r\n");
+    ics
+}
+
+fn build_task_ics(
+    uid: &str,
+    summary: &str,
+    due: Option<&str>,
+    priority: Option<i32>,
+    status: &str,
+) -> String {
+    let mut ics = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//tilde//EN\r\nBEGIN:VTODO\r\nUID:{}\r\nSUMMARY:{}\r\nSTATUS:{}\r\n",
+        uid, summary, status
+    );
+    if let Some(d) = due {
+        ics.push_str(&format!("DUE:{}\r\n", d));
+    }
+    if let Some(p) = priority {
+        ics.push_str(&format!("PRIORITY:{}\r\n", p));
+    }
+    ics.push_str("END:VTODO\r\nEND:VCALENDAR\r\n");
+    ics
+}
+
+type EventRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+pub fn update_event(
+    db: &Connection,
+    uid: &str,
+    summary: Option<&str>,
+    start: Option<&str>,
+    end: Option<&str>,
+    location: Option<&str>,
+    description: Option<&str>,
+) -> anyhow::Result<()> {
+    let (cal_id, cur_summary, cur_start, cur_end, cur_location, cur_description): EventRow = db
+        .query_row(
+            "SELECT calendar_id, summary, dtstart, dtend, location, description
+             FROM calendar_objects WHERE uid = ?1 AND deleted = 0 AND component_type = 'VEVENT'",
+            [uid],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("event '{}' not found", uid))?;
+
+    let new_summary = summary
+        .map(String::from)
+        .or(cur_summary)
+        .unwrap_or_default();
+    let new_start = start.map(String::from).or(cur_start).unwrap_or_default();
+    let new_end = end.map(String::from).or(cur_end).unwrap_or_default();
+    let new_location = location.map(String::from).or(cur_location);
+    let new_description = description.map(String::from).or(cur_description);
+
+    let ics = build_event_ics(
+        uid,
+        &new_summary,
+        &new_start,
+        &new_end,
+        new_location.as_deref(),
+        new_description.as_deref(),
+    );
+    let etag = compute_etag(&ics);
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+
+    db.execute(
+        "UPDATE calendar_objects SET ics_data = ?1, etag = ?2, summary = ?3, dtstart = ?4, dtend = ?5,
+         location = ?6, description = ?7, updated_at = ?8
+         WHERE uid = ?9 AND deleted = 0",
+        rusqlite::params![
+            ics,
+            etag,
+            new_summary,
+            new_start,
+            new_end,
+            new_location,
+            new_description,
+            now,
+            uid
+        ],
+    )?;
+
+    bump_calendar_change(db, &cal_id, uid, "modified");
+    Ok(())
+}
+
+pub fn delete_event(db: &Connection, uid: &str) -> anyhow::Result<()> {
+    let cal_id: String = db
+        .query_row(
+            "SELECT calendar_id FROM calendar_objects WHERE uid = ?1 AND deleted = 0 AND component_type = 'VEVENT'",
+            [uid],
+            |row| row.get(0),
+        )
+        .map_err(|_| anyhow::anyhow!("event '{}' not found", uid))?;
+
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    db.execute(
+        "UPDATE calendar_objects SET deleted = 1, updated_at = ?1 WHERE uid = ?2 AND deleted = 0",
+        rusqlite::params![now, uid],
+    )?;
+    bump_calendar_change(db, &cal_id, uid, "deleted");
+    Ok(())
+}
+
+pub fn update_task(
+    db: &Connection,
+    uid: &str,
+    summary: Option<&str>,
+    due: Option<&str>,
+    priority: Option<i32>,
+    status: Option<&str>,
+) -> anyhow::Result<()> {
+    let (cal_id, cur_summary, cur_due, cur_priority, cur_status): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i32>,
+        Option<String>,
+    ) = db
+        .query_row(
+            "SELECT calendar_id, summary, dtstart, priority, status
+             FROM calendar_objects WHERE uid = ?1 AND deleted = 0 AND component_type = 'VTODO'",
+            [uid],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("task '{}' not found", uid))?;
+
+    let new_summary = summary
+        .map(String::from)
+        .or(cur_summary)
+        .unwrap_or_default();
+    let new_due = due.map(String::from).or(cur_due);
+    let new_priority = priority.or(cur_priority);
+    let new_status = status
+        .map(String::from)
+        .or(cur_status)
+        .unwrap_or_else(|| "NEEDS-ACTION".to_string());
+
+    let ics = build_task_ics(
+        uid,
+        &new_summary,
+        new_due.as_deref(),
+        new_priority,
+        &new_status,
+    );
+    let etag = compute_etag(&ics);
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+
+    db.execute(
+        "UPDATE calendar_objects SET ics_data = ?1, etag = ?2, summary = ?3, dtstart = ?4,
+         priority = ?5, status = ?6, updated_at = ?7
+         WHERE uid = ?8 AND deleted = 0",
+        rusqlite::params![
+            ics,
+            etag,
+            new_summary,
+            new_due,
+            new_priority,
+            new_status,
+            now,
+            uid
+        ],
+    )?;
+
+    bump_calendar_change(db, &cal_id, uid, "modified");
+    Ok(())
+}
+
+pub fn complete_task(db: &Connection, uid: &str) -> anyhow::Result<()> {
+    update_task(db, uid, None, None, None, Some("COMPLETED"))
+}
+
+pub fn delete_task(db: &Connection, uid: &str) -> anyhow::Result<()> {
+    let cal_id: String = db
+        .query_row(
+            "SELECT calendar_id FROM calendar_objects WHERE uid = ?1 AND deleted = 0 AND component_type = 'VTODO'",
+            [uid],
+            |row| row.get(0),
+        )
+        .map_err(|_| anyhow::anyhow!("task '{}' not found", uid))?;
+
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    db.execute(
+        "UPDATE calendar_objects SET deleted = 1, updated_at = ?1 WHERE uid = ?2 AND deleted = 0",
+        rusqlite::params![now, uid],
+    )?;
+    bump_calendar_change(db, &cal_id, uid, "deleted");
+    Ok(())
 }
