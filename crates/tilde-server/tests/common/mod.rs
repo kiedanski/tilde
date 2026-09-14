@@ -12,6 +12,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+pub mod e2e;
+
 use axum_test::TestServer;
 use tilde_core::{auth, config::Config, db};
 
@@ -91,6 +93,7 @@ pub fn create_test_server() -> TestEnv {
         organization_pattern: String::new(),
         allowed_symlink_targets: vec![],
         cache_dir: None,
+        blobs_root: data_dir.join("blobs/by-id"),
     });
 
     let caldav_state: tilde_cal::SharedCalDavState =
@@ -129,4 +132,50 @@ pub fn basic_auth_header(password: &str) -> String {
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(format!("admin:{}", password));
     format!("Basic {}", encoded)
+}
+
+impl TestEnv {
+    /// Root of the temporary data directory.
+    ///
+    /// Tests use this to write files *out of band* — directly to disk, bypassing
+    /// the WebDAV handlers. That is what `notes.append`, the CLI, rsync and a
+    /// restic restore all do, and it is the path no existing test exercises.
+    pub fn data_dir(&self) -> &std::path::Path {
+        self._dir.path()
+    }
+
+    /// Disk directory served at `/dav/files`.
+    pub fn files_dir(&self) -> PathBuf {
+        self._dir.path().join("files")
+    }
+
+    /// Disk directory served at `/dav/notes` (see server/src/lib.rs:51-66).
+    pub fn notes_dir(&self) -> PathBuf {
+        self._dir.path().join("notes")
+    }
+}
+
+/// Look up an app password's credential id by name.
+///
+/// Per-client state (merge base versions) is keyed by this id, so tests need it
+/// to assert which device a row belongs to.
+pub fn app_password_id(pool: &db::DbPool, name: &str) -> String {
+    let conn = pool.get().unwrap();
+    conn.query_row(
+        "SELECT id FROM app_passwords WHERE name = ?1",
+        [name],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Read the recorded merge-base version for a (credential, path) pair.
+pub fn base_version(pool: &db::DbPool, credential_id: &str, path: &str) -> Option<String> {
+    let conn = pool.get().unwrap();
+    conn.query_row(
+        "SELECT sha256 FROM client_base_versions WHERE credential_id = ?1 AND path = ?2",
+        [credential_id, path],
+        |r| r.get(0),
+    )
+    .ok()
 }

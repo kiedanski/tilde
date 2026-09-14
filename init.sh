@@ -79,7 +79,7 @@ DEV_CACHE_DIR="${TILDE_CACHE_DIR:-$SCRIPT_DIR/.dev-cache}"
 
 info "Creating development data directories at $DEV_DATA_DIR"
 
-mkdir -p "$DEV_DATA_DIR"/{files/notes,files/documents}
+mkdir -p "$DEV_DATA_DIR"/{files/documents,notes}
 mkdir -p "$DEV_DATA_DIR"/photos/{_inbox,_library-drop,_untriaged,_errors}
 mkdir -p "$DEV_DATA_DIR"/{calendars,contacts,mail,collections,uploads,backup}
 mkdir -p "$DEV_DATA_DIR"/blobs/by-id

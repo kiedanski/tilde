@@ -21,6 +21,11 @@ pub async fn run_notes(config_path: Option<&str>, command: NotesCommands) -> any
                     "--include=*.md",
                     "--include=*.txt",
                     "--color=never",
+                    // `--` terminates option parsing. Without it the query is
+                    // itself parsed as an option: "-f/dev/zero" exhausts memory,
+                    // and "-e" or "--include=*" swallow the search-directory
+                    // operand so grep recurses the process working directory.
+                    "--",
                     &query,
                 ])
                 .arg(&notes_dir)

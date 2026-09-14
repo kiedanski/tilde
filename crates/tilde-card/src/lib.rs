@@ -112,7 +112,15 @@ async fn handle_request(
     path: &str,
     req: axum::extract::Request,
 ) -> axum::response::Response {
-    if !check_auth(state, &req, "/dav/") {
+    // Authorize against the real request path. Passing the constant "/dav/"
+    // meant a "/dav/*" credential was accepted here and a "/caldav/" or
+    // "/carddav/" credential was rejected everywhere — there was no scoping
+    // between mounts at all.
+    // `nest_service` strips the mount prefix, so `uri().path()` here is
+    // "/admin/default/", not "/carddav/admin/default/". Put it back, or a
+    // "/carddav/*"-scoped credential would be rejected on its own mount.
+    let request_path = format!("/carddav{}", req.uri().path());
+    if !check_auth(state, &req, &request_path) {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Basic realm=\"tilde\"")],
@@ -206,7 +214,7 @@ fn handle_propfind(
     if principal.is_none() || (principal.is_some() && ab_name.is_none()) {
         let mut responses = String::new();
         let href = if let Some(p) = principal {
-            format!("/carddav/{}/", p)
+            format!("/carddav/{}/", escape_xml(p))
         } else {
             "/carddav/".to_string()
         };
@@ -268,8 +276,8 @@ fn handle_propfind(
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>"#,
-                    p,
-                    name,
+                    escape_xml(p),
+                    escape_xml(&name),
                     escape_xml(&display_name),
                     ctag,
                     sync_token,
@@ -314,7 +322,7 @@ fn handle_propfind(
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>
-</d:multistatus>"#, p, ab_name, uid, etag))
+</d:multistatus>"#, escape_xml(p), escape_xml(ab_name), escape_xml(&uid), etag))
                 }
                 Err(_) => StatusCode::NOT_FOUND.into_response(),
             }
@@ -344,7 +352,7 @@ fn handle_propfind(
     </d:prop>
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
-</d:response>"#, p, ab_name, escape_xml(&display_name), ctag, sync_token, desc_xml);
+</d:response>"#, escape_xml(p), escape_xml(ab_name), escape_xml(&display_name), ctag, sync_token, desc_xml);
 
                     if depth == "1" {
                         let mut stmt = db.prepare(
@@ -364,7 +372,7 @@ fn handle_propfind(
     </d:prop>
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
-</d:response>"#, p, ab_name, uid, etag));
+</d:response>"#, escape_xml(p), escape_xml(ab_name), escape_xml(&uid), etag));
                         }
                     }
 
@@ -415,7 +423,7 @@ fn handle_proppatch(
   </d:propstat>
 </d:response>
 </d:multistatus>"#,
-                    ab_name
+                    escape_xml(ab_name)
                 ),
             );
         }
@@ -537,18 +545,27 @@ fn handle_put(
     let org = extract_vcard_field(body, "ORG");
     let is_new = existing.is_err();
 
-    if is_new {
-        db.execute(
-            "INSERT INTO contacts (id, addressbook_id, uid, vcard_data, etag, fn_name, email, phone, org, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            rusqlite::params![uuid::Uuid::new_v4().to_string(), ab_id, uid, body, etag, fn_name, email, phone, org, now, now],
-        ).unwrap();
-    } else {
-        db.execute(
-            "UPDATE contacts SET vcard_data = ?1, etag = ?2, fn_name = ?3, email = ?4, phone = ?5, org = ?6, updated_at = ?7
-             WHERE addressbook_id = ?8 AND uid = ?9 AND deleted = 0",
-            rusqlite::params![body, etag, fn_name, email, phone, org, now, ab_id, uid],
-        ).unwrap();
+    // DELETE is a *soft* delete: the row survives with deleted = 1 as an
+    // RFC 6578 tombstone so sync-collection can report it to clients. But
+    // `deleted` is not part of UNIQUE(addressbook_id, uid), so a re-PUT of a
+    // previously deleted UID must resurrect that row -- a blind INSERT would
+    // violate the unique constraint. Upsert, the same way tilde-dav does.
+    if let Err(e) = db.execute(
+        "INSERT INTO contacts (id, addressbook_id, uid, vcard_data, etag, fn_name, email, phone, org, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(addressbook_id, uid) DO UPDATE SET
+            vcard_data = excluded.vcard_data,
+            etag = excluded.etag,
+            fn_name = excluded.fn_name,
+            email = excluded.email,
+            phone = excluded.phone,
+            org = excluded.org,
+            updated_at = excluded.updated_at,
+            deleted = 0",
+        rusqlite::params![uuid::Uuid::new_v4().to_string(), ab_id, uid, body, etag, fn_name, email, phone, org, now, now],
+    ) {
+        tracing::error!(addressbook = %ab_name, uid = %uid, error = %e, "CardDAV PUT failed to store contact");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     let new_st: i64 = db
@@ -740,7 +757,7 @@ fn handle_multiget(
     </d:prop>
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
-</d:response>"#, principal, ab_name, uid, etag, escape_xml(&vcard)));
+</d:response>"#, escape_xml(principal), escape_xml(ab_name), escape_xml(&uid), etag, escape_xml(&vcard)));
             }
             Err(_) => {
                 responses.push_str(&format!(
@@ -828,9 +845,9 @@ fn handle_addressbook_query(
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>"#,
-            principal,
-            ab_name,
-            uid,
+            escape_xml(principal),
+            escape_xml(ab_name),
+            escape_xml(uid),
             etag,
             escape_xml(vcard)
         ));
@@ -904,9 +921,9 @@ fn handle_sync_collection(
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>"#,
-                principal,
-                ab_name,
-                uid,
+                escape_xml(principal),
+                escape_xml(ab_name),
+                escape_xml(&uid),
                 etag,
                 escape_xml(&vcard)
             ));
@@ -930,7 +947,7 @@ fn handle_sync_collection(
                     r#"<d:response>
   <d:href>/carddav/{}/{}/{}.vcf</d:href>
   <d:status>HTTP/1.1 404 Not Found</d:status>
-</d:response>"#, principal, ab_name, uid));
+</d:response>"#, escape_xml(principal), escape_xml(ab_name), escape_xml(uid)));
             } else if let Ok((uid, etag, vcard)) = db.query_row(
                 "SELECT uid, etag, vcard_data FROM contacts WHERE addressbook_id = ?1 AND uid = ?2 AND deleted = 0",
                 rusqlite::params![ab_id, uid],
@@ -946,7 +963,7 @@ fn handle_sync_collection(
     </d:prop>
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
-</d:response>"#, principal, ab_name, uid, etag, escape_xml(&vcard)));
+</d:response>"#, escape_xml(principal), escape_xml(ab_name), escape_xml(&uid), etag, escape_xml(&vcard)));
             }
         }
     }
@@ -1059,24 +1076,26 @@ fn extract_filter_test(xml: &str) -> FilterTest {
     // Look for <...filter ... test="anyof" ...>
     // We search for a `filter` tag (could be `card:filter` or `CR:filter`)
     // that is NOT `prop-filter` or `param-filter`.
+    // Every offset below indexes `lower` and only `lower`. `to_lowercase()` is
+    // not length-preserving (e.g. '\u{130}' lowercases to two chars), so an
+    // offset taken from `lower` is not a valid index into `xml`, and
+    // `lower[abs - 5..]` is not guaranteed to sit on a character boundary --
+    // both panic on non-ASCII input. Slicing on offsets `find` returned, and
+    // using `ends_with` instead of arithmetic, is boundary-safe.
     let lower = xml.to_lowercase();
     // Find occurrences of "filter" that are not preceded by "prop-" or "param-"
     let mut search_from = 0;
     while let Some(pos) = lower[search_from..].find("filter") {
         let abs = search_from + pos;
         // Check this isn't prop-filter or param-filter
-        let prefix = if abs >= 5 { &lower[abs - 5..abs] } else { "" };
-        let is_prop = prefix.ends_with("prop-");
-        let is_param = if abs >= 6 {
-            lower[abs - 6..abs].ends_with("param-")
-        } else {
-            false
-        };
+        let before = &lower[..abs];
+        let is_prop = before.ends_with("prop-");
+        let is_param = before.ends_with("param-");
         if !is_prop && !is_param {
             // Find the end of this tag
-            if let Some(tag_end) = xml[abs..].find('>') {
-                let tag_content = &xml[abs..abs + tag_end];
-                if let Some(test_pos) = tag_content.to_lowercase().find("test=\"") {
+            if let Some(tag_end) = lower[abs..].find('>') {
+                let tag_content = &lower[abs..abs + tag_end];
+                if let Some(test_pos) = tag_content.find("test=\"") {
                     let val_start = test_pos + 6;
                     if let Some(end) = tag_content[val_start..].find('"') {
                         let val = &tag_content[val_start..val_start + end];
@@ -1151,14 +1170,18 @@ fn parse_text_match(xml_fragment: &str) -> Option<TextMatch> {
     let tag_end = xml_fragment[tm_start..].find('>')?;
     let tag_content = &xml_fragment[tm_start..tm_start + tag_end];
 
+    // Attribute offsets must be taken from and applied to the *same* string:
+    // `to_lowercase()` can change byte length, so an offset found in the
+    // lowercased copy may split a character of the original. Lowercase once
+    // and work in that copy -- both values are compared case-insensitively
+    // anyway.
+    let tag_lower = tag_content.to_lowercase();
+
     // Parse match-type attribute (default: "contains")
-    let match_type = if let Some(mt_pos) = tag_content.to_lowercase().find("match-type=\"") {
+    let match_type = if let Some(mt_pos) = tag_lower.find("match-type=\"") {
         let val_start = mt_pos + 12;
-        if let Some(end) = tag_content[val_start..].find('"') {
-            match tag_content[val_start..val_start + end]
-                .to_lowercase()
-                .as_str()
-            {
+        if let Some(end) = tag_lower[val_start..].find('"') {
+            match &tag_lower[val_start..val_start + end] {
                 "starts-with" => MatchType::StartsWith,
                 "ends-with" => MatchType::EndsWith,
                 "equals" => MatchType::Equals,
@@ -1172,10 +1195,10 @@ fn parse_text_match(xml_fragment: &str) -> Option<TextMatch> {
     };
 
     // Parse negate-condition attribute (default: false)
-    let negate = if let Some(nc_pos) = tag_content.to_lowercase().find("negate-condition=\"") {
+    let negate = if let Some(nc_pos) = tag_lower.find("negate-condition=\"") {
         let val_start = nc_pos + 18;
-        if let Some(end) = tag_content[val_start..].find('"') {
-            tag_content[val_start..val_start + end].eq_ignore_ascii_case("yes")
+        if let Some(end) = tag_lower[val_start..].find('"') {
+            tag_lower[val_start..val_start + end].eq_ignore_ascii_case("yes")
         } else {
             false
         }
@@ -1215,16 +1238,20 @@ fn extract_vcard_property(vcard: &str, prop_name: &str) -> Vec<String> {
         .lines()
         .filter_map(|line| {
             let line = line.trim_end_matches('\r');
-            let upper = line.to_uppercase();
-            if upper.starts_with(&prop_upper) {
-                let rest = &line[prop_upper.len()..];
-                if let Some(value) = rest.strip_prefix(':') {
-                    Some(value.trim().to_string())
-                } else if rest.starts_with(';') {
-                    rest.find(':').map(|i| rest[i + 1..].trim().to_string())
-                } else {
-                    None
-                }
+            // Split the name off the *original* line at the first ':' or ';'
+            // and compare names, rather than indexing `line` by the length of
+            // an uppercased string: `to_uppercase()` is not length-preserving
+            // (e.g. '\u{df}' uppercases to two bytes), so that index could
+            // split a character or run past the end and panic.
+            let sep = line.find([':', ';'])?;
+            let (name, rest) = line.split_at(sep);
+            if name.to_uppercase() != prop_upper {
+                return None;
+            }
+            if let Some(value) = rest.strip_prefix(':') {
+                Some(value.trim().to_string())
+            } else if rest.starts_with(';') {
+                rest.find(':').map(|i| rest[i + 1..].trim().to_string())
             } else {
                 None
             }

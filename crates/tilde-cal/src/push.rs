@@ -5,7 +5,143 @@
 //! events are created, modified, or deleted.
 
 use rusqlite::Connection;
+use std::net::{IpAddr, Ipv4Addr};
+use std::time::Duration;
 use tracing::{info, warn};
+
+/// How long a single push delivery may take before it is abandoned.
+const PUSH_TIMEOUT: Duration = Duration::from_secs(10);
+const PUSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Validate a client-supplied callback URL before it is stored.
+///
+/// The callback is fetched by the server, so an unrestricted URL turns any
+/// credential that can reach a calendar collection into a request-forgery
+/// primitive against whatever the server itself can reach (SSRF) -- the
+/// loopback admin ports, the LAN, cloud metadata endpoints. Only plain http(s)
+/// to a routable address is allowed. Literal addresses are rejected here;
+/// names are re-checked after resolution, immediately before delivery.
+pub fn validate_callback_url(raw: &str) -> Result<(), String> {
+    let url =
+        reqwest::Url::parse(raw).map_err(|_| "callback_url is not a valid URL".to_string())?;
+
+    match url.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(format!(
+                "callback_url scheme '{}' is not allowed (use http or https)",
+                other
+            ));
+        }
+    }
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| "callback_url must have a host".to_string())?;
+
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
+        return Err("callback_url must not target the server itself".to_string());
+    }
+
+    if let Some(ip) = parse_host_ip(host)
+        && !is_routable_ip(ip)
+    {
+        return Err(
+            "callback_url must not target a loopback, link-local or private address".to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+/// An IP literal host, with the brackets an IPv6 URL host carries.
+fn parse_host_ip(host: &str) -> Option<IpAddr> {
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse()
+        .ok()
+}
+
+/// Whether an address is one we are willing to send a push notification to:
+/// globally routable unicast only.
+fn is_routable_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_routable_v4(v4),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_routable_v4(v4);
+            }
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                return false;
+            }
+            let first = v6.segments()[0];
+            // fc00::/7 unique-local, fe80::/10 link-local
+            if first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80 {
+                return false;
+            }
+            true
+        }
+    }
+}
+
+fn is_routable_v4(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    !(ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || o[0] == 0
+        || (o[0] == 100 && (64..128).contains(&o[1]))
+        || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+        || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+        || o[0] >= 240)
+}
+
+/// Re-check the callback after DNS resolution: a name can point anywhere, so
+/// the literal-address check alone would be trivially bypassed by `a.example`
+/// with an A record of 127.0.0.1.
+async fn resolves_to_routable_addr(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if let Some(ip) = parse_host_ip(host) {
+        return is_routable_ip(ip);
+    }
+    let port = url.port_or_known_default().unwrap_or(443);
+    match tokio::net::lookup_host((host, port)).await {
+        Ok(addrs) => {
+            let mut saw_any = false;
+            for addr in addrs {
+                saw_any = true;
+                if !is_routable_ip(addr.ip()) {
+                    return false;
+                }
+            }
+            saw_any
+        }
+        Err(_) => false,
+    }
+}
+
+/// The shared delivery client: bounded in time and forbidden to follow
+/// redirects, since a redirect would otherwise reach right past the address
+/// checks above.
+fn push_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(PUSH_TIMEOUT)
+                .connect_timeout(PUSH_CONNECT_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
 
 /// Register a push subscription for a calendar collection.
 pub fn subscribe(
@@ -15,6 +151,8 @@ pub fn subscribe(
     callback_url: &str,
     expiry_hours: u32,
 ) -> Result<String, String> {
+    validate_callback_url(callback_url)?;
+
     let id = uuid::Uuid::new_v4().to_string();
     let now = jiff::Zoned::now();
     let created_at = now.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
@@ -121,9 +259,24 @@ pub fn notify_change(
         let url = sub.callback_url.clone();
         let body = payload_str.clone();
         tokio::spawn(async move {
-            let client = reqwest::Client::new();
+            if let Err(reason) = validate_callback_url(&url) {
+                warn!(callback = %url, reason = %reason, "Push notification blocked");
+                return;
+            }
+            let Ok(parsed) = reqwest::Url::parse(&url) else {
+                warn!(callback = %url, "Push notification blocked: unparseable callback URL");
+                return;
+            };
+            if !resolves_to_routable_addr(&parsed).await {
+                warn!(callback = %url, "Push notification blocked: callback does not resolve to a routable address");
+                return;
+            }
+            let Some(client) = push_client() else {
+                warn!(callback = %url, "Push notification skipped: HTTP client unavailable");
+                return;
+            };
             match client
-                .post(&url)
+                .post(parsed)
                 .header("Content-Type", "application/json")
                 .body(body)
                 .send()

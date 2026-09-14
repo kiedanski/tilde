@@ -62,6 +62,7 @@ pub fn build_router(
         organization_pattern: String::new(),
         allowed_symlink_targets: vec![],
         cache_dir: None,
+        blobs_root: dav_state.blobs_root.clone(),
     });
     let notes_router = tilde_dav::build_dav_router(notes_state);
 
@@ -82,6 +83,7 @@ pub fn build_router(
         organization_pattern: state.config().photos.organization_pattern.clone(),
         allowed_symlink_targets: vec![cache_thumbnails_dir],
         cache_dir: Some(cache_dir),
+        blobs_root: dav_state.blobs_root.clone(),
     });
     let photos_router = tilde_dav::build_dav_router(photos_state);
 
@@ -156,6 +158,16 @@ pub fn build_router(
             host_filter_middleware,
         ))
         .layer(axum::middleware::map_response(add_security_headers))
+        // Outermost, so it also covers the middleware below it.
+        //
+        // Handlers here parse attacker-supplied iCalendar, vCard, EXIF and XML
+        // with hand-rolled byte slicing, and `&str[..n]` panics whenever `n`
+        // lands inside a multibyte character. Without this a single malformed
+        // request aborts the connection with no HTTP response at all, which
+        // reads to the client as a network failure rather than a rejected
+        // request. Individual panics are still bugs and still get fixed; this
+        // stops the unknown ones from being outages.
+        .layer(tower_http::catch_panic::CatchPanicLayer::new())
         .with_state(state)
 }
 

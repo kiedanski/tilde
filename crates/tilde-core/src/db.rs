@@ -111,6 +111,14 @@ const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         "008_untriaged_sentinel_date",
         include_str!("../../../migrations/008_untriaged_sentinel_date.sql"),
     ),
+    (
+        "009_file_stat_cache",
+        include_str!("../../../migrations/009_file_stat_cache.sql"),
+    ),
+    (
+        "010_client_base_versions",
+        include_str!("../../../migrations/010_client_base_versions.sql"),
+    ),
 ];
 
 /// Load embedded migrations (compiled into the binary).

@@ -98,50 +98,97 @@ pub fn create_app_password(
 }
 
 /// Verify an app password and check scope.
-/// Uses SHA-256 lookup hash for O(1) matching (avoids iterating all Argon2 hashes).
-/// Falls back to scanning all rows for passwords created before the lookup_hash migration.
+///
+/// Thin wrapper over [`authenticate_app_password`] for callers that only need a
+/// yes/no answer (CalDAV, CardDAV).
 pub fn verify_app_password(
     conn: &Connection,
     password: &str,
     request_path: &str,
 ) -> anyhow::Result<bool> {
+    Ok(authenticate_app_password(conn, password, request_path)?.is_some())
+}
+
+/// Authenticate an app password and return the **id of the credential** that
+/// matched, or `None` if the password is unknown, revoked, or out of scope.
+///
+/// The id matters because per-client state — notably the base version used for
+/// three-way merge (see plan.md §5) — is keyed by credential. A shared password
+/// across devices collapses that tracking, so each device should have its own.
+///
+/// Uses SHA-256 lookup hash for O(1) matching (avoids iterating all Argon2 hashes).
+/// Falls back to scanning all rows for passwords created before the lookup_hash migration.
+pub fn authenticate_app_password(
+    conn: &Connection,
+    password: &str,
+    request_path: &str,
+) -> anyhow::Result<Option<String>> {
     let lookup = hash_token(password);
+
+    let scope_allows = |scope: &str| -> bool {
+        if scope == "*" {
+            return true;
+        }
+        let scope_pattern = scope.trim_end_matches('*');
+        if request_path.starts_with(scope_pattern) {
+            return true;
+        }
+        // Issue #8: "/dav/" names the whole DAV family, so a credential scoped
+        // "/dav/*" deliberately also covers CalDAV and CardDAV. This is the rule
+        // the tests dav_scoped_password_works_on_{caldav,carddav} pin.
+        //
+        // It used to be implemented by passing the constant "/dav/" as the
+        // request path at every call site, which made authorization compare a
+        // constant against itself: the family rule worked, but nothing narrower
+        // did — "/caldav/*" was rejected on its own mount, and no credential
+        // could be limited to a single mount. Encoding the rule explicitly keeps
+        // the intent and restores the granularity.
+        if matches!(scope_pattern, "/dav/" | "/dav") {
+            return request_path.starts_with("/caldav/") || request_path.starts_with("/carddav/");
+        }
+        false
+    };
 
     // Fast path: O(1) lookup by SHA-256 hash (for passwords created after migration 006)
     let fast_result = conn.query_row(
-        "SELECT password_hash, scope_prefix FROM app_passwords WHERE lookup_hash = ?1 AND revoked = 0",
+        "SELECT id, password_hash, scope_prefix FROM app_passwords WHERE lookup_hash = ?1 AND revoked = 0",
         [&lookup],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
     );
 
-    if let Ok((hash, scope)) = fast_result
+    if let Ok((id, hash, scope)) = fast_result
         && verify_password(password, &hash)
+        && scope_allows(&scope)
     {
-        let scope_pattern = scope.trim_end_matches('*');
-        if request_path.starts_with(scope_pattern) || scope == "*" {
-            return Ok(true);
-        }
+        return Ok(Some(id));
     }
 
     // Slow fallback: scan rows without lookup_hash (pre-migration passwords)
     let mut stmt = conn.prepare(
-        "SELECT password_hash, scope_prefix FROM app_passwords WHERE revoked = 0 AND lookup_hash IS NULL",
+        "SELECT id, password_hash, scope_prefix FROM app_passwords WHERE revoked = 0 AND lookup_hash IS NULL",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
     })?;
 
     for row in rows {
-        let (hash, scope) = row?;
-        if verify_password(password, &hash) {
-            let scope_pattern = scope.trim_end_matches('*');
-            if request_path.starts_with(scope_pattern) || scope == "*" {
-                return Ok(true);
-            }
+        let (id, hash, scope) = row?;
+        if verify_password(password, &hash) && scope_allows(&scope) {
+            return Ok(Some(id));
         }
     }
 
-    Ok(false)
+    Ok(None)
 }
 
 /// Create an MCP token
@@ -211,6 +258,109 @@ pub fn validate_mcp_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── authenticate_app_password ───────────────────────────────────────────
+    //
+    // Phase 2' slice 1: base-version tracking is keyed per client, so auth must
+    // report *which* credential authenticated, not just that one did.
+
+    fn auth_db() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::init_db(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        crate::db::run_embedded_migrations(&conn).unwrap();
+        (dir, conn)
+    }
+
+    fn id_of(conn: &Connection, name: &str) -> String {
+        conn.query_row(
+            "SELECT id FROM app_passwords WHERE name = ?1",
+            [name],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn authenticate_app_password_returns_credential_id() {
+        let (_d, conn) = auth_db();
+        let pw = create_app_password(&conn, "phone", "/dav/").unwrap();
+
+        let got = authenticate_app_password(&conn, &pw, "/dav/notes/a.md").unwrap();
+
+        assert_eq!(
+            got,
+            Some(id_of(&conn, "phone")),
+            "must identify which credential authenticated"
+        );
+    }
+
+    #[test]
+    fn authenticate_app_password_distinguishes_two_devices() {
+        let (_d, conn) = auth_db();
+        let phone = create_app_password(&conn, "phone", "/dav/").unwrap();
+        let laptop = create_app_password(&conn, "laptop", "/dav/").unwrap();
+
+        let a = authenticate_app_password(&conn, &phone, "/dav/x").unwrap();
+        let b = authenticate_app_password(&conn, &laptop, "/dav/x").unwrap();
+
+        assert_ne!(a, b, "separate devices must resolve to separate ids");
+        assert_eq!(a, Some(id_of(&conn, "phone")));
+        assert_eq!(b, Some(id_of(&conn, "laptop")));
+    }
+
+    #[test]
+    fn authenticate_app_password_rejects_wrong_password() {
+        let (_d, conn) = auth_db();
+        create_app_password(&conn, "phone", "/dav/").unwrap();
+
+        let got = authenticate_app_password(&conn, "not-the-password", "/dav/x").unwrap();
+
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn authenticate_app_password_rejects_out_of_scope() {
+        let (_d, conn) = auth_db();
+        let pw = create_app_password(&conn, "caldav-only", "/caldav/").unwrap();
+
+        let got = authenticate_app_password(&conn, &pw, "/dav/notes/a.md").unwrap();
+
+        assert_eq!(got, None, "scope must still be enforced");
+    }
+
+    #[test]
+    fn authenticate_app_password_rejects_revoked() {
+        let (_d, conn) = auth_db();
+        let pw = create_app_password(&conn, "old", "/dav/").unwrap();
+        conn.execute("UPDATE app_passwords SET revoked = 1", [])
+            .unwrap();
+
+        let got = authenticate_app_password(&conn, &pw, "/dav/x").unwrap();
+
+        assert_eq!(got, None);
+    }
+
+    /// The bool wrapper must keep behaving exactly as before for existing callers
+    /// (tilde-cal:100, tilde-card:97).
+    #[test]
+    fn verify_app_password_still_agrees_with_authenticate() {
+        let (_d, conn) = auth_db();
+        let pw = create_app_password(&conn, "phone", "/dav/").unwrap();
+
+        assert!(verify_app_password(&conn, &pw, "/dav/x").unwrap());
+        // Issue #8: the DAV family rule — "/dav/" deliberately covers CalDAV and
+        // CardDAV as well.
+        assert!(verify_app_password(&conn, &pw, "/caldav/x").unwrap());
+        assert!(verify_app_password(&conn, &pw, "/carddav/x").unwrap());
+        assert!(!verify_app_password(&conn, "wrong", "/dav/x").unwrap());
+
+        // ...but a mount-specific scope stays mount-specific, which the old
+        // constant-path implementation made impossible.
+        let cal = create_app_password(&conn, "cal", "/caldav/").unwrap();
+        assert!(verify_app_password(&conn, &cal, "/caldav/admin/x").unwrap());
+        assert!(!verify_app_password(&conn, &cal, "/dav/notes/x").unwrap());
+        assert!(!verify_app_password(&conn, &cal, "/carddav/x").unwrap());
+    }
 
     #[test]
     fn test_hash_and_verify_password() {

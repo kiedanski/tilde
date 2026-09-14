@@ -14,12 +14,49 @@ pub async fn run_reindex(
 
     let notes_dir = config.data_dir().join("notes");
 
-    match index_type {
-        "notes" | "all" => {
-            // Notes search uses grep — no index to rebuild
-            println!("Notes search uses grep (no index needed)");
+    // Rebuild the `files` stat cache from disk. ETag resolution is self-healing
+    // (it re-hashes on a stat mismatch), so this is about warming the cache — so
+    // the first PROPFIND after an upgrade or a restic restore does not pay to
+    // hash every file — and pruning rows for files deleted while the server was
+    // not running.
+    let files_dir = config.data_dir().join("files");
+
+    if matches!(index_type, "files" | "all") {
+        print!("Reindexing files... ");
+        let stats = tilde_dav::reindex_tree(&conn, &files_dir, "", prune)?;
+        println!("{} indexed, {} pruned", stats.indexed, stats.pruned);
+    }
+
+    if matches!(index_type, "photos" | "all") {
+        // Warm the stat cache for the photos mount as well. This is the largest
+        // tree and the one serving video, so leaving it cold means the first
+        // PROPFIND or range request pays to hash every file.
+        //
+        // Never pruned here: photo rows have dependent records (photos,
+        // photo_tags, thumbnails) cleaned up by the dedicated pruning logic
+        // below, and removing the `files` row first would orphan them.
+        let photos_dir = config.data_dir().join("photos");
+        if photos_dir.exists() {
+            print!("Warming photo stat cache... ");
+            let stats = tilde_dav::reindex_tree(&conn, &photos_dir, "photos/", false)?;
+            println!("{} indexed", stats.indexed);
         }
-        _ => {}
+    }
+
+    if matches!(index_type, "versions" | "all") {
+        print!("Collecting unreferenced file versions... ");
+        let blobs_root = config.data_dir().join("blobs/by-id");
+        let removed = tilde_dav::gc_versions_from_db(&conn, &blobs_root)?;
+        println!("{} removed", removed);
+    }
+
+    if matches!(index_type, "notes" | "all") {
+        print!("Reindexing notes... ");
+        let stats = tilde_dav::reindex_tree(&conn, &notes_dir, "notes/", prune)?;
+        println!(
+            "{} indexed, {} pruned (content search uses grep, no text index)",
+            stats.indexed, stats.pruned
+        );
     }
 
     match index_type {

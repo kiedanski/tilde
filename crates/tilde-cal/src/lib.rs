@@ -116,7 +116,15 @@ async fn handle_caldav_request(
     req: axum::extract::Request,
 ) -> axum::response::Response {
     // Auth check
-    if !check_auth(state, &req, "/dav/") {
+    // Authorize against the real request path. Passing the constant "/dav/"
+    // meant a "/dav/*" credential was accepted here and a "/caldav/" or
+    // "/carddav/" credential was rejected everywhere — there was no scoping
+    // between mounts at all.
+    // `nest_service` strips the mount prefix, so `uri().path()` here is
+    // "/admin/default/", not "/caldav/admin/default/". Put it back, or a
+    // "/caldav/*"-scoped credential would be rejected on its own mount.
+    let request_path = format!("/caldav{}", req.uri().path());
+    if !check_auth(state, &req, &request_path) {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Basic realm=\"tilde\"")],
@@ -211,7 +219,7 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
     if principal.is_none() || (principal.is_some() && cal_name.is_none()) {
         let mut responses = String::new();
         let href = if let Some(p) = &principal {
-            format!("/caldav/{}/", p)
+            format!("/caldav/{}/", escape_xml(p))
         } else {
             "/caldav/".to_string()
         };
@@ -279,8 +287,8 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>"#,
-                    p,
-                    name,
+                    escape_xml(p),
+                    escape_xml(&name),
                     escape_xml(&display_name),
                     ctag,
                     sync_token,
@@ -328,7 +336,10 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
   </d:propstat>
 </d:response>
 </d:multistatus>"#,
-                        p, cal_name, uid, etag
+                        escape_xml(p),
+                        escape_xml(cal_name),
+                        escape_xml(&uid),
+                        etag
                     );
                     xml_response(StatusCode::MULTI_STATUS, xml)
                 }
@@ -379,8 +390,8 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>"#,
-                        p,
-                        cal_name,
+                        escape_xml(p),
+                        escape_xml(cal_name),
                         escape_xml(&display_name),
                         ctag,
                         sync_token,
@@ -412,7 +423,10 @@ fn handle_propfind(state: &SharedCalDavState, path: &str, depth: &str) -> axum::
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>"#,
-                                p, cal_name, uid, etag
+                                escape_xml(p),
+                                escape_xml(cal_name),
+                                escape_xml(&uid),
+                                etag
                             ));
                         }
                     }
@@ -463,7 +477,7 @@ fn handle_proppatch(state: &SharedCalDavState, path: &str, body: &str) -> axum::
   </d:propstat>
 </d:response>
 </d:multistatus>"#,
-                cal_name
+                escape_xml(cal_name)
             );
             return xml_response(StatusCode::MULTI_STATUS, xml);
         }
@@ -609,24 +623,34 @@ fn handle_put(
     let ics_status = extract_ics_field(body, "STATUS");
     let is_new = existing.is_err();
 
-    if is_new {
-        db.execute(
-            "INSERT INTO calendar_objects (id, calendar_id, uid, ics_data, etag, component_type, summary, dtstart, dtend, location, description, priority, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            rusqlite::params![
-                uuid::Uuid::new_v4().to_string(), cal_id, uid, body, etag,
-                component_type, summary, dtstart, dtend, location, description, priority, ics_status, now, now
-            ],
-        ).unwrap();
-    } else {
-        db.execute(
-            "UPDATE calendar_objects SET ics_data = ?1, etag = ?2, summary = ?3, dtstart = ?4, dtend = ?5,
-             location = ?6, description = ?7, priority = ?8, status = ?9, updated_at = ?10, component_type = ?11
-             WHERE calendar_id = ?12 AND uid = ?13 AND deleted = 0",
-            rusqlite::params![
-                body, etag, summary, dtstart, dtend, location, description, priority, ics_status, now, component_type, cal_id, uid
-            ],
-        ).unwrap();
+    // DELETE is a *soft* delete: the row survives with deleted = 1 as an
+    // RFC 6578 tombstone so sync-collection can report it to clients. But
+    // `deleted` is not part of UNIQUE(calendar_id, uid), so a re-PUT of a
+    // previously deleted UID must resurrect that row -- a blind INSERT would
+    // violate the unique constraint. Upsert, the same way tilde-dav does.
+    if let Err(e) = db.execute(
+        "INSERT INTO calendar_objects (id, calendar_id, uid, ics_data, etag, component_type, summary, dtstart, dtend, location, description, priority, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+         ON CONFLICT(calendar_id, uid) DO UPDATE SET
+            ics_data = excluded.ics_data,
+            etag = excluded.etag,
+            component_type = excluded.component_type,
+            summary = excluded.summary,
+            dtstart = excluded.dtstart,
+            dtend = excluded.dtend,
+            location = excluded.location,
+            description = excluded.description,
+            priority = excluded.priority,
+            status = excluded.status,
+            updated_at = excluded.updated_at,
+            deleted = 0",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(), cal_id, uid, body, etag,
+            component_type, summary, dtstart, dtend, location, description, priority, ics_status, now, now
+        ],
+    ) {
+        tracing::error!(calendar = %cal_name, uid = %uid, error = %e, "CalDAV PUT failed to store object");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     // Update ctag and sync_token
@@ -894,9 +918,9 @@ fn handle_calendar_query_report(
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>"#,
-            principal,
-            cal_name,
-            uid,
+            escape_xml(principal),
+            escape_xml(cal_name),
+            escape_xml(uid),
             etag,
             escape_xml(ics_data)
         ));
@@ -954,7 +978,7 @@ fn handle_multiget_report(
     </d:prop>
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
-</d:response>"#, principal, cal_name, uid, etag, escape_xml(&ics_data)));
+</d:response>"#, escape_xml(principal), escape_xml(cal_name), escape_xml(&uid), etag, escape_xml(&ics_data)));
             }
             Err(_) => {
                 responses.push_str(&format!(
@@ -1035,9 +1059,9 @@ fn handle_sync_collection_report(
     <d:status>HTTP/1.1 200 OK</d:status>
   </d:propstat>
 </d:response>"#,
-                principal,
-                cal_name,
-                uid,
+                escape_xml(principal),
+                escape_xml(cal_name),
+                escape_xml(uid),
                 etag,
                 escape_xml(ics_data)
             ));
@@ -1066,7 +1090,9 @@ fn handle_sync_collection_report(
   <d:href>/caldav/{}/{}/{}.ics</d:href>
   <d:status>HTTP/1.1 404 Not Found</d:status>
 </d:response>"#,
-                    principal, cal_name, uid
+                    escape_xml(principal),
+                    escape_xml(cal_name),
+                    escape_xml(uid)
                 ));
             } else if let Ok((uid, etag, ics_data)) = db.query_row(
                                 "SELECT uid, etag, ics_data FROM calendar_objects WHERE calendar_id = ?1 AND uid = ?2 AND deleted = 0",
@@ -1083,7 +1109,7 @@ fn handle_sync_collection_report(
                 </d:prop>
                 <d:status>HTTP/1.1 200 OK</d:status>
               </d:propstat>
-            </d:response>"#, principal, cal_name, uid, etag, escape_xml(&ics_data)));
+            </d:response>"#, escape_xml(principal), escape_xml(cal_name), escape_xml(&uid), etag, escape_xml(&ics_data)));
                             }
         }
     }
@@ -1183,7 +1209,16 @@ fn parse_ical_datetime(s: &str) -> Option<jiff::Timestamp> {
     }
 
     // iCalendar compact formats: 20260601T100000Z, 20260601T100000, 20260601
+    //
+    // The slicing below is by byte offset, so anything non-ASCII would either
+    // split a character (panic) or silently mis-index. Clients do send junk
+    // here -- a bad DTSTART is stored verbatim and re-parsed on every
+    // calendar-query, so one bad value would otherwise take the whole
+    // calendar down for every client. Reject it instead.
     let stripped = s.trim_end_matches('Z');
+    if !stripped.is_ascii() {
+        return None;
+    }
     if stripped.len() == 8 {
         // Date-only: YYYYMMDD -> start of day UTC
         let iso = format!(
@@ -1194,7 +1229,7 @@ fn parse_ical_datetime(s: &str) -> Option<jiff::Timestamp> {
         );
         return iso.parse::<jiff::Timestamp>().ok();
     }
-    if stripped.len() == 15 && stripped.contains('T') {
+    if stripped.len() == 15 && stripped.as_bytes()[8] == b'T' {
         // YYYYMMDDTHHMMSS -> treat as UTC
         let iso = format!(
             "{}-{}-{}T{}:{}:{}Z",
@@ -1339,6 +1374,12 @@ fn handle_push_subscribe(
         Some(url) => url,
         None => return (StatusCode::BAD_REQUEST, "callback_url required").into_response(),
     };
+
+    // The server fetches this URL later, so it is an SSRF vector: reject
+    // anything but http(s) to a routable host before it is ever stored.
+    if let Err(reason) = push::validate_callback_url(callback_url) {
+        return (StatusCode::BAD_REQUEST, reason).into_response();
+    }
 
     let expiry_hours = req
         .get("expiry_hours")

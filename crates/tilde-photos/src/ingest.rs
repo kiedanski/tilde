@@ -2,7 +2,9 @@
 //!
 //! Processes files from _inbox/ and _library-drop/ directories.
 
-use crate::{is_encrypted, is_photo_ext, is_video_ext, metadata, organize, validate_magic_bytes};
+use crate::{
+    is_encrypted, is_photo_ext, is_video_ext, metadata, organize, safe_path, validate_magic_bytes,
+};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -117,6 +119,11 @@ pub fn process_inbox_file(
         .context("Failed to compute organization destination")?;
 
     let dest = photos_base.join(&rel_dest);
+
+    // `rel_dest` embeds the file's own XMP `trip:` tag, so confirm the join
+    // really landed inside the photos root before creating anything.
+    safe_path::ensure_within(photos_base, &dest)
+        .context("Computed photo destination escapes the photos directory")?;
 
     // Ensure destination directory exists
     if let Some(parent) = dest.parent() {
@@ -405,6 +412,10 @@ pub fn reprocess_untriaged_file(
     let rel_dest = organize::compute_destination(organization_pattern, &metadata, &filename)
         .context("Failed to compute destination")?;
     let dest = photos_base.join(&rel_dest);
+
+    // Same untrusted `trip:` tag path as the inbox pipeline.
+    safe_path::ensure_within(photos_base, &dest)
+        .context("Computed photo destination escapes the photos directory")?;
 
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;

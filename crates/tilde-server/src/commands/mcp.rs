@@ -45,10 +45,16 @@ pub async fn run_mcp(config_path: Option<&str>, command: McpCommands) -> anyhow:
                 }
             }
             TokenCommands::Revoke { id } => {
-                conn.execute(
-                    "UPDATE mcp_tokens SET revoked = 1 WHERE id = ?1 OR name = ?1",
+                let affected = conn.execute(
+                    "UPDATE mcp_tokens SET revoked = 1 WHERE (id = ?1 OR name = ?1) AND revoked = 0",
                     [&id],
                 )?;
+                if affected == 0 {
+                    anyhow::bail!(
+                        "No active MCP token matching '{}'. Run `tilde mcp token list` to see names and ids.",
+                        id
+                    );
+                }
                 println!("MCP token revoked");
             }
             TokenCommands::Rotate { id } => {

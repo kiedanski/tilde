@@ -2,13 +2,15 @@
 //!
 //! Generates WebP thumbnails at 256px (square crop) and 1920px (longest edge).
 
+use crate::safe_path;
 use anyhow::{Context, Result, bail};
 use image::DynamicImage;
 use image::imageops::FilterType;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "heic")]
 use std::sync::Mutex;
-use tracing::{debug, info};
+use std::time::Duration;
+use tracing::{debug, info, warn};
 
 /// Single-slot semaphore for HEIC decoding only.
 /// HEIC files can use 200+ MB during decode (20 MP × 3 bytes × overhead),
@@ -113,13 +115,39 @@ fn open_image(path: &Path) -> Result<DynamicImage> {
     }
     // Use content-based format detection (not extension) so misnamed files
     // (e.g. JPEG with .heic extension) are handled correctly.
-    let reader = image::ImageReader::open(path)
+    let mut reader = image::ImageReader::open(path)
         .context("Failed to open image file")?
         .with_guessed_format()
         .context("Failed to guess image format")?;
+    // Without this the decoder runs with `image`'s defaults: no dimension cap
+    // at all and a 512 MiB allocation budget.
+    reader.limits(decode_limits());
     reader
         .decode()
         .context("Failed to decode image for thumbnail generation")
+}
+
+/// Largest edge we will decode from an untrusted image file.
+const MAX_IMAGE_DIMENSION: u32 = 16_384;
+
+/// Allocation budget for a single decode.
+///
+/// tilde targets a 256-512 MB RAM envelope (README) and the job runner decodes
+/// up to `JOB_CONCURRENCY` = 4 images at once, so 4 x 128 MiB = 512 MiB is the
+/// worst case. `image`'s default of 512 MiB per decode would make that ~2 GiB.
+/// 128 MiB is roughly a 44 MP RGB8 image, which covers every consumer camera
+/// sensor that ships full-resolution output.
+const MAX_DECODE_ALLOC: u64 = 128 * 1024 * 1024;
+
+/// Decoding limits applied to every non-HEIC image. (The HEIC path has its own
+/// megapixel guard in `decode_heic` and is serialized by `HEIC_DECODE_LOCK`.)
+#[allow(clippy::field_reassign_with_default)]
+fn decode_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    limits
 }
 
 /// Generate a 256px square-crop thumbnail for a photo.
@@ -321,21 +349,66 @@ fn encode_base83(value: u32, length: usize) -> String {
     result
 }
 
-/// Generate a thumbnail for a video using ffmpeg
+/// Run `command` to completion, killing it if it outruns `timeout`.
+///
+/// `std::process::Command::output()` has no timeout, so a crafted container
+/// that makes ffmpeg spin or block pins a thumbnail worker forever. A
+/// `timeout` of zero means "wait indefinitely".
+///
+/// The caller must redirect the child's stdio (to a file or to null) — this
+/// function never reads from a pipe, so it cannot deadlock on a full one.
+fn run_with_timeout(
+    command: &mut std::process::Command,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus> {
+    let mut child = command.spawn().context("Failed to spawn process")?;
+
+    if timeout.is_zero() {
+        return child.wait().context("Failed to wait for process");
+    }
+
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().context("Failed to poll process")? {
+            return Ok(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "Process timed out after {}s and was killed",
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Generate a thumbnail for a video using ffmpeg.
+///
+/// `timeout_secs` is enforced: ffmpeg is killed if it runs longer than that.
 pub fn generate_video_thumbnail(
     source: &Path,
     photo_uuid: &str,
     cache_dir: &Path,
     quality: u8,
-    _timeout_secs: u64,
+    timeout_secs: u64,
 ) -> Result<ThumbnailResult> {
     let thumb_dir = cache_dir.join("thumbnails").join(photo_uuid);
     std::fs::create_dir_all(&thumb_dir)?;
 
     // Extract first frame via ffmpeg to a temp PNG
     let temp_png = thumb_dir.join("_temp_frame.png");
+    let stderr_path = thumb_dir.join("_ffmpeg_stderr.log");
 
-    let output = std::process::Command::new("ffmpeg")
+    let stderr_file =
+        std::fs::File::create(&stderr_path).context("Failed to create ffmpeg log file")?;
+
+    let mut command = std::process::Command::new("ffmpeg");
+    command
+        // `-nostdin` plus a null stdin: ffmpeg must never block waiting for
+        // input it will not get (it prompts on some malformed inputs).
+        .arg("-nostdin")
         .arg("-y")
         .arg("-i")
         .arg(source.as_os_str())
@@ -344,11 +417,28 @@ pub fn generate_video_thumbnail(
         .arg("-q:v")
         .arg("2")
         .arg(temp_png.as_os_str())
-        .output()
-        .context("Failed to run ffmpeg for video thumbnail")?;
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        // Send stderr to a file rather than a pipe so the timeout loop never
+        // has to drain it (a full pipe would deadlock the child).
+        .stderr(std::process::Stdio::from(stderr_file));
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let status = run_with_timeout(&mut command, Duration::from_secs(timeout_secs));
+
+    let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&stderr_path);
+
+    let status = match status {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp_png);
+            warn!(source = %source.display(), error = %e, "ffmpeg video thumbnail aborted");
+            return Err(e).context("Failed to run ffmpeg for video thumbnail");
+        }
+    };
+
+    if !status.success() {
+        let _ = std::fs::remove_file(&temp_png);
         bail!(
             "ffmpeg failed: {}",
             stderr.chars().take(500).collect::<String>()
@@ -401,112 +491,6 @@ pub fn compute_blurhash_placeholder(source: &Path) -> Option<String> {
     Some(colors.join(""))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_heic_thumbnail_generation() {
-        let temp_dir = std::env::temp_dir().join("tilde_heic_test");
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        // Create a test HEIC by encoding a simple image
-        let heic_path = temp_dir.join("test.heic");
-
-        // Use heif-enc if available, otherwise skip
-        let jpeg_path = temp_dir.join("input.jpg");
-        // Create a simple JPEG using the image crate
-        let mut img = image::RgbImage::new(200, 150);
-        for pixel in img.pixels_mut() {
-            *pixel = image::Rgb([255, 100, 50]);
-        }
-        img.save(&jpeg_path).unwrap();
-
-        // Convert to HEIC using heif-enc command
-        let output = std::process::Command::new("heif-enc")
-            .arg(&jpeg_path)
-            .arg("-o")
-            .arg(&heic_path)
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => {}
-            _ => {
-                eprintln!("heif-enc not available, skipping HEIC test");
-                return;
-            }
-        }
-
-        assert!(heic_path.exists(), "HEIC file should exist");
-
-        // Test thumbnail generation
-        let cache_dir = temp_dir.join("cache");
-        let result = generate_thumbnails(&heic_path, "test-heic-uuid", &cache_dir, 80).unwrap();
-
-        assert!(result.path_256.exists(), "256px thumbnail should exist");
-        assert!(
-            std::fs::metadata(&result.path_256).unwrap().len() > 0,
-            "256px thumbnail should not be empty"
-        );
-        assert!(
-            result.blurhash.is_some(),
-            "Blurhash should be computed from thumbnail"
-        );
-
-        // Clean up
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_heic_blurhash() {
-        let temp_dir = std::env::temp_dir().join("tilde_heic_blurhash_test");
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let heic_path = temp_dir.join("test.heic");
-        let jpeg_path = temp_dir.join("input.jpg");
-
-        let mut img = image::RgbImage::new(100, 100);
-        for pixel in img.pixels_mut() {
-            *pixel = image::Rgb([50, 150, 200]);
-        }
-        img.save(&jpeg_path).unwrap();
-
-        let output = std::process::Command::new("heif-enc")
-            .arg(&jpeg_path)
-            .arg("-o")
-            .arg(&heic_path)
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => {}
-            _ => {
-                eprintln!("heif-enc not available, skipping HEIC blurhash test");
-                return;
-            }
-        }
-
-        let hash = compute_blurhash(&heic_path).unwrap();
-        assert!(!hash.is_empty(), "Blurhash should not be empty");
-
-        let placeholder = compute_blurhash_placeholder(&heic_path);
-        assert!(placeholder.is_some(), "Blurhash placeholder should be Some");
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_is_heic_detection() {
-        assert!(is_heic(Path::new("photo.heic")));
-        assert!(is_heic(Path::new("photo.HEIC")));
-        assert!(is_heic(Path::new("photo.heif")));
-        assert!(is_heic(Path::new("photo.HEIF")));
-        assert!(!is_heic(Path::new("photo.jpg")));
-        assert!(!is_heic(Path::new("photo.png")));
-    }
-}
-
 /// Create a symlink for a single photo's thumbnail in the browseable mirror directory.
 /// Maps organized path (e.g. photos/2026/04/IMG.jpg) → _thumbnails/2026/04/IMG.webp
 pub fn create_thumbnail_symlink(
@@ -545,10 +529,20 @@ pub fn create_thumbnail_symlink(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
     let parent = original.parent().unwrap_or(Path::new(""));
-    let symlink_path = photos_base
-        .join("_thumbnails")
-        .join(parent)
-        .join(format!("{}.webp", stem));
+    let mirror_root = photos_base.join("_thumbnails");
+    let symlink_path = mirror_root.join(parent).join(format!("{}.webp", stem));
+
+    // `rel_path` comes from the DB, where it was derived from the photo's own
+    // metadata (see the `trip:` tag in organize.rs). An absolute value makes
+    // `join` discard the mirror root entirely, and this function then does
+    // `remove_file` + `symlink` on the result — an arbitrary-file-deletion
+    // primitive. Prove containment before touching anything.
+    safe_path::ensure_within(&mirror_root, &symlink_path).with_context(|| {
+        format!(
+            "Refusing to create a thumbnail symlink outside {}",
+            mirror_root.display()
+        )
+    })?;
 
     // Create parent directories
     if let Some(dir) = symlink_path.parent() {
@@ -615,4 +609,394 @@ pub fn mark_thumbnails_generated(
         rusqlite::params![generated as i32, photo_id],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Exercises the HEIC decode path, which is itself `#[cfg(feature = "heic")]`.
+    // Without this gate the test fails under `--no-default-features`, which is
+    // exactly what CI runs.
+    #[test]
+    #[cfg(feature = "heic")]
+    fn test_heic_thumbnail_generation() {
+        let temp_dir = std::env::temp_dir().join("tilde_heic_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create a test HEIC by encoding a simple image
+        let heic_path = temp_dir.join("test.heic");
+
+        // Use heif-enc if available, otherwise skip
+        let jpeg_path = temp_dir.join("input.jpg");
+        // Create a simple JPEG using the image crate
+        let mut img = image::RgbImage::new(200, 150);
+        for pixel in img.pixels_mut() {
+            *pixel = image::Rgb([255, 100, 50]);
+        }
+        img.save(&jpeg_path).unwrap();
+
+        // Convert to HEIC using heif-enc command
+        let output = std::process::Command::new("heif-enc")
+            .arg(&jpeg_path)
+            .arg("-o")
+            .arg(&heic_path)
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {}
+            _ => {
+                eprintln!("heif-enc not available, skipping HEIC test");
+                return;
+            }
+        }
+
+        assert!(heic_path.exists(), "HEIC file should exist");
+
+        // Test thumbnail generation
+        let cache_dir = temp_dir.join("cache");
+        let result = generate_thumbnails(&heic_path, "test-heic-uuid", &cache_dir, 80).unwrap();
+
+        assert!(result.path_256.exists(), "256px thumbnail should exist");
+        assert!(
+            std::fs::metadata(&result.path_256).unwrap().len() > 0,
+            "256px thumbnail should not be empty"
+        );
+        assert!(
+            result.blurhash.is_some(),
+            "Blurhash should be computed from thumbnail"
+        );
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // Exercises the HEIC decode path, which is itself `#[cfg(feature = "heic")]`.
+    // Without this gate the test fails under `--no-default-features`, which is
+    // exactly what CI runs.
+    #[test]
+    #[cfg(feature = "heic")]
+    fn test_heic_blurhash() {
+        let temp_dir = std::env::temp_dir().join("tilde_heic_blurhash_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let heic_path = temp_dir.join("test.heic");
+        let jpeg_path = temp_dir.join("input.jpg");
+
+        let mut img = image::RgbImage::new(100, 100);
+        for pixel in img.pixels_mut() {
+            *pixel = image::Rgb([50, 150, 200]);
+        }
+        img.save(&jpeg_path).unwrap();
+
+        let output = std::process::Command::new("heif-enc")
+            .arg(&jpeg_path)
+            .arg("-o")
+            .arg(&heic_path)
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {}
+            _ => {
+                eprintln!("heif-enc not available, skipping HEIC blurhash test");
+                return;
+            }
+        }
+
+        let hash = compute_blurhash(&heic_path).unwrap();
+        assert!(!hash.is_empty(), "Blurhash should not be empty");
+
+        let placeholder = compute_blurhash_placeholder(&heic_path);
+        assert!(placeholder.is_some(), "Blurhash placeholder should be Some");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Unique scratch directory per test.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "tilde_thumb_{}_{}_{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc: u32 = 0xFFFF_FFFF;
+        for &b in bytes {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// A PNG that is nothing but a signature and an IHDR declaring `width` x
+    /// `height`. The decoder reads IHDR (and applies dimension limits) before
+    /// it needs any image data.
+    fn png_header_only(width: u32, height: u32) -> Vec<u8> {
+        let mut ihdr: Vec<u8> = b"IHDR".to_vec();
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8bpc, truecolour
+
+        let mut out: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        out.extend_from_slice(&13u32.to_be_bytes());
+        out.extend_from_slice(&ihdr);
+        out.extend_from_slice(&crc32(&ihdr).to_be_bytes());
+        out
+    }
+
+    fn limit_error(err: &anyhow::Error) -> bool {
+        err.chain()
+            .filter_map(|e| e.downcast_ref::<image::ImageError>())
+            .any(|e| matches!(e, image::ImageError::Limits(_)))
+    }
+
+    #[test]
+    fn test_decode_limits_reject_oversized_dimensions() {
+        let dir = scratch("limits");
+        let path = dir.join("huge.png");
+        // 20000 x 2000 = 40 MP. That is ~120 MB of RGB8, so `image`'s default
+        // 512 MiB allocation budget would NOT stop it — only an explicit
+        // dimension cap does. That is what makes this test non-vacuous.
+        std::fs::write(&path, png_header_only(20_000, 2_000)).unwrap();
+
+        let err = open_image(&path).expect_err("oversized image must be refused");
+        assert!(
+            limit_error(&err),
+            "expected an image::ImageError::Limits, got: {:?}",
+            err
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_decode_limits_allow_ordinary_photos() {
+        let limits = decode_limits();
+        // A 24 MP camera frame and a 50 MP one must still pass the dimension
+        // check, otherwise the cap would break normal use.
+        assert!(limits.check_dimensions(6000, 4000).is_ok());
+        assert!(limits.check_dimensions(8688, 5792).is_ok());
+        assert!(limits.check_dimensions(20_000, 2_000).is_err());
+        assert!(limits.check_dimensions(2_000, 20_000).is_err());
+        assert_eq!(limits.max_alloc, Some(MAX_DECODE_ALLOC));
+    }
+
+    #[test]
+    fn test_decode_limits_are_actually_applied_to_real_images() {
+        let dir = scratch("limits_ok");
+        let path = dir.join("small.png");
+        image::RgbImage::new(64, 48).save(&path).unwrap();
+        let img = open_image(&path).expect("normal images must still decode");
+        assert_eq!(img.width(), 64);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_run_with_timeout_kills_a_hung_process() {
+        let mut command = std::process::Command::new("sleep");
+        command
+            .arg("30")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        let started = std::time::Instant::now();
+        let result = run_with_timeout(&mut command, Duration::from_millis(300));
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err(), "a 30s process must not survive a 0.3s cap");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout did not fire; waited {:?}",
+            elapsed
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("timed out"),
+            "error should say the process was killed for running too long"
+        );
+    }
+
+    #[test]
+    fn test_run_with_timeout_returns_exit_status() {
+        let mut ok = std::process::Command::new("true");
+        ok.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        assert!(
+            run_with_timeout(&mut ok, Duration::from_secs(30))
+                .unwrap()
+                .success()
+        );
+
+        let mut bad = std::process::Command::new("false");
+        bad.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        assert!(
+            !run_with_timeout(&mut bad, Duration::from_secs(30))
+                .unwrap()
+                .success()
+        );
+    }
+
+    /// End-to-end proof that the timeout is wired into the ffmpeg call, not
+    /// just available as a helper: a FIFO with no writer makes ffmpeg block
+    /// forever in `open()`, which is exactly the "crafted video hangs a
+    /// worker" case. Skipped where ffmpeg or mkfifo are unavailable.
+    #[test]
+    #[cfg(unix)]
+    fn test_video_thumbnail_timeout_kills_hung_ffmpeg() {
+        let have_tool = |name: &str| {
+            std::process::Command::new(name)
+                .arg("--help")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok()
+        };
+        if !have_tool("ffmpeg") || !have_tool("mkfifo") {
+            eprintln!("ffmpeg/mkfifo unavailable, skipping video timeout test");
+            return;
+        }
+
+        let dir = scratch("ffmpeg_timeout");
+        let fifo = dir.join("hang.mp4");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("could not create FIFO, skipping video timeout test");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let started = std::time::Instant::now();
+        let result = generate_video_thumbnail(&fifo, "vid-1", &dir.join("cache"), 80, 1);
+        let elapsed = started.elapsed();
+
+        let err = result.err().expect("a hung ffmpeg must not succeed");
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "ffmpeg was never killed; the call took {:?}",
+            elapsed
+        );
+        assert!(
+            format!("{:#}", err).contains("timed out"),
+            "expected a timeout error, got: {:#}",
+            err
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn symlink_test_db(photo_id: &str, db_path: &str) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (id TEXT PRIMARY KEY, path TEXT);
+             CREATE TABLE photos (id TEXT PRIMARY KEY, file_id TEXT);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO files (id, path) VALUES (?1, ?2)",
+            rusqlite::params!["f1", db_path],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO photos (id, file_id) VALUES (?1, 'f1')",
+            rusqlite::params![photo_id],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_thumbnail_symlink_refuses_path_outside_the_mirror() {
+        let base = scratch("symlink_escape");
+        let photos_base = base.join("photos");
+        let outside = base.join("outside");
+        let cache_dir = base.join("cache");
+        std::fs::create_dir_all(&photos_base).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        // The thumbnail must exist, otherwise the function returns early.
+        let thumb = cache_dir.join("thumbnails").join("p1");
+        std::fs::create_dir_all(&thumb).unwrap();
+        std::fs::write(thumb.join("256.webp"), b"not really a webp").unwrap();
+
+        // An absolute `files.path` makes `join` drop the `_thumbnails/` root,
+        // so the symlink (and the `remove_file` before it) would land here.
+        let victim = outside.join("victim.webp");
+        let db_path = format!("photos/{}/victim.jpg", outside.display());
+        let conn = symlink_test_db("p1", &db_path);
+
+        let result = create_thumbnail_symlink(&conn, "p1", &photos_base, &cache_dir);
+
+        assert!(
+            result.is_err(),
+            "an absolute DB path must be refused, got {:?}",
+            result
+        );
+        assert!(
+            !victim.exists() && victim.symlink_metadata().is_err(),
+            "a symlink was created outside the mirror at {}",
+            victim.display()
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_thumbnail_symlink_still_works_for_normal_paths() {
+        let base = scratch("symlink_ok");
+        let photos_base = base.join("photos");
+        let cache_dir = base.join("cache");
+        std::fs::create_dir_all(photos_base.join("2026/04")).unwrap();
+
+        let thumb = cache_dir.join("thumbnails").join("p2");
+        std::fs::create_dir_all(&thumb).unwrap();
+        std::fs::write(thumb.join("256.webp"), b"not really a webp").unwrap();
+
+        let conn = symlink_test_db("p2", "photos/2026/04/IMG_1.jpg");
+        create_thumbnail_symlink(&conn, "p2", &photos_base, &cache_dir).unwrap();
+
+        let link = photos_base.join("_thumbnails/2026/04/IMG_1.webp");
+        assert!(
+            link.symlink_metadata().is_ok(),
+            "the ordinary mirror symlink must still be created"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_is_heic_detection() {
+        assert!(is_heic(Path::new("photo.heic")));
+        assert!(is_heic(Path::new("photo.HEIC")));
+        assert!(is_heic(Path::new("photo.heif")));
+        assert!(is_heic(Path::new("photo.HEIF")));
+        assert!(!is_heic(Path::new("photo.jpg")));
+        assert!(!is_heic(Path::new("photo.png")));
+    }
 }

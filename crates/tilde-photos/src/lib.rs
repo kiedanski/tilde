@@ -3,6 +3,7 @@
 pub mod ingest;
 pub mod metadata;
 pub mod organize;
+pub mod safe_path;
 pub mod thumbnail;
 pub mod watcher;
 
@@ -381,6 +382,11 @@ pub fn process_thumbnail_job_standalone(
     // files.path is like "photos/2026/04/IMG.jpg" — strip "photos/" prefix to get path within photos_base
     let within_photos = rel_path.strip_prefix("photos/").unwrap_or(&rel_path);
     let file = photos_base.join(within_photos);
+
+    // `files.path` is derived from metadata we do not control, so prove the
+    // join stayed inside the photos root before touching the filesystem.
+    safe_path::ensure_within(photos_base, &file)
+        .context("Photo path escapes the photos directory")?;
 
     if !file.exists() {
         anyhow::bail!("Photo file not found: {}", file.display());

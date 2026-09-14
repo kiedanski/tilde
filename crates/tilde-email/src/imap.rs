@@ -241,6 +241,14 @@ fn sync_cycle(
             continue;
         }
 
+        // The folder name is whatever the server put in its LIST response. A
+        // hostile or compromised server can answer with "/etc/cron.d" or
+        // "../../x"; skip those rather than aborting the whole account's sync.
+        if let Err(e) = crate::maildir::sanitize_relative_name(folder) {
+            warn!(folder = %folder, error = %e, "Skipping IMAP folder with an unsafe name");
+            continue;
+        }
+
         // Brief lock to read last UID
         let last_uid = {
             let conn = db.get().unwrap();
@@ -496,6 +504,27 @@ mod tests {
         assert!(config.should_sync_folder("Sent"));
         assert!(!config.should_sync_folder("Trash"));
         assert!(!config.should_sync_folder("Spam"));
+    }
+
+    #[test]
+    fn test_hostile_list_folder_names_are_not_path_safe() {
+        // The default filter only excludes Trash/Spam by name, so containment
+        // has to come from the Maildir layer, not from here. This pins that
+        // split: `should_sync_folder` lets these through on purpose, and
+        // `sanitize_relative_name` is what stops them.
+        let config = ImapAccountConfig::default();
+        for hostile in ["/etc/cron.d", "../../etc", "INBOX/../../../etc"] {
+            assert!(
+                config.should_sync_folder(hostile),
+                "the name filter is not a security control for {:?}",
+                hostile
+            );
+            assert!(
+                crate::maildir::sanitize_relative_name(hostile).is_err(),
+                "{:?} must be refused before it reaches the filesystem",
+                hostile
+            );
+        }
     }
 
     #[test]

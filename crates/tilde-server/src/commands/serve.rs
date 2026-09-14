@@ -49,6 +49,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         data_dir.join("collections"),
         data_dir.join("uploads"),
         data_dir.join("backup"),
+        data_dir.join("blobs/by-id"),
         cache_dir.join("thumbnails"),
     ] {
         std::fs::create_dir_all(dir)?;
@@ -128,6 +129,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         organization_pattern: String::new(),
         allowed_symlink_targets: vec![],
         cache_dir: None,
+        blobs_root: data_dir.join("blobs/by-id"),
     });
 
     let caldav_state: tilde_cal::SharedCalDavState =

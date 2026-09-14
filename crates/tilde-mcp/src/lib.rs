@@ -5,6 +5,10 @@
 //!
 //! Bearer token auth with scope enforcement, rate limiting, and audit logging.
 
+pub mod tools_files;
+pub mod tools_notes;
+pub mod tools_photos;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -82,324 +86,609 @@ impl JsonRpcResponse {
 // ─── Tool definitions ────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct ToolDef {
-    name: String,
-    description: String,
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
     #[serde(rename = "inputSchema")]
-    input_schema: Value,
+    pub input_schema: Value,
 }
 
 fn all_tools() -> Vec<ToolDef> {
-    vec![
+    let mut tools = vec![
         ToolDef {
             name: "notes.search".into(),
-            description: "Search notes by full-text query. Returns matching notes with path, title, and snippet.".into(),
+            description: "Full-text search across the NOTES tree (`<data_dir>/notes`, the tree \
+                 served at /dav/notes). This is a different directory tree from the one \
+                 files.search covers: a note never appears in files.search results and a file \
+                 never appears here, so pick the tool by which tree the content lives in. Only \
+                 *.md and *.txt files are searched — any other extension is invisible. The query \
+                 is handed to grep as a case-sensitive POSIX basic regular expression, not a \
+                 fuzzy or stemmed search, so 'Widget' does not match 'widget'. Returns a JSON \
+                 array with one entry per matching FILE (not per matching line): [{path, title, \
+                 modified}], where path is relative to the notes root, title is the filename stem \
+                 (NOT the note's heading), and modified is an ISO 8601 UTC timestamp. No snippet \
+                 is returned — call notes.read for the content. An empty array means nothing \
+                 matched, not an error. `limit` (default 20, no maximum) silently drops matches \
+                 beyond it and results are in grep's traversal order, so a truncated result is an \
+                 arbitrary subset. Requires notes:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "limit": {"type": "integer", "description": "Max results (default 20)"}
+                    "query": {"type": "string", "description": "Text to find, treated as a case-sensitive POSIX basic regex. Plain substrings work; . * [ ] ^ $ \\ are metacharacters."},
+                    "limit": {"type": "integer", "description": "Max matching files returned (default 20, no maximum). Excess matches are dropped silently."}
                 },
                 "required": ["query"]
             }),
         },
         ToolDef {
             name: "notes.read".into(),
-            description: "Read a note's content and metadata by path.".into(),
+            description: "Read one note's full text and metadata from the NOTES tree \
+                 (`<data_dir>/notes`) — not the files tree; use files.read for that. The note \
+                 must already exist: a missing path, a directory, or a non-UTF-8 file all fail \
+                 with \"note not found: <path>\". Paths are relative to the notes root (e.g. \
+                 'projects/ideas.md'); absolute paths and any '..' segment are rejected with \
+                 \"path traversal not allowed\". Returns {content: <the entire file as a string>, \
+                 metadata: {title, path, modified}}, where title is the first '# ' heading in the \
+                 file and falls back to the filename stem, and modified is an ISO 8601 UTC \
+                 timestamp. There is no size cap and no truncation here (unlike files.read's 1MB \
+                 limit), so a huge note comes back whole. Requires notes:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Note path relative to notes root (e.g. 'my-note.md')"}
+                    "path": {"type": "string", "description": "Note path relative to notes root (e.g. 'projects/ideas.md'). Must already exist."}
                 },
                 "required": ["path"]
             }),
         },
         ToolDef {
             name: "notes.append".into(),
-            description: "Append content to an existing note. Requires notes:write scope.".into(),
+            description: "Append text to the end of an EXISTING note in the notes tree, after a \
+                 newline so the appended block starts on its own line. The note must already \
+                 exist — a missing path fails with \"note not found: <path>\" and creates \
+                 nothing; use notes.create for a new note, or notes.write to replace one \
+                 wholesale. Existing content is never read or rewritten, only added to, so unlike \
+                 notes.write there is no version-store archive of the pre-append state and no \
+                 archived_sha256 in the result. Paths are relative to the notes root (e.g. \
+                 'journal/2026-03.md'); absolute paths and '..' are rejected. No size cap. \
+                 Returns {\"success\": true} and nothing else — no path, no byte count, no \
+                 resulting length. Requires notes:write scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Note path"},
-                    "content": {"type": "string", "description": "Content to append"}
+                    "path": {"type": "string", "description": "Note path relative to notes root (e.g. 'journal/2026-03.md'). Must already exist — use notes.create otherwise."},
+                    "content": {"type": "string", "description": "Text to add at the end of the note. A newline is inserted before it."}
                 },
                 "required": ["path", "content"]
             }),
         },
         ToolDef {
             name: "files.list".into(),
-            description: "List files and directories at a path.".into(),
+            description: "List the entries of one directory in the FILES tree \
+                 (`<data_dir>/files`, the tree served at /dav/files) — a different tree from \
+                 notes, which files.* tools cannot see at all. Paths are relative to the files \
+                 root (e.g. 'docs/2026'); omit `path` or pass \"\" for the root. The directory \
+                 must exist and be a directory or the call fails with \"directory not found: \
+                 <path>\"; absolute paths and '..' are rejected with \"path traversal not \
+                 allowed\". Dotfiles and dot-directories are skipped silently, so a hidden entry \
+                 that exists simply will not appear. Returns a JSON array (empty for an empty \
+                 directory) of {name, path, size, modified, type}, where path is relative to the \
+                 files root, type is \"file\" or \"directory\", size is bytes, and modified is \
+                 ISO 8601 UTC. There is no limit and no pagination — every entry is returned — \
+                 and `recursive: true` walks the whole subtree, silently stopping at 10 levels \
+                 deep. Requires files:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Directory path (default: root)"},
-                    "recursive": {"type": "boolean", "description": "List recursively (default false)"}
+                    "path": {"type": "string", "description": "Directory path relative to files root, e.g. 'docs/2026'. Default: the files root."},
+                    "recursive": {"type": "boolean", "description": "Walk subdirectories too (default false). Stops silently below 10 levels deep."}
                 }
             }),
         },
         ToolDef {
             name: "files.read".into(),
-            description: "Read a text file's content (max 1MB).".into(),
+            description: "Read one UTF-8 text file from the FILES tree (`<data_dir>/files`) — not \
+                 the notes tree; use notes.read for notes. Paths are relative to the files root \
+                 (e.g. 'docs/notes/todo.md'); absolute paths and '..' are rejected with \"path \
+                 traversal not allowed\". Fails with \"file not found: <path>\" when nothing is \
+                 there, \"cannot read directory\" for a directory, \"file too large (max 1MB)\" \
+                 above 1,048,576 bytes, and \"file is not valid UTF-8 text\" for binary content — \
+                 binary and oversized files cannot be read through MCP at all. Returns {content: \
+                 <the whole file as a string>}; content is never truncated, so a successful call \
+                 gives you the entire file. Requires files:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to files root"}
+                    "path": {"type": "string", "description": "File path relative to files root, e.g. 'docs/notes/todo.md'. Must exist, be UTF-8 text and be under 1MB."}
                 },
                 "required": ["path"]
             }),
         },
         ToolDef {
             name: "files.search".into(),
-            description: "Search file contents using full-text search.".into(),
+            description: "Search file CONTENTS in the FILES tree (`<data_dir>/files`). This is a \
+                 different directory tree from the one notes.search covers: notes are never \
+                 found here and files are never found there, so choose by which tree the content \
+                 lives in. Only *.md and *.txt files are searched — every other extension \
+                 (including .json and binaries) is invisible. The query is a case-sensitive POSIX \
+                 basic regular expression, handed to grep. Optional `path` narrows the search to \
+                 a subdirectory relative to the files root (e.g. 'docs'); a subdirectory that \
+                 does not exist yields an empty array rather than an error. Returns a JSON array \
+                 with one entry per matching LINE: [{path, snippet}], where snippet is the \
+                 trimmed matching line and path is relative to the directory actually searched — \
+                 i.e. relative to `path` when you pass one, and to the files root otherwise. \
+                 Hard-capped at 20 results, not configurable (there is no limit parameter), and \
+                 nothing in the response says whether more matches existed — narrow the query or \
+                 the path when you might be at the cap. Requires files:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "path": {"type": "string", "description": "Restrict to subdirectory"}
+                    "query": {"type": "string", "description": "Text to find, treated as a case-sensitive POSIX basic regex."},
+                    "path": {"type": "string", "description": "Restrict to a subdirectory, relative to files root (e.g. 'docs'). Default: search the whole files tree."}
                 },
                 "required": ["query"]
             }),
         },
         ToolDef {
             name: "trackers.log".into(),
-            description: "Log a new entry to a collection/tracker. Requires trackers:write scope.".into(),
+            description: "Append one record to an EXISTING tracker collection (a named, schema'd \
+                 log kept in SQLite — habits, weights, expenses, and so on). The collection must \
+                 already exist or the call fails with \"collection '<name>' not found\", and no \
+                 MCP tool can create one: collections are created out of band with the CLI \
+                 `tilde collection create <name> --schema '<json-schema>'`. Names match exactly \
+                 and case-sensitively; confirm one with trackers.query before logging into it. \
+                 `data` is validated ONLY against the collection schema's top-level `required` \
+                 list — a missing required field fails with \"missing required field: \
+                 '<field>'\" — while field types, formats and unexpected extra fields are not \
+                 checked and are stored exactly as given. The record's timestamp is set \
+                 server-side; there is no way to backdate one, and no way to update or delete a \
+                 record over MCP. Returns {\"id\": \"<uuid of the new record>\"}. Requires \
+                 trackers:write scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "collection": {"type": "string", "description": "Collection name"},
-                    "data": {"type": "object", "description": "Record data"}
+                    "collection": {"type": "string", "description": "Exact name of an existing collection, e.g. 'weight'. Must already exist — create it with the CLI `tilde collection create`."},
+                    "data": {"type": "object", "description": "Record fields as a JSON object. Must contain the schema's required fields; anything else is stored unvalidated."}
                 },
                 "required": ["collection", "data"]
             }),
         },
         ToolDef {
             name: "trackers.query".into(),
-            description: "Query records from a collection/tracker.".into(),
+            description: "Read records back from an EXISTING tracker collection, newest first. \
+                 The collection must already exist or the call fails with \"collection '<name>' \
+                 not found\" (names match exactly); no MCP tool creates or lists collections — \
+                 the CLI `tilde collection list` shows them and `tilde collection create` makes \
+                 one. Returns a JSON array of {id, data, timestamp} ordered by creation time \
+                 descending, where `data` is the record object exactly as it was logged and \
+                 `timestamp` is the ISO 8601 creation time with UTC offset. `limit` defaults to \
+                 50 and has no maximum; results are truncated at it with no more-results flag, so \
+                 a result of exactly `limit` entries may well be hiding older records. `since` \
+                 filters on that same creation timestamp by plain string comparison — pass the \
+                 same shape the timestamps use (e.g. '2026-01-01T00:00:00+00:00'); a bare \
+                 '2026-01-01' works as a prefix bound, but a differently formatted value filters \
+                 wrongly instead of erroring. An empty array means no records matched. Requires \
+                 trackers:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "collection": {"type": "string", "description": "Collection name"},
-                    "since": {"type": "string", "description": "Filter records since date (ISO 8601)"},
-                    "limit": {"type": "integer", "description": "Max results (default 50)"}
+                    "collection": {"type": "string", "description": "Exact name of an existing collection, e.g. 'weight'."},
+                    "since": {"type": "string", "description": "Only records created at or after this. Compared as text against ISO 8601 timestamps with offset, e.g. '2026-01-01T00:00:00+00:00'."},
+                    "limit": {"type": "integer", "description": "Max records returned, newest first (default 50, no maximum). Truncation is silent."}
                 },
                 "required": ["collection"]
             }),
         },
         ToolDef {
             name: "calendar.list_events".into(),
-            description: "List calendar events with optional date range filter.".into(),
+            description: "List calendar objects, optionally within a date window. NOTE: this \
+                 returns every non-deleted object in the calendar, TASKS INCLUDED — each entry \
+                 carries `type`, \"VEVENT\" for an appointment and \"VTODO\" for a task, so \
+                 filter on it if you want events only (tasks.list returns tasks alone). \
+                 Soft-deleted objects never appear. With no arguments it returns the entire \
+                 calendar history: there is no limit and no pagination, so pass `from`/`to` \
+                 unless you truly want everything. The window is inclusive and catches overlaps: \
+                 `from` keeps objects ending at or after it, `to` keeps objects starting at or \
+                 before it. Both bounds are compared as TEXT against the stored values, so use \
+                 the same format the events were created with (ISO 8601 like \
+                 '2026-03-01T00:00:00Z', or an iCalendar stamp like '20260301T000000Z'); a \
+                 mismatched format filters wrongly and silently rather than erroring. `calendar` \
+                 matches a calendar name exactly (see calendar.list_calendars); an unknown name \
+                 returns an empty array, not an error. Returns a JSON array of {uid, type, \
+                 summary, start, end, location, status} sorted by start ascending; every field \
+                 except uid and type may be null. Requires calendar:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "from": {"type": "string", "description": "Start date (ISO 8601 or CalDAV format)"},
-                    "to": {"type": "string", "description": "End date"},
-                    "calendar": {"type": "string", "description": "Calendar name (default: all)"}
+                    "from": {"type": "string", "description": "Window start, inclusive: keeps objects ending at or after this. ISO 8601 or iCalendar stamp, compared as text."},
+                    "to": {"type": "string", "description": "Window end, inclusive: keeps objects starting at or before this. Same formats as 'from'."},
+                    "calendar": {"type": "string", "description": "Exact calendar name (default: all calendars). An unknown name returns an empty list."}
                 }
             }),
         },
         ToolDef {
             name: "calendar.create_event".into(),
-            description: "Create a new calendar event. Requires calendar:write scope.".into(),
+            description: "Create a calendar event (an iCalendar VEVENT). The named calendar must \
+                 already exist or the call fails with \"calendar '<name>' not found\"; the \
+                 built-in 'default' calendar is auto-created on first use, so omitting `calendar` \
+                 always works, while any other name must have been created beforehand (see \
+                 calendar.list_calendars). `start` and `end` are stored VERBATIM — not parsed, \
+                 not validated, not timezone-converted — so pass the format you want back out of \
+                 calendar.list_events (ISO 8601 '2026-03-01T09:00:00Z' or iCalendar \
+                 '20260301T090000Z') and stay consistent, because date filtering elsewhere is a \
+                 text comparison. There is no conflict or duplicate detection: calling twice \
+                 creates two events. Only these fields can be set — no attendees, reminders or \
+                 recurrence over MCP. Returns {uid, status: \"created\"}; keep the uid to update \
+                 or delete the event later. Requires calendar:write scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "calendar": {"type": "string", "description": "Calendar name (default: 'default')"},
-                    "summary": {"type": "string", "description": "Event title"},
-                    "start": {"type": "string", "description": "Start datetime (ISO 8601)"},
-                    "end": {"type": "string", "description": "End datetime (ISO 8601)"},
-                    "location": {"type": "string", "description": "Location"},
-                    "description": {"type": "string", "description": "Description"}
+                    "calendar": {"type": "string", "description": "Exact name of an existing calendar (default: 'default', which is created automatically)."},
+                    "summary": {"type": "string", "description": "Event title."},
+                    "start": {"type": "string", "description": "Start datetime, stored verbatim and unvalidated. ISO 8601 ('2026-03-01T09:00:00Z') or iCalendar ('20260301T090000Z')."},
+                    "end": {"type": "string", "description": "End datetime, same format as 'start'. Not checked against it."},
+                    "location": {"type": "string", "description": "Free-text location. Optional."},
+                    "description": {"type": "string", "description": "Free-text notes for the event. Optional."}
                 },
                 "required": ["summary", "start", "end"]
             }),
         },
         ToolDef {
             name: "contacts.search".into(),
-            description: "Search contacts by name, email, phone, or organization.".into(),
+            description: "Find contacts whose formatted name, email, phone or organisation \
+                 contains the query. The match is a case-insensitive (ASCII) SUBSTRING match, not \
+                 fuzzy and not prefix-anchored: 'jon' will not find 'John', and '%' or '_' in the \
+                 query act as SQL LIKE wildcards. Soft-deleted contacts are excluded. A query \
+                 matching nothing returns an empty array, not an error. Returns a JSON array of \
+                 {uid, name, email, phone, org} in unspecified order; every field but uid may be \
+                 null, and only the single stored email/phone comes back, not every address on \
+                 the underlying vCard. WARNING: `limit` is accepted but currently has NO effect — \
+                 every match is returned, so a broad query on a large address book returns \
+                 everything. Requires contacts:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "limit": {"type": "integer", "description": "Max results (default 20)"}
+                    "query": {"type": "string", "description": "Substring to look for in name, email, phone or organisation. Case-insensitive, not fuzzy; % and _ are wildcards."},
+                    "limit": {"type": "integer", "description": "Currently IGNORED — all matches are returned regardless of this value."}
                 },
                 "required": ["query"]
             }),
         },
         ToolDef {
             name: "tasks.list".into(),
-            description: "List VTODO tasks from calendars.".into(),
+            description: "List to-dos — reach for this rather than calendar.list_events when you \
+                 want the task list (they are stored as iCalendar VTODO objects in the same \
+                 calendars). Soft-deleted tasks are excluded; everything else comes back with no \
+                 limit, no pagination and no date filtering, so a long-lived list returns in \
+                 full. COMPLETED tasks are included unless you filter them out: `status` matches \
+                 an exact, case-sensitive status string — 'NEEDS-ACTION', 'IN-PROCESS', \
+                 'COMPLETED' or 'CANCELLED'. `calendar` matches a calendar name exactly; an \
+                 unknown name returns an empty array rather than an error. Returns a JSON array \
+                 of {uid, summary, due, priority, status} in unspecified order — it is NOT sorted \
+                 by due date — where due, priority and status may be null and priority runs 1 \
+                 (highest) to 9 (lowest). Requires tasks:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "calendar": {"type": "string", "description": "Calendar name (default: all)"},
-                    "status": {"type": "string", "description": "Filter by status (NEEDS-ACTION, COMPLETED, etc.)"}
+                    "calendar": {"type": "string", "description": "Exact calendar name (default: all calendars). An unknown name returns an empty list."},
+                    "status": {"type": "string", "description": "Exact, case-sensitive status filter: NEEDS-ACTION, IN-PROCESS, COMPLETED or CANCELLED. Default: every status, completed included."}
                 }
             }),
         },
         ToolDef {
             name: "tasks.add".into(),
-            description: "Create a new task (VTODO). Requires tasks:write scope.".into(),
+            description: "Create a to-do (an iCalendar VTODO) with status NEEDS-ACTION. The named \
+                 calendar must already exist or the call fails with \"calendar '<name>' not \
+                 found\"; the 'default' calendar is created automatically, so omitting `calendar` \
+                 always works. `due` is stored VERBATIM without parsing or validation — pass ISO \
+                 8601 ('2026-03-01T17:00:00Z') and stay consistent, since task dates are compared \
+                 as text elsewhere. No duplicate detection: calling twice creates two tasks. \
+                 There is no description/notes field for tasks over MCP. Returns {uid, status: \
+                 \"created\"}; keep the uid for tasks.update, tasks.complete or tasks.delete. \
+                 Requires tasks:write scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "summary": {"type": "string", "description": "Task title"},
-                    "due": {"type": "string", "description": "Due date (ISO 8601)"},
-                    "priority": {"type": "integer", "description": "Priority (1=highest, 9=lowest)"},
-                    "calendar": {"type": "string", "description": "Calendar name (default: 'default')"}
+                    "summary": {"type": "string", "description": "Task title."},
+                    "due": {"type": "string", "description": "Due date, stored verbatim and unvalidated. ISO 8601, e.g. '2026-03-01T17:00:00Z'. Optional."},
+                    "priority": {"type": "integer", "description": "iCalendar priority, 1 (highest) to 9 (lowest). Optional."},
+                    "calendar": {"type": "string", "description": "Exact name of an existing calendar (default: 'default', created automatically)."}
                 },
                 "required": ["summary"]
             }),
         },
         ToolDef {
             name: "email.search".into(),
-            description: "Search emails by full-text query.".into(),
+            description: "Find indexed mail by SUBJECT, sender address or sender name only — the \
+                 message BODY is not searched. Despite the name there is no full-text index: this \
+                 is a case-insensitive SQL LIKE substring match, and '%' or '_' in the query act \
+                 as wildcards. To get at content, match on subject or sender and read the \
+                 returned snippet, or follow up with email.thread; full bodies are not exposed \
+                 over MCP. Results span every indexed account and folder — there is no folder or \
+                 account filter here (email.recent has one). Returns a JSON array of \
+                 {message_id, from, subject, date, snippet} ordered by date descending, where \
+                 `from` is the bare address and `snippet` is a short stored preview that may be \
+                 null. `limit` defaults to 20 with no maximum and truncation is silent. An empty \
+                 array means nothing matched — or that no mail has been indexed yet. Requires \
+                 email:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "limit": {"type": "integer", "description": "Max results (default 20)"}
+                    "query": {"type": "string", "description": "Substring matched against subject, sender address and sender name. Not the body. Case-insensitive; % and _ are wildcards."},
+                    "limit": {"type": "integer", "description": "Max messages returned, newest first (default 20, no maximum)."}
                 },
                 "required": ["query"]
             }),
         },
         ToolDef {
             name: "email.thread".into(),
-            description: "Get full email thread for a message.".into(),
+            description: "Fetch one message plus its DIRECT replies — one level deep, not a whole \
+                 conversation. It returns the message with the given Message-ID and every message \
+                 whose In-Reply-To is that id; replies to those replies, and the message's own \
+                 ancestors, are NOT included, so walk the tree yourself by calling this again \
+                 with each reply's message_id. `message_id` must be the exact Message-ID header \
+                 value as indexed (usually angle-bracketed, e.g. '<abc123@example.com>', as \
+                 returned by email.search or email.recent); an unknown or mistyped id returns an \
+                 empty array rather than an error. Returns a JSON array of {message_id, from, to, \
+                 subject, date, body_snippet} ordered by date ascending, where body_snippet is \
+                 the short stored preview — full message bodies are not available over MCP. \
+                 Requires email:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "message_id": {"type": "string", "description": "Message-ID header value"}
+                    "message_id": {"type": "string", "description": "Exact Message-ID header value, usually angle-bracketed, e.g. '<abc123@example.com>'. Take it from email.search or email.recent."}
                 },
                 "required": ["message_id"]
             }),
         },
         ToolDef {
             name: "email.recent".into(),
-            description: "Get the most recent emails.".into(),
+            description: "List the most recent indexed messages, newest first — ordered by the \
+                 message Date header, not by when it was fetched, so a newly synced old message \
+                 does not jump to the top. `folder` matches a folder name exactly and \
+                 case-sensitively (e.g. 'INBOX'); an unknown folder returns an empty array rather \
+                 than an error, and omitting it spans every folder and account. Returns a JSON \
+                 array of {message_id, from, subject, date, snippet}, where snippet is a short \
+                 stored preview and may be null; full bodies are not available over MCP. `count` \
+                 defaults to 10 and has no maximum. An empty array means no mail is indexed. \
+                 Requires email:read scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "count": {"type": "integer", "description": "Number of emails (default 10)"},
-                    "folder": {"type": "string", "description": "Folder name (default: all)"}
+                    "count": {"type": "integer", "description": "Max messages returned, newest first (default 10, no maximum)."},
+                    "folder": {"type": "string", "description": "Exact, case-sensitive folder name, e.g. 'INBOX' (default: all folders and accounts)."}
                 }
             }),
         },
         ToolDef {
             name: "calendar.list_calendars".into(),
-            description: "List available calendars.".into(),
+            description: "List every calendar on the server, so you can pick a valid name for the \
+                 `calendar` argument of calendar.list_events, calendar.create_event, tasks.list \
+                 or tasks.add — those take the `name` value and match it exactly. Takes no \
+                 arguments and no filters. Returns a JSON array of {name, display_name, ctag, \
+                 description}; description may be null and ctag is a DAV sync token you can \
+                 ignore. The array can be empty on a fresh server until something creates the \
+                 'default' calendar, which creating an event or a task does automatically. \
+                 Requires calendar:read scope."
+                .into(),
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
             name: "calendar.update_event".into(),
-            description: "Update fields on an existing event. Only fields provided are changed. Requires calendar:write scope.".into(),
+            description: "Change fields on an existing event, addressed by uid (from \
+                 calendar.create_event or calendar.list_events). Only the fields you pass change; \
+                 omitted fields keep their current values, and there is NO way to clear a field \
+                 back to empty — passing \"\" sets it to an empty string. The target must be a \
+                 live VEVENT: an unknown uid, an already-deleted event, or a task's uid all fail \
+                 with \"event '<uid>' not found\" (use tasks.update for tasks). `start` and `end` \
+                 are stored verbatim and unvalidated, so match the format the event already uses. \
+                 CAUTION: the stored iCalendar object is REBUILT from summary/start/end/location/ \
+                 description alone, so any other properties a CalDAV client had put on the event \
+                 (recurrence rules, attendees, alarms, categories) are dropped by this call. The \
+                 calendar's sync token is bumped so DAV clients see the change. Returns {uid, \
+                 status: \"updated\"}. Requires calendar:write scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "uid": {"type": "string", "description": "Event UID"},
-                    "summary": {"type": "string"},
-                    "start": {"type": "string", "description": "Start datetime (ISO 8601)"},
-                    "end": {"type": "string", "description": "End datetime (ISO 8601)"},
-                    "location": {"type": "string"},
-                    "description": {"type": "string"}
+                    "uid": {"type": "string", "description": "UID of a live (non-deleted) event, from calendar.create_event or calendar.list_events."},
+                    "summary": {"type": "string", "description": "New title. Omit to leave unchanged; cannot be cleared."},
+                    "start": {"type": "string", "description": "New start datetime (ISO 8601 or iCalendar stamp), stored verbatim. Omit to leave unchanged."},
+                    "end": {"type": "string", "description": "New end datetime, same format as 'start'. Omit to leave unchanged."},
+                    "location": {"type": "string", "description": "New location. Omit to leave unchanged; cannot be cleared."},
+                    "description": {"type": "string", "description": "New description. Omit to leave unchanged; cannot be cleared."}
                 },
                 "required": ["uid"]
             }),
         },
         ToolDef {
             name: "calendar.delete_event".into(),
-            description: "Soft-delete an event by UID. Requires calendar:write scope.".into(),
+            description: "Delete an event by uid. The delete is a SOFT delete, and what that \
+                 means for you is: the event disappears immediately from calendar.list_events, \
+                 can no longer be read, updated or deleted again, and is published to DAV clients \
+                 as a deletion — a second call, an unknown uid, or a task's uid all fail with \
+                 \"event '<uid>' not found\" (use tasks.delete for tasks). The row survives in \
+                 the database only as a tombstone for sync; NO MCP tool can restore it, so treat \
+                 this as permanent and recreate the event with calendar.create_event (under a new \
+                 uid) if it was a mistake. Returns {uid, status: \"deleted\"}. Requires \
+                 calendar:write scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "uid": {"type": "string", "description": "Event UID"}
+                    "uid": {"type": "string", "description": "UID of a live (non-deleted) event. Deleting twice is an error, not a no-op."}
                 },
                 "required": ["uid"]
             }),
         },
         ToolDef {
             name: "tasks.update".into(),
-            description: "Update fields on a task. Only fields provided are changed. Requires tasks:write scope.".into(),
+            description: "Change fields on an existing task, addressed by uid (from tasks.add or \
+                 tasks.list). Only the fields you pass change; omitted fields keep their current \
+                 values and cannot be cleared back to empty. The target must be a live VTODO: an \
+                 unknown uid, an already-deleted task, or an event's uid all fail with \"task \
+                 '<uid>' not found\" (use calendar.update_event for events). `status` is stored \
+                 verbatim and is NOT validated, so a typo like 'DONE' is accepted and will then \
+                 never match tasks.list's status filter — stick to NEEDS-ACTION, IN-PROCESS, \
+                 COMPLETED or CANCELLED, or call tasks.complete. `due` is likewise stored without \
+                 parsing. The task's iCalendar object is rebuilt from these fields and the \
+                 calendar's sync token bumped for DAV clients. Returns {uid, status: \
+                 \"updated\"} — that \"updated\" reports the outcome of the call, it is not the \
+                 task's own status field. Requires tasks:write scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "uid": {"type": "string", "description": "Task UID"},
-                    "summary": {"type": "string"},
-                    "due": {"type": "string", "description": "Due date (ISO 8601)"},
-                    "priority": {"type": "integer"},
-                    "status": {"type": "string", "description": "NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED"}
+                    "uid": {"type": "string", "description": "UID of a live (non-deleted) task, from tasks.add or tasks.list."},
+                    "summary": {"type": "string", "description": "New title. Omit to leave unchanged; cannot be cleared."},
+                    "due": {"type": "string", "description": "New due date (ISO 8601), stored verbatim and unvalidated. Omit to leave unchanged."},
+                    "priority": {"type": "integer", "description": "New priority, 1 (highest) to 9 (lowest). Omit to leave unchanged."},
+                    "status": {"type": "string", "description": "NEEDS-ACTION, IN-PROCESS, COMPLETED or CANCELLED. Stored verbatim and unvalidated — other values break status filtering."}
                 },
                 "required": ["uid"]
             }),
         },
         ToolDef {
             name: "tasks.complete".into(),
-            description: "Mark a task as COMPLETED. Requires tasks:write scope.".into(),
+            description:
+                "Mark an existing task COMPLETED. Exactly equivalent to tasks.update with \
+                 status 'COMPLETED': it changes nothing else and records no completion timestamp. \
+                 The task must be live — an unknown uid, an already-deleted task, or an event's \
+                 uid fail with \"task '<uid>' not found\". Completing an already-completed task \
+                 succeeds and is a no-op. Completed tasks are NOT hidden: they keep appearing in \
+                 tasks.list unless you filter with status, and this is not a delete — use \
+                 tasks.delete for that. Returns {uid, status: \"completed\"}. Requires \
+                 tasks:write scope."
+                    .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "uid": {"type": "string", "description": "Task UID"}
+                    "uid": {"type": "string", "description": "UID of a live (non-deleted) task, from tasks.add or tasks.list."}
                 },
                 "required": ["uid"]
             }),
         },
         ToolDef {
             name: "tasks.delete".into(),
-            description: "Soft-delete a task by UID. Requires tasks:write scope.".into(),
+            description: "Delete a task by uid. The delete is a SOFT delete, and what that means \
+                 for you is: the task vanishes at once from tasks.list, can no longer be read, \
+                 updated or completed, and is published to DAV clients as a deletion — a second \
+                 call, an unknown uid, or an event's uid all fail with \"task '<uid>' not found\" \
+                 (use calendar.delete_event for events). The row survives only as a sync \
+                 tombstone and NO MCP tool can undo it, so prefer tasks.complete when the work is \
+                 simply finished, and re-create the task if you delete one by mistake. Returns \
+                 {uid, status: \"deleted\"}. Requires tasks:write scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "uid": {"type": "string", "description": "Task UID"}
+                    "uid": {"type": "string", "description": "UID of a live (non-deleted) task. Deleting twice is an error, not a no-op."}
                 },
                 "required": ["uid"]
             }),
         },
         ToolDef {
             name: "contacts.list_addressbooks".into(),
-            description: "List available address books.".into(),
+            description: "List every address book on the server, so you can pick a valid name for \
+                 the `addressbook` argument of contacts.create — it takes the `name` value and \
+                 matches it exactly. Takes no arguments and no filters. Returns a JSON array of \
+                 {name, display_name, description}; description may be null. The array can be \
+                 empty on a fresh server until the 'default' address book exists, which \
+                 contacts.create creates automatically. Requires contacts:read scope."
+                .into(),
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
             name: "contacts.create".into(),
-            description: "Create a new contact. Requires contacts:write scope.".into(),
+            description: "Create a contact (a vCard) in an address book. The named address book \
+                 must already exist or the call fails with \"addressbook '<name>' not found\"; \
+                 the 'default' book is created automatically, so omitting `addressbook` always \
+                 works (see contacts.list_addressbooks for the others). Only these four fields \
+                 are stored — one formatted name, one email, one phone, one organisation; there \
+                 is no way to record a second address, a birthday, a postal address or any other \
+                 vCard property over MCP. There is NO duplicate detection: creating the same \
+                 person twice yields two contacts, so search with contacts.search first. Returns \
+                 {uid, status: \"created\"}; keep the uid for contacts.update or contacts.delete. \
+                 Requires contacts:write scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "addressbook": {"type": "string", "description": "Address book name (default: 'default')"},
-                    "fn_name": {"type": "string", "description": "Formatted name"},
-                    "email": {"type": "string"},
-                    "phone": {"type": "string"},
-                    "org": {"type": "string"}
+                    "addressbook": {"type": "string", "description": "Exact name of an existing address book (default: 'default', created automatically)."},
+                    "fn_name": {"type": "string", "description": "Formatted display name, e.g. 'Ada Lovelace'."},
+                    "email": {"type": "string", "description": "A single email address. Optional; only one is stored."},
+                    "phone": {"type": "string", "description": "A single phone number. Optional; only one is stored."},
+                    "org": {"type": "string", "description": "Organisation name. Optional."}
                 },
                 "required": ["fn_name"]
             }),
         },
         ToolDef {
             name: "contacts.update".into(),
-            description: "Update fields on a contact. Only fields provided are changed. Requires contacts:write scope.".into(),
+            description: "Change fields on an existing contact, addressed by uid (from \
+                 contacts.create or contacts.search). Only the fields you pass change; omitted \
+                 fields keep their current values and cannot be cleared back to empty. The \
+                 contact must exist and not be deleted, or the call fails with \"contact '<uid>' \
+                 not found\". Each field holds a single value, so passing `email` REPLACES the \
+                 stored address rather than adding another. CAUTION: the vCard is REBUILT from \
+                 just these four fields, so any other properties a CardDAV client stored on the \
+                 contact (extra emails, postal address, birthday, notes) are dropped by this \
+                 call. The address book's sync token is bumped so DAV clients see the change. \
+                 Returns {uid, status: \"updated\"}. Requires contacts:write scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "uid": {"type": "string", "description": "Contact UID"},
-                    "fn_name": {"type": "string"},
-                    "email": {"type": "string"},
-                    "phone": {"type": "string"},
-                    "org": {"type": "string"}
+                    "uid": {"type": "string", "description": "UID of a live (non-deleted) contact, from contacts.create or contacts.search."},
+                    "fn_name": {"type": "string", "description": "New formatted name. Omit to leave unchanged; cannot be cleared."},
+                    "email": {"type": "string", "description": "New email address — replaces the stored one. Omit to leave unchanged."},
+                    "phone": {"type": "string", "description": "New phone number — replaces the stored one. Omit to leave unchanged."},
+                    "org": {"type": "string", "description": "New organisation. Omit to leave unchanged; cannot be cleared."}
                 },
                 "required": ["uid"]
             }),
         },
         ToolDef {
             name: "contacts.delete".into(),
-            description: "Soft-delete a contact by UID. Requires contacts:write scope.".into(),
+            description: "Delete a contact by uid. The delete is a SOFT delete, and what that \
+                 means for you is: the contact disappears immediately from contacts.search, can \
+                 no longer be updated or deleted again, and is published to DAV clients as a \
+                 deletion — a second call or an unknown uid fails with \"contact '<uid>' not \
+                 found\". The row survives only as a sync tombstone and NO MCP tool can restore \
+                 it, so confirm you have the right uid with contacts.search first; recovering \
+                 means creating the contact again under a new uid. Returns {uid, status: \
+                 \"deleted\"}. Requires contacts:write scope."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "uid": {"type": "string", "description": "Contact UID"}
+                    "uid": {"type": "string", "description": "UID of a live (non-deleted) contact, from contacts.search. Deleting twice is an error, not a no-op."}
                 },
                 "required": ["uid"]
             }),
         },
-    ]
+    ];
+    // Domain modules own their own definitions so the surface can grow without
+    // every addition colliding here.
+    tools.extend(tools_notes::defs());
+    tools.extend(tools_files::defs());
+    tools.extend(tools_photos::defs());
+    tools
 }
 
 // ─── Scope checking ──────────────────────────────────────────────────────
@@ -420,7 +709,16 @@ fn tool_required_scope(tool_name: &str) -> &'static str {
         "tasks.list" => "tasks:read",
         "tasks.add" | "tasks.update" | "tasks.complete" | "tasks.delete" => "tasks:write",
         "email.search" | "email.thread" | "email.recent" => "email:read",
-        _ => "unknown",
+        _ => {
+            // Domain modules declare their own scopes.
+            if let Some(scope) = tools_notes::required_scope(tool_name)
+                .or_else(|| tools_files::required_scope(tool_name))
+                .or_else(|| tools_photos::required_scope(tool_name))
+            {
+                return scope;
+            }
+            "unknown"
+        }
     }
 }
 
@@ -469,6 +767,25 @@ fn check_rate_limit(
 
 // ─── Audit logging ──────────────────────────────────────────────────────
 
+/// Truncate to at most `max_bytes`, never splitting a UTF-8 character.
+///
+/// `&s[..n]` panics when `n` lands inside a multibyte character. The audit log
+/// sliced tool parameters at a fixed byte offset, so any call whose serialized
+/// params crossed that offset mid-character panicked — and it fired *after* the
+/// write had already been applied, killing the connection with the client unable
+/// to tell whether its write succeeded. Ordinary input reaches this: an accented
+/// character or an emoji in a note or task title.
+pub(crate) fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn log_audit(
     conn: &Connection,
     token_name: &str,
@@ -479,11 +796,7 @@ fn log_audit(
     source_ip: &str,
 ) {
     let params_str = serde_json::to_string(params).unwrap_or_default();
-    let truncated = if params_str.len() > 500 {
-        &params_str[..500]
-    } else {
-        &params_str
-    };
+    let truncated = truncate_on_char_boundary(&params_str, 500);
     let now = jiff::Zoned::now()
         .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string();
@@ -510,6 +823,50 @@ fn prune_old_audit_logs(conn: &Connection, retention_days: u32) {
 
 // ─── Tool implementations ────────────────────────────────────────────────
 
+/// Resolve a user-supplied relative path inside `root`, refusing anything that
+/// escapes it.
+///
+/// `Path::starts_with` is **component-wise and does not normalise**, so the
+/// obvious check `root.join(rel).starts_with(root)` returns true for
+/// `root/../etc/passwd` and lets the read escape. That was a live traversal hole
+/// in every MCP path tool: a `notes:read` token could read any file the server
+/// process could open, including the database. Lexical rejection of `..` is the
+/// actual fix; the prefix check and the symlink check below are defence in depth.
+pub(crate) fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    if rel.is_empty() {
+        return Ok(root.to_path_buf());
+    }
+
+    let mut full = root.to_path_buf();
+    for component in Path::new(rel).components() {
+        match component {
+            std::path::Component::Normal(part) => full.push(part),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err("path traversal not allowed".into());
+            }
+        }
+    }
+
+    if !full.starts_with(root) {
+        return Err("path traversal not allowed".into());
+    }
+
+    // A lexically clean path can still escape through a symlink. Probe from the
+    // target itself, not its parent: `skip(1)` missed a symlink *at* the
+    // requested path, and `notes.write` uses `fs::write`, which follows it.
+    if let Some(existing) = full.ancestors().find(|a| a.exists())
+        && let (Ok(real), Ok(real_root)) = (existing.canonicalize(), root.canonicalize())
+        && !real.starts_with(&real_root)
+    {
+        return Err("path traversal not allowed".into());
+    }
+
+    Ok(full)
+}
+
 fn exec_notes_search(
     _conn: &Connection,
     notes_dir: &Path,
@@ -533,6 +890,8 @@ fn exec_notes_search(
             "--include=*.txt",
             "--color=never",
             "-l",
+            // `--` stops grep parsing the query as an option (see notes.rs).
+            "--",
             query,
         ])
         .arg(notes_dir)
@@ -579,12 +938,7 @@ fn exec_notes_read(notes_dir: &Path, params: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .ok_or("path parameter required")?;
 
-    let full_path = notes_dir.join(path);
-
-    // Prevent path traversal
-    if !full_path.starts_with(notes_dir) {
-        return Err("path traversal not allowed".into());
-    }
+    let full_path = safe_join(notes_dir, path)?;
 
     let content =
         std::fs::read_to_string(&full_path).map_err(|_| format!("note not found: {}", path))?;
@@ -633,10 +987,7 @@ fn exec_notes_append(notes_dir: &Path, params: &Value) -> Result<Value, String> 
         .and_then(|v| v.as_str())
         .ok_or("content parameter required")?;
 
-    let full_path = notes_dir.join(path);
-    if !full_path.starts_with(notes_dir) {
-        return Err("path traversal not allowed".into());
-    }
+    let full_path = safe_join(notes_dir, path)?;
 
     if !full_path.exists() {
         return Err(format!("note not found: {}", path));
@@ -662,14 +1013,7 @@ fn exec_files_list(files_dir: &Path, params: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let target = if rel_path.is_empty() {
-        files_dir.to_path_buf()
-    } else {
-        files_dir.join(rel_path)
-    };
-    if !target.starts_with(files_dir) {
-        return Err("path traversal not allowed".into());
-    }
+    let target = safe_join(files_dir, rel_path)?;
     if !target.exists() || !target.is_dir() {
         return Err(format!("directory not found: {}", rel_path));
     }
@@ -738,10 +1082,7 @@ fn exec_files_read(files_dir: &Path, params: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .ok_or("path parameter required")?;
 
-    let full_path = files_dir.join(path);
-    if !full_path.starts_with(files_dir) {
-        return Err("path traversal not allowed".into());
-    }
+    let full_path = safe_join(files_dir, path)?;
     if !full_path.exists() {
         return Err(format!("file not found: {}", path));
     }
@@ -762,7 +1103,7 @@ fn exec_files_read(files_dir: &Path, params: &Value) -> Result<Value, String> {
 
 fn exec_files_search(
     _conn: &Connection,
-    notes_dir: &Path,
+    files_dir: &Path,
     params: &Value,
 ) -> Result<Value, String> {
     let query = params
@@ -770,6 +1111,12 @@ fn exec_files_search(
         .and_then(|v| v.as_str())
         .ok_or("query parameter required")?;
 
+    // Honour the declared `path` parameter ("Restrict to subdirectory"), which
+    // was previously accepted and ignored.
+    let rel = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let search_root = safe_join(files_dir, rel)?;
+
+    let notes_dir = &search_root; // grep target below
     if !notes_dir.exists() {
         return Ok(json!([]));
     }
@@ -781,6 +1128,8 @@ fn exec_files_search(
             "--include=*.md",
             "--include=*.txt",
             "--color=never",
+            // `--` stops grep parsing the query as an option (see notes.rs).
+            "--",
             query,
         ])
         .arg(notes_dir)
@@ -1001,7 +1350,9 @@ pub fn handle_mcp_request(
                     "notes.append" => exec_notes_append(&notes_dir, &arguments),
                     "files.list" => exec_files_list(&files_dir, &arguments),
                     "files.read" => exec_files_read(&files_dir, &arguments),
-                    "files.search" => exec_files_search(&conn, &notes_dir, &arguments),
+                    // files.search searches the FILES tree — it was previously
+                    // handed notes_dir and so searched the wrong tree entirely.
+                    "files.search" => exec_files_search(&conn, &files_dir, &arguments),
                     "trackers.log" => exec_trackers_log(&conn, &arguments),
                     "trackers.query" => exec_trackers_query(&conn, &arguments),
                     "calendar.list_events" => exec_calendar_list_events(&conn, &arguments),
@@ -1022,7 +1373,10 @@ pub fn handle_mcp_request(
                     "email.search" => exec_email_search(&conn, &arguments),
                     "email.thread" => exec_email_thread(&conn, &arguments),
                     "email.recent" => exec_email_recent(&conn, &arguments),
-                    _ => Err(format!("unknown tool: {}", tool_name)),
+                    _ => tools_notes::exec(tool_name, &notes_dir, &arguments)
+                        .or_else(|| tools_files::exec(tool_name, &files_dir, &arguments))
+                        .or_else(|| tools_photos::exec(tool_name, &conn, &arguments))
+                        .unwrap_or_else(|| Err(format!("unknown tool: {}", tool_name))),
                 }
             };
 
@@ -1431,4 +1785,55 @@ fn exec_contacts_delete(conn: &Connection, args: &Value) -> Result<Value, String
         .ok_or("uid is required")?;
     tilde_card::delete_contact(conn, uid).map_err(|e| e.to_string())?;
     Ok(json!({"uid": uid, "status": "deleted"}))
+}
+
+#[cfg(test)]
+mod audit_truncation_tests {
+    use super::*;
+
+    /// `&s[..500]` panics when byte 500 lands inside a multibyte character.
+    /// Without the fix this test panics rather than failing.
+    #[test]
+    fn truncation_never_splits_a_multibyte_character() {
+        let mut s = "x".repeat(499);
+        s.push('\u{e9}'); // 2 bytes, straddling byte 500
+        s.push_str(&"y".repeat(50));
+        assert!(
+            !s.is_char_boundary(500),
+            "test fixture must straddle the cut"
+        );
+
+        let out = truncate_on_char_boundary(&s, 500);
+        assert_eq!(out.len(), 499, "must cut back to the boundary");
+        assert!(out.is_char_boundary(out.len()));
+    }
+
+    #[test]
+    fn truncation_handles_emoji_and_wide_chars() {
+        for ch in ['\u{1f600}', '\u{4e16}', '\u{e9}'] {
+            for pad in 495..505usize {
+                let mut s = "x".repeat(pad);
+                s.push(ch);
+                s.push_str(&"y".repeat(20));
+                let out = truncate_on_char_boundary(&s, 500);
+                assert!(out.len() <= 500);
+                assert!(s.starts_with(out), "truncation must be a prefix");
+            }
+        }
+    }
+
+    #[test]
+    fn truncation_passes_short_input_through() {
+        assert_eq!(truncate_on_char_boundary("hello", 500), "hello");
+        assert_eq!(truncate_on_char_boundary("", 500), "");
+    }
+
+    #[test]
+    fn truncation_survives_all_multibyte_input() {
+        // Every byte position is inside a character; must not panic or overrun.
+        let s = "\u{1f600}".repeat(400);
+        let out = truncate_on_char_boundary(&s, 500);
+        assert!(out.len() <= 500);
+        assert_eq!(out.len() % 4, 0, "emoji are 4 bytes each");
+    }
 }

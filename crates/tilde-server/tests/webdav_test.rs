@@ -909,3 +909,397 @@ fn extract_etag_from_propfind(xml: &str) -> String {
         .expect("No closing getetag");
     xml[start..start + end].trim().trim_matches('"').to_string()
 }
+
+// ─── ETag correctness against out-of-band writes ──────────────────────────────
+//
+// Every other test in this file creates files through DAV PUT — the one write
+// path that maintains the `files` table. These tests write directly to disk
+// instead, which is what `notes.append` (tilde-mcp/src/lib.rs:626), the CLI,
+// rsync, and a restic restore all do.
+//
+// See plan.md §1 for the defect table these correspond to.
+
+/// PROPFIND a path and return the raw multistatus body.
+async fn propfind_body(env: &common::TestEnv, auth: &str, path: &str) -> String {
+    let resp = env
+        .server
+        .method(Method::from_bytes(b"PROPFIND").unwrap(), path)
+        .add_header(header::AUTHORIZATION, auth)
+        .add_header("depth", "0")
+        .await;
+    resp.assert_status(StatusCode::MULTI_STATUS);
+    resp.text()
+}
+
+/// PROPFIND a path and return its getetag value.
+async fn propfind_etag(env: &common::TestEnv, auth: &str, path: &str) -> String {
+    extract_etag_from_propfind(&propfind_body(env, auth, path).await)
+}
+
+/// Extract the first value of an arbitrary property from a multistatus response.
+/// Generalizes `extract_etag_from_propfind`, which is hardcoded to `d:getetag`.
+fn extract_prop(xml: &str, tag: &str) -> String {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = xml
+        .find(&open)
+        .unwrap_or_else(|| panic!("No {} in response:\n{}", tag, xml))
+        + open.len();
+    let end = xml[start..]
+        .find(&close)
+        .unwrap_or_else(|| panic!("No closing {}", tag));
+    xml[start..start + end].trim().trim_matches('"').to_string()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+/// T1 — An ETag must reflect what is on disk, not what the last DAV write recorded.
+#[tokio::test]
+async fn propfind_etag_changes_after_out_of_band_write() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "dav-rw", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+
+    let resp = env
+        .server
+        .method(Method::PUT, "/dav/files/oob.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("version 1")
+        .await;
+    resp.assert_status(StatusCode::CREATED);
+
+    let etag1 = propfind_etag(&env, &auth, "/dav/files/oob.txt").await;
+
+    // Bypass DAV entirely.
+    std::fs::write(env.files_dir().join("oob.txt"), "version 2 is longer").unwrap();
+
+    let etag2 = propfind_etag(&env, &auth, "/dav/files/oob.txt").await;
+
+    assert_ne!(
+        etag1, etag2,
+        "ETag must change after an out-of-band write.\nBefore: {}\nAfter: {}",
+        etag1, etag2,
+    );
+}
+
+/// T2 — `oc:id` must be stable. A fresh UUID per PROPFIND makes every poll look
+/// like a different file to Nextcloud-protocol clients, breaking rename detection.
+#[tokio::test]
+async fn propfind_oc_id_is_stable_for_unindexed_file() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "dav-rw", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+
+    // Created on disk only — never through DAV, so no `files` row exists.
+    std::fs::write(env.files_dir().join("ghost.txt"), "hello").unwrap();
+
+    let xml1 = propfind_body(&env, &auth, "/dav/files/ghost.txt").await;
+    let xml2 = propfind_body(&env, &auth, "/dav/files/ghost.txt").await;
+
+    let id1 = extract_prop(&xml1, "oc:id");
+    let id2 = extract_prop(&xml2, "oc:id");
+
+    assert_eq!(
+        id1, id2,
+        "oc:id must be stable across requests.\nFirst: {}\nSecond: {}",
+        id1, id2,
+    );
+}
+
+/// T3 — ETag must reflect content, not length.
+///
+/// Deliberately does NOT sleep between writes. The temptation when implementing
+/// the stat cache will be to add a `sleep(1s)` to make this pass; that would hide
+/// the mtime-granularity race described in plan.md §2.1, which is real in
+/// production (a fast agent write followed by a client poll).
+#[tokio::test]
+async fn propfind_etag_changes_on_same_length_edit() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "dav-rw", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+
+    let path = env.files_dir().join("same.txt");
+
+    std::fs::write(&path, "aaaa").unwrap();
+    let etag1 = propfind_etag(&env, &auth, "/dav/files/same.txt").await;
+
+    std::fs::write(&path, "bbbb").unwrap();
+    let etag2 = propfind_etag(&env, &auth, "/dav/files/same.txt").await;
+
+    assert_ne!(
+        etag1, etag2,
+        "ETag must reflect content, not length.\nBefore: {}\nAfter: {}",
+        etag1, etag2,
+    );
+}
+
+/// T4 — The ETag served with a GET must belong to the bytes in that same response.
+///
+/// Note this is NOT "GET and PROPFIND agree" — they already agree today, because
+/// both read the same stale DB value. The assertion has to be against content.
+#[tokio::test]
+async fn get_etag_matches_content_after_out_of_band_write() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "dav-rw", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+
+    let resp = env
+        .server
+        .method(Method::PUT, "/dav/files/coherent.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("version 1")
+        .await;
+    resp.assert_status(StatusCode::CREATED);
+
+    std::fs::write(env.files_dir().join("coherent.txt"), "version 2").unwrap();
+
+    let resp = env
+        .server
+        .get("/dav/files/coherent.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    resp.assert_status_ok();
+
+    let served_etag = resp
+        .header("etag")
+        .to_str()
+        .unwrap()
+        .trim_matches('"')
+        .to_string();
+    let body = resp.text();
+    let expected = sha256_hex(body.as_bytes())[..16].to_string();
+
+    assert_eq!(
+        served_etag, expected,
+        "GET served content whose ETag belongs to a different version.\n\
+         Body: {:?}\nServed ETag: {}\nETag of body: {}",
+        body, served_etag, expected,
+    );
+}
+
+/// T5 — Directory ETags must account for children that have no DB row.
+///
+/// Covers the silent fallthrough at tilde-dav/src/lib.rs:1908, where a child
+/// missing from `child_etags` contributes nothing to the directory hash.
+#[tokio::test]
+async fn directory_etag_changes_when_unindexed_child_modified() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "dav-rw", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+
+    let dir = env.files_dir().join("ghostdir");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "one").unwrap();
+
+    let etag1 = propfind_etag(&env, &auth, "/dav/files/ghostdir").await;
+
+    std::fs::write(dir.join("a.txt"), "two").unwrap();
+
+    let etag2 = propfind_etag(&env, &auth, "/dav/files/ghostdir").await;
+
+    assert_ne!(
+        etag1, etag2,
+        "Directory ETag must account for unindexed children.\nBefore: {}\nAfter: {}",
+        etag1, etag2,
+    );
+}
+
+// ─── Merge base tracking (plan.md §5, slice 1) ────────────────────────────────
+//
+// Three-way merge needs the base version the writing client was working from.
+// A GET is the moment a client takes possession of a version, so that is where
+// the base is recorded.
+
+#[tokio::test]
+async fn get_records_base_version_for_credential() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "phone", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+    let cred = common::app_password_id(&env.pool, "phone");
+
+    env.server
+        .method(Method::PUT, "/dav/files/base.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("version 1")
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    // A PUT now records a base too: after a successful write the client
+    // demonstrably holds what it sent, and treating it as stale on its next
+    // write is what resurrected deleted lines (see
+    // e2e_consecutive_puts_do_not_resurrect_deleted_content).
+    assert_eq!(
+        common::base_version(&env.pool, &cred, "base.txt"),
+        Some(sha256_hex(b"version 1")),
+        "a PUT must record the version it stored as this client's base"
+    );
+
+    env.server
+        .get("/dav/files/base.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await
+        .assert_status_ok();
+
+    let recorded = common::base_version(&env.pool, &cred, "base.txt")
+        .expect("GET must record the version served");
+    assert_eq!(recorded, sha256_hex(b"version 1"));
+}
+
+#[tokio::test]
+async fn base_version_is_tracked_per_credential() {
+    let env = common::create_test_server();
+    let phone_pw = common::create_app_password(&env.pool, "phone", "/dav/*");
+    let _laptop_pw = common::create_app_password(&env.pool, "laptop", "/dav/*");
+    let phone = common::app_password_id(&env.pool, "phone");
+    let laptop = common::app_password_id(&env.pool, "laptop");
+
+    env.server
+        .method(Method::PUT, "/dav/files/shared.txt")
+        .add_header(header::AUTHORIZATION, &common::basic_auth_header(&phone_pw))
+        .text("v1")
+        .await;
+
+    // Only the phone reads it.
+    env.server
+        .get("/dav/files/shared.txt")
+        .add_header(header::AUTHORIZATION, &common::basic_auth_header(&phone_pw))
+        .await;
+
+    assert_eq!(
+        common::base_version(&env.pool, &phone, "shared.txt"),
+        Some(sha256_hex(b"v1"))
+    );
+    assert_eq!(
+        common::base_version(&env.pool, &laptop, "shared.txt"),
+        None,
+        "a credential that never read the file has no base version"
+    );
+}
+
+#[tokio::test]
+async fn base_version_advances_on_later_get() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "phone", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+    let cred = common::app_password_id(&env.pool, "phone");
+
+    env.server
+        .method(Method::PUT, "/dav/files/moving.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("first")
+        .await;
+    env.server
+        .get("/dav/files/moving.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(
+        common::base_version(&env.pool, &cred, "moving.txt"),
+        Some(sha256_hex(b"first"))
+    );
+
+    // Written out of band, then re-read: the client now holds the newer version.
+    std::fs::write(env.files_dir().join("moving.txt"), "second").unwrap();
+    env.server
+        .get("/dav/files/moving.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+
+    assert_eq!(
+        common::base_version(&env.pool, &cred, "moving.txt"),
+        Some(sha256_hex(b"second")),
+        "re-reading must advance the base, or merges use a stale ancestor"
+    );
+}
+
+// ─── Archive on overwrite (plan.md §5, slice 2) ───────────────────────────────
+
+fn blob_exists(env: &common::TestEnv, content: &[u8]) -> bool {
+    let sha = sha256_hex(content);
+    env.data_dir()
+        .join("blobs/by-id")
+        .join(&sha[..2])
+        .join(&sha)
+        .exists()
+}
+
+#[tokio::test]
+async fn put_archives_the_version_it_overwrites() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "phone", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+
+    env.server
+        .method(Method::PUT, "/dav/files/hist.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("version 1")
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    env.server
+        .method(Method::PUT, "/dav/files/hist.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("version 2")
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    assert!(
+        blob_exists(&env, b"version 1"),
+        "the overwritten version must be archived — it is the merge base a \
+         stale client will need"
+    );
+}
+
+/// A PUT that displaces nothing has no *prior* version to preserve — but it does
+/// archive the version it stores, so that version stays retrievable as the
+/// client's merge base.
+#[tokio::test]
+async fn put_creating_a_new_file_archives_only_what_it_stored() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "phone", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+
+    env.server
+        .method(Method::PUT, "/dav/files/fresh.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("brand new")
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    assert!(
+        blob_exists(&env, b"brand new"),
+        "the stored version must be archived so it can serve as a merge base"
+    );
+}
+
+#[tokio::test]
+async fn put_archives_content_written_out_of_band() {
+    let env = common::create_test_server();
+    let pw = common::create_app_password(&env.pool, "phone", "/dav/*");
+    let auth = common::basic_auth_header(&pw);
+
+    env.server
+        .method(Method::PUT, "/dav/files/oob-hist.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("from dav")
+        .await;
+
+    // An agent writes directly to disk; that version must also be preserved
+    // when a client later overwrites it, or the agent's work is unrecoverable.
+    std::fs::write(env.files_dir().join("oob-hist.txt"), "from the agent").unwrap();
+
+    env.server
+        .method(Method::PUT, "/dav/files/oob-hist.txt")
+        .add_header(header::AUTHORIZATION, &auth)
+        .text("from the phone")
+        .await;
+
+    assert!(
+        blob_exists(&env, b"from the agent"),
+        "an out-of-band version must be archived before being overwritten"
+    );
+}

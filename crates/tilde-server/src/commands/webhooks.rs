@@ -62,10 +62,16 @@ pub async fn run_webhook(
                 }
             }
             WebhookTokenCommands::Revoke { id } => {
-                conn.execute(
-                    "UPDATE webhook_tokens SET revoked = 1 WHERE id = ?1 OR name = ?1",
+                let affected = conn.execute(
+                    "UPDATE webhook_tokens SET revoked = 1 WHERE (id = ?1 OR name = ?1) AND revoked = 0",
                     [&id],
                 )?;
+                if affected == 0 {
+                    anyhow::bail!(
+                        "No active webhook token matching '{}'. Run `tilde webhook token list` to see names.",
+                        id
+                    );
+                }
                 println!("Webhook token revoked");
             }
         },

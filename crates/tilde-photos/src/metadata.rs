@@ -333,10 +333,13 @@ fn format_entry_as_date(entry: &nom_exif::EntryValue) -> String {
 /// Normalize EXIF date format to ISO 8601
 fn normalize_exif_date(s: &str) -> String {
     let s = s.trim();
-    if s.len() >= 19 {
-        let date_part = &s[..10].replace(':', "-");
-        let time_part = &s[11..];
-        format!("{}T{}", date_part, time_part)
+    // The string comes straight out of an untrusted file's EXIF and is not
+    // guaranteed to be ASCII: `&s[..10]` / `&s[11..]` panic when those byte
+    // offsets are not character boundaries. Use the checked slices.
+    if s.len() >= 19
+        && let (Some(date_part), Some(time_part)) = (s.get(..10), s.get(11..))
+    {
+        format!("{}T{}", date_part.replace(':', "-"), time_part)
     } else {
         s.to_string()
     }
@@ -388,22 +391,21 @@ fn write_exif_date(path: &Path, iso_date: &str) -> Result<()> {
         return Ok(()); // Only JPEG supported for EXIF writing
     }
 
-    // Convert "2026-05-09T14:30:00" → "2026:05:09 14:30:00"
-    let exif_date = if iso_date.len() >= 19 {
-        format!(
-            "{}:{}:{} {}",
-            &iso_date[0..4],
-            &iso_date[5..7],
-            &iso_date[8..10],
-            &iso_date[11..19]
-        )
-    } else if iso_date.len() >= 10 {
-        format!(
-            "{}:{}:{} 00:00:00",
-            &iso_date[0..4],
-            &iso_date[5..7],
-            &iso_date[8..10]
-        )
+    // Convert "2026-05-09T14:30:00" → "2026:05:09 14:30:00".
+    // `iso_date` can originate from a filename, so slice on char boundaries;
+    // `&iso_date[0..4]` panics on a multi-byte character. `str::get` also
+    // subsumes the length checks the byte slices needed.
+    let exif_date = if let (Some(year), Some(month), Some(day), Some(time)) = (
+        iso_date.get(0..4),
+        iso_date.get(5..7),
+        iso_date.get(8..10),
+        iso_date.get(11..19),
+    ) {
+        format!("{}:{}:{} {}", year, month, day, time)
+    } else if let (Some(year), Some(month), Some(day)) =
+        (iso_date.get(0..4), iso_date.get(5..7), iso_date.get(8..10))
+    {
+        format!("{}:{}:{} 00:00:00", year, month, day)
     } else {
         return Ok(());
     };
@@ -480,18 +482,19 @@ fn parse_date_from_filename(path: &Path) -> Option<String> {
                     let sep = stem.as_bytes().get(after_date).copied();
                     if matches!(sep, Some(b'-') | Some(b'_')) && after_date + 7 <= stem.len() {
                         let time_candidate = &stem[after_date + 1..];
-                        if time_candidate.len() >= 6 {
-                            let time_part = &time_candidate[..6];
-                            if time_part.chars().all(|c| c.is_ascii_digit()) {
-                                let hour: u32 = time_part[0..2].parse().unwrap_or(99);
-                                let min: u32 = time_part[2..4].parse().unwrap_or(99);
-                                let sec: u32 = time_part[4..6].parse().unwrap_or(99);
-                                if hour < 24 && min < 60 && sec < 60 {
-                                    return Some(format!(
-                                        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-                                        year, month, day, hour, min, sec
-                                    ));
-                                }
+                        // `stem` is an arbitrary filename: byte 6 may fall
+                        // inside a multi-byte character, where `[..6]` panics.
+                        if let Some(time_part) = time_candidate.get(..6)
+                            && time_part.chars().all(|c| c.is_ascii_digit())
+                        {
+                            let hour: u32 = time_part[0..2].parse().unwrap_or(99);
+                            let min: u32 = time_part[2..4].parse().unwrap_or(99);
+                            let sec: u32 = time_part[4..6].parse().unwrap_or(99);
+                            if hour < 24 && min < 60 && sec < 60 {
+                                return Some(format!(
+                                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+                                    year, month, day, hour, min, sec
+                                ));
                             }
                         }
                     }
@@ -521,6 +524,75 @@ mod tests {
             normalize_exif_date("2025:06:20 09:15:30+03:00"),
             "2025-06-20T09:15:30+03:00"
         );
+    }
+
+    #[test]
+    fn test_normalize_exif_date_non_ascii_does_not_panic() {
+        // >= 19 bytes, but byte 10 lands inside a multi-byte character, which
+        // is where `&s[..10]` used to panic.
+        let s = "2025:01:1\u{e9} 14:30:00xx";
+        assert!(s.len() >= 19);
+        assert_eq!(
+            normalize_exif_date(s),
+            s,
+            "an unsliceable date is returned unchanged rather than panicking"
+        );
+
+        // A boundary at 10 but not at 11.
+        let t = "2025:01:15\u{e9}14:30:00xx";
+        assert!(t.len() >= 19);
+        assert_eq!(normalize_exif_date(t), t);
+
+        // The ordinary cases still work.
+        assert_eq!(
+            normalize_exif_date("2025:01:15 14:30:00"),
+            "2025-01-15T14:30:00"
+        );
+    }
+
+    #[test]
+    fn test_parse_date_from_filename_non_ascii_time_does_not_panic() {
+        // 8 date digits, a separator, then a multi-byte character straddling
+        // byte 6 of the time window — `&time_candidate[..6]` panicked here.
+        let path = Path::new("IMG_20260509_12345\u{e9}7.jpg");
+        assert_eq!(
+            parse_date_from_filename(path),
+            Some("2026-05-09T00:00:00".to_string()),
+            "the date must still be recovered, just without the time"
+        );
+
+        // Non-ASCII elsewhere in the stem must be harmless too.
+        assert_eq!(
+            parse_date_from_filename(Path::new("caf\u{e9}_20260509_143456.jpg")),
+            Some("2026-05-09T14:34:56".to_string())
+        );
+    }
+
+    #[test]
+    fn test_write_exif_date_non_ascii_does_not_panic() {
+        let dir = std::env::temp_dir().join(format!(
+            "tilde_exif_nonascii_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let jpeg_path = dir.join("test.jpg");
+        image::RgbImage::new(8, 8).save(&jpeg_path).unwrap();
+
+        // >= 19 bytes so the old code took the slicing branch, but byte 4 is
+        // inside a multi-byte character.
+        let hostile = "202\u{e9}-01-15T14:30:00";
+        assert!(hostile.len() >= 19);
+        assert!(
+            write_exif_date(&jpeg_path, hostile).is_ok(),
+            "a malformed date must be skipped, not panic"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

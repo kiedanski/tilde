@@ -11,7 +11,7 @@ A monolithic Rust binary serving open protocols (WebDAV, CalDAV, CardDAV, MCP, I
 - **Email archive** via IMAP client with full-text search (read-only mirror)
 - **Structured data** via generic collections (trackers, bookmarks, habits)
 - **AI integration** via MCP (Model Context Protocol) with scoped access
-- **Backup** via embedded restic-compatible library with offsite support
+- **Backup** via the `restic` binary with offsite support
 
 ## Target
 
@@ -47,15 +47,12 @@ tilde/
 │   ├── tilde-cal/          # CalDAV via RustiCal
 │   ├── tilde-card/         # CardDAV via RustiCal
 │   ├── tilde-photos/       # Photo ingestion, metadata, thumbnails
-│   ├── tilde-notes/        # Markdown notes over WebDAV
-│   ├── tilde-collections/  # Generic trackers, bookmarks, structured data
 │   ├── tilde-email/        # IMAP fetcher, Maildir storage, FTS index
 │   ├── tilde-mcp/          # MCP tools, bearer token auth, audit log
-│   ├── tilde-backup/       # rustic-rs integration, scheduling
+│   ├── tilde-backup/       # restic integration (external binary), scheduling
 │   └── tilde-notify/       # Notification sinks: ntfy, SMTP, Matrix, Signal
 ├── migrations/             # SQL migration files
 ├── locales/                # Fluent .ftl files
-└── assets/                 # Login page HTML (embedded via rust-embed)
 ```
 
 ## Technology stack

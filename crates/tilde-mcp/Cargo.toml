@@ -8,6 +8,7 @@ license.workspace = true
 tilde-core = { workspace = true }
 tilde-cal = { workspace = true }
 tilde-card = { workspace = true }
+tilde-dav = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
@@ -16,3 +17,6 @@ rusqlite = { workspace = true }
 uuid = { workspace = true }
 jiff = { workspace = true }
 axum = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

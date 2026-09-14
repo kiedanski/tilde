@@ -46,8 +46,21 @@ pub async fn run_auth(config_path: Option<&str>, command: AuthCommands) -> anyho
                 }
             }
             AppPasswordCommands::Revoke { id } => {
-                conn.execute("UPDATE app_passwords SET revoked = 1 WHERE id = ?1", [&id])?;
-                println!("App password {} revoked", id);
+                // Accept a name as well as an id, matching `mcp token revoke` and
+                // `webhook token revoke`. Previously this matched on id only and
+                // still printed success, so revoking by name — the obvious thing
+                // to do for a lost device — silently left the credential valid.
+                let affected = conn.execute(
+                    "UPDATE app_passwords SET revoked = 1 WHERE (id = ?1 OR name = ?1) AND revoked = 0",
+                    [&id],
+                )?;
+                if affected == 0 {
+                    anyhow::bail!(
+                        "No active app password matching '{}'. Run `tilde auth app-password list` to see names and ids.",
+                        id
+                    );
+                }
+                println!("App password {} revoked ({} credential(s))", id, affected);
             }
         },
     }
