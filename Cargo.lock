@@ -2994,7 +2994,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-backup"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "flate2",
@@ -3009,7 +3009,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-cal"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3030,7 +3030,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-card"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3048,7 +3048,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-cli"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3062,7 +3062,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-core"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3086,7 +3086,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-dav"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3111,7 +3111,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-email"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "imap",
@@ -3130,7 +3130,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-mcp"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3149,7 +3149,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-notify"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "jiff",
@@ -3165,7 +3165,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-photos"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "image",
@@ -3187,7 +3187,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-server"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arc-swap",
