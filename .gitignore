@@ -14,3 +14,14 @@ logs/
 app_spec.txt
 claude-progress.txt
 feature_list.json
+.fix_context*
+.triage_done
+bugs.txt
+.omc/
+.claude/
+/thoughts/
+
+# OS / local dev data at repo root
+.DS_Store
+/files/
+/photos/

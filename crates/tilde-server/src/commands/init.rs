@@ -196,6 +196,13 @@ ffmpeg_timeout_seconds = 60
 # File watcher debounce
 watch_debounce_seconds = 5
 
+[gadgetbridge]
+# Watch files/health/_inbox/ for Gadgetbridge exports and regenerate
+# plaintext CSVs under files/health/
+enabled = true
+# IANA timezone for bucketing samples into local days ("" = system timezone)
+timezone = ""
+
 [notes]
 # WebDAV collection name for notes
 root_path = "notes"

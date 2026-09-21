@@ -102,7 +102,7 @@ pub fn create_test_server() -> TestEnv {
     let carddav_state: tilde_card::SharedCardDavState =
         Arc::new(tilde_card::CardDavState { db: pool.clone() });
 
-    let router = tilde_server::build_router(state, dav_state, caldav_state, carddav_state);
+    let router = tilde_server::build_router(state, dav_state, caldav_state, carddav_state, None);
 
     // Use HTTP transport so ConnectInfo<SocketAddr> is available for handlers that need it
     let app = router.into_make_service_with_connect_info::<SocketAddr>();

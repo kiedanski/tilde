@@ -120,19 +120,6 @@ fn record_base_version(state: &SharedDavState, credential_id: &str, rel_path: &s
     );
 }
 
-/// Full sha256 of a path from the stat cache, refreshing it if stale.
-fn current_sha256(state: &SharedDavState, rel_path: &str) -> Option<String> {
-    resolve_file_identity(state, rel_path)?;
-    let db = state.db.get().ok()?;
-    db.query_row(
-        "SELECT sha256 FROM files WHERE path = ?1",
-        [&state.db_path(rel_path)],
-        |r| r.get::<_, Option<String>>(0),
-    )
-    .ok()
-    .flatten()
-}
-
 /// Validate that a relative path doesn't escape the root directory.
 /// Rejects paths containing `..` segments.
 fn is_safe_path(rel_path: &str) -> bool {
@@ -317,16 +304,31 @@ async fn handle_get(
     };
 
     // Resolve against disk, not the stored row: the file may have been written
-    // out of band since the last DAV write.
-    let etag = {
+    // out of band since the last DAV write. The full sha256 is read in the same
+    // pass — the archive block below needs it, and resolving twice used to mean
+    // two complete hashes of the file on a stat-cache miss.
+    let resolved: Option<(String, Option<String>)> = {
         let st = state.clone();
         let rp = rel_path.to_string();
-        tokio::task::spawn_blocking(move || resolve_file_identity(&st, &rp))
-            .await
-            .ok()
-            .flatten()
-            .map(|(_, etag)| etag)
+        tokio::task::spawn_blocking(move || {
+            let (_, etag) = resolve_file_identity(&st, &rp)?;
+            let sha = st.db.get().ok().and_then(|db| {
+                db.query_row(
+                    "SELECT sha256 FROM files WHERE path = ?1",
+                    [&st.db_path(&rp)],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten()
+            });
+            Some((etag, sha))
+        })
+        .await
+        .ok()
+        .flatten()
     };
+    let etag = resolved.as_ref().map(|(etag, _)| etag.clone());
+    let full_sha256 = resolved.and_then(|(_, sha)| sha);
 
     // Record the version this client now holds — the ancestor for any later
     // three-way merge of a write from the same credential.
@@ -340,24 +342,25 @@ async fn handle_get(
     //
     // Cost is one copy the first time a version is served; `archive_version` is
     // idempotent, so repeat reads are a single `exists()` check.
-    if let Some(cred) = credential_id {
+    // Detached, not awaited: the first serve of a large file used to block the
+    // first byte behind a full read+write blob copy. The archive is idempotent
+    // and the base row only matters for a LATER write from this credential, so
+    // streaming need not wait for it.
+    if let (Some(cred), Some(sha)) = (credential_id, full_sha256) {
         let st = state.clone();
         let rp = rel_path.to_string();
         let dp = disk_path.clone();
         let cred = cred.to_string();
-        let _ = tokio::task::spawn_blocking(move || {
-            if let Some(sha) = current_sha256(&st, &rp) {
-                // Pass the digest we already have: `archive_version` hashes the
-                // whole file before its "already present" check, which on the
-                // read path meant every GET re-read the entire file — defeating
-                // range streaming on large video.
-                if let Err(e) = versions::archive_version_known_sha(&st.blobs_root, &dp, &sha) {
-                    warn!(path = rp, error = %e, "Could not archive served version");
-                }
-                record_base_version(&st, &cred, &rp, &sha);
+        tokio::task::spawn_blocking(move || {
+            // Pass the digest we already have: `archive_version` hashes the
+            // whole file before its "already present" check, which on the
+            // read path meant every GET re-read the entire file — defeating
+            // range streaming on large video.
+            if let Err(e) = versions::archive_version_known_sha(&st.blobs_root, &dp, &sha) {
+                warn!(path = rp, error = %e, "Could not archive served version");
             }
-        })
-        .await;
+            record_base_version(&st, &cred, &rp, &sha);
+        });
     }
 
     let total_len = metadata.len();
@@ -424,7 +427,7 @@ async fn handle_get(
                 }
             }
             let reader = tokio::io::AsyncReadExt::take(file, body_len);
-            let stream = tokio_util::io::ReaderStream::with_capacity(reader, 64 * 1024);
+            let stream = tokio_util::io::ReaderStream::with_capacity(reader, 256 * 1024);
             let body = Body::from_stream(stream);
             (status, headers, body).into_response()
         }
@@ -632,43 +635,22 @@ async fn handle_put(
     }
 
     let content_type = mime_from_path(rel_path);
-    let now = jiff::Zoned::now()
-        .strftime("%Y-%m-%dT%H:%M:%S%:z")
-        .to_string();
 
-    // Upsert into files table
+    // Upsert into the stat cache, preserving oc_id. Going through
+    // upsert_file_row_conn also records mtime_nanos/inode, so the next
+    // PROPFIND is a cache hit instead of re-hashing the file just uploaded.
     {
         let db = state.db.get().unwrap();
         let db_path = state.db_path(rel_path);
-        let file_name = std::path::Path::new(rel_path)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let db_parent = std::path::Path::new(&db_path)
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-
         let existing_id: Option<String> = db
             .query_row("SELECT id FROM files WHERE path = ?1", [&db_path], |row| {
                 row.get(0)
             })
             .ok();
-
         let id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-
-        db.execute(
-            "INSERT INTO files (id, path, parent_path, name, size_bytes, content_type, etag, sha256, is_directory, created_at, modified_at, hlc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11)
-             ON CONFLICT(path) DO UPDATE SET
-                size_bytes = excluded.size_bytes,
-                content_type = excluded.content_type,
-                etag = excluded.etag,
-                sha256 = excluded.sha256,
-                modified_at = excluded.modified_at,
-                hlc = excluded.hlc",
-            rusqlite::params![id, db_path, db_parent, file_name, total_bytes, content_type, etag, sha256, now, now, now],
-        ).ok();
+        if let Ok(md) = disk_path.metadata() {
+            upsert_file_row_conn(&db, &db_path, rel_path, &id, &etag, Some(&sha256), &md);
+        }
     }
 
     let status = if exists {
@@ -1063,28 +1045,14 @@ async fn handle_mkcol(state: &SharedDavState, rel_path: &str) -> Response {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
-    // Record in DB
-    let now = jiff::Zoned::now()
-        .strftime("%Y-%m-%dT%H:%M:%S%:z")
-        .to_string();
+    // Record in DB (directory etag is its id; mtime_nanos/inode recorded too)
     let id = Uuid::new_v4().to_string();
     let db_path = state.db_path(rel_path);
-    let name = std::path::Path::new(rel_path)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let db_parent = std::path::Path::new(&db_path)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-
     {
         let db = state.db.get().unwrap();
-        db.execute(
-            "INSERT INTO files (id, path, parent_path, name, size_bytes, content_type, etag, is_directory, created_at, modified_at, hlc)
-             VALUES (?1, ?2, ?3, ?4, 0, 'httpd/unix-directory', ?5, 1, ?6, ?7, ?8)",
-            rusqlite::params![id, db_path, db_parent, name, id, now, now, now],
-        ).ok();
+        if let Ok(md) = disk_path.metadata() {
+            upsert_file_row_conn(&db, &db_path, rel_path, &id, &id, None, &md);
+        }
     }
 
     info!(path = rel_path, "WebDAV MKCOL");
@@ -1997,42 +1965,19 @@ async fn uploads_handler(
 
             let sha256 = format!("{:x}", hasher.finalize());
             let etag = sha256[..16].to_string();
-            let content_type = mime_from_path(&dest);
-            let now = jiff::Zoned::now()
-                .strftime("%Y-%m-%dT%H:%M:%S%:z")
-                .to_string();
-
-            // Record in files table
+            // Record in the stat cache (mtime_nanos/inode included so the next
+            // PROPFIND doesn't re-hash the assembled file)
             {
                 let db = state.db.get().unwrap();
-                let file_name = std::path::Path::new(&dest)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let parent_path = std::path::Path::new(&dest)
-                    .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
-
                 let existing_id: Option<String> = db
                     .query_row("SELECT id FROM files WHERE path = ?1", [&dest], |row| {
                         row.get(0)
                     })
                     .ok();
                 let id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-
-                db.execute(
-                    "INSERT INTO files (id, path, parent_path, name, size_bytes, content_type, etag, sha256, is_directory, created_at, modified_at, hlc)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11)
-                     ON CONFLICT(path) DO UPDATE SET
-                        size_bytes = excluded.size_bytes,
-                        content_type = excluded.content_type,
-                        etag = excluded.etag,
-                        sha256 = excluded.sha256,
-                        modified_at = excluded.modified_at,
-                        hlc = excluded.hlc",
-                    rusqlite::params![id, dest, parent_path, file_name, total_size, content_type, etag, sha256, now, now, now],
-                ).ok();
+                if let Ok(md) = dest_path.metadata() {
+                    upsert_file_row_conn(&db, &dest, &dest, &id, &etag, Some(&sha256), &md);
+                }
 
                 // Clean up upload session
                 db.execute(

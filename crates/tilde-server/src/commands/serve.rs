@@ -39,6 +39,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         files_root.clone(),
         data_dir.join("notes"),
         files_root.join("documents"),
+        files_root.join("health/_inbox"),
         data_dir.join("photos/_inbox"),
         data_dir.join("photos/_library-drop"),
         data_dir.join("photos/_untriaged"),
@@ -170,6 +171,43 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         }
     };
 
+    // Start health inbox watcher for Gadgetbridge uploads
+    let _health_watcher = if state.config().gadgetbridge.enabled {
+        let health_base = data_dir.join("files/health");
+        let debounce = state.config().gadgetbridge.watch_debounce_seconds;
+        match tilde_health::watcher::start_watcher(state.db.clone(), health_base.clone(), debounce)
+        {
+            Ok(w) => {
+                // Catch up on uploads that arrived while the server was down.
+                let has_pending = std::fs::read_dir(health_base.join("_inbox"))
+                    .map(|entries| {
+                        entries.flatten().any(|e| {
+                            e.path().is_file() && !e.file_name().to_string_lossy().starts_with('.')
+                        })
+                    })
+                    .unwrap_or(false);
+                if has_pending && let Ok(conn) = state.db.get() {
+                    match tilde_health::watcher::enqueue_import_job(&conn) {
+                        Ok(true) => {
+                            info!("Health inbox has pending files — import job enqueued")
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to enqueue startup health import")
+                        }
+                    }
+                }
+                Some(w)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to start health inbox watcher");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Graceful-shutdown coordination
     let shutdown = CancellationToken::new();
     let mut tasks = tokio::task::JoinSet::new();
@@ -255,6 +293,8 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         let job_photos_base = data_dir.join("photos");
         let job_cache_dir = state.config().cache_dir();
         let job_thumb_quality = state.config().photos.thumbnail_quality;
+        let job_files_root = data_dir.join("files");
+        let job_gb_timezone = state.config().gadgetbridge.timezone.clone();
         let token = shutdown.clone();
         const JOB_CONCURRENCY: usize = 4;
         tasks.spawn(async move {
@@ -308,6 +348,8 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     let photos = job_photos_base.clone();
                     let cache = job_cache_dir.clone();
                     let quality = job_thumb_quality;
+                    let files = job_files_root.clone();
+                    let gb_timezone = job_gb_timezone.clone();
                     handles.push(tokio::task::spawn_blocking(move || {
                         let _permit = permit;
                         let conn = db.get().unwrap();
@@ -315,6 +357,30 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                             "thumbnail" => tilde_photos::process_thumbnail_job_standalone(
                                 &payload_json, &conn, &photos, &cache, quality,
                             ),
+                            "gadgetbridge_import" => tilde_health::process_import_job(
+                                &payload_json,
+                                &files,
+                                &gb_timezone,
+                            )
+                            .and_then(|stats| {
+                                // Server-side writes bypass DAV, so warm the stat
+                                // cache for the subtree and prune deleted rows.
+                                tilde_dav::reindex_tree(
+                                    &conn,
+                                    &files.join("health"),
+                                    "health/",
+                                    true,
+                                )?;
+                                if let Some(export) = &stats.export {
+                                    info!(
+                                        files = export.files_written,
+                                        days = export.days,
+                                        workouts = stats.workouts_copied,
+                                        "Gadgetbridge import complete"
+                                    );
+                                }
+                                Ok(())
+                            }),
                             _ => Err(anyhow::anyhow!("Unknown job type: {}", job_type)),
                         };
                         let now = jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
@@ -512,21 +578,31 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 vec![]
             };
 
-            // Process inbox files one at a time with brief DB locks
+            // Ingest is I/O-bound (hash + EXIF + copy), so run files
+            // concurrently — capped below the DB pool size (4) so live
+            // requests always find a free connection during a large import.
+            const SCAN_CONCURRENCY: usize = 3;
+            let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY));
+
+            // Process inbox files with brief DB locks
             if !inbox_files.is_empty() {
                 let total = inbox_files.len();
-                let mut processed = 0;
+                let mut handles = Vec::new();
                 for path in &inbox_files {
+                    let permit = sem.clone().acquire_owned().await.unwrap();
                     let db = scan_db.clone();
                     let photos = scan_photos_base.clone();
                     let pat = scan_pattern.clone();
                     let p = path.clone();
-                    let r = tokio::task::spawn_blocking(move || {
+                    handles.push(tokio::task::spawn_blocking(move || {
+                        let _permit = permit;
                         let conn = db.get().unwrap();
                         tilde_photos::ingest::process_inbox_file(&conn, &p, &photos, &pat)
-                    })
-                    .await;
-                    if matches!(r, Ok(Ok(_))) {
+                    }));
+                }
+                let mut processed = 0;
+                for handle in handles {
+                    if matches!(handle.await, Ok(Ok(_))) {
                         processed += 1;
                     }
                 }
@@ -538,18 +614,22 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             // Process library-drop files
             if !lib_files.is_empty() {
                 let total = lib_files.len();
-                let mut processed = 0;
-                for (i, path) in lib_files.iter().enumerate() {
+                let mut handles = Vec::new();
+                for path in &lib_files {
+                    let permit = sem.clone().acquire_owned().await.unwrap();
                     let db = scan_db.clone();
                     let photos = scan_photos_base.clone();
                     let lib = library_drop.clone();
                     let p = path.clone();
-                    let r = tokio::task::spawn_blocking(move || {
+                    handles.push(tokio::task::spawn_blocking(move || {
+                        let _permit = permit;
                         let conn = db.get().unwrap();
                         tilde_photos::ingest::process_library_drop_file(&conn, &p, &photos, &lib)
-                    })
-                    .await;
-                    if matches!(r, Ok(Ok(_))) {
+                    }));
+                }
+                let mut processed = 0;
+                for (i, handle) in handles.into_iter().enumerate() {
+                    if matches!(handle.await, Ok(Ok(_))) {
                         processed += 1;
                     }
                     if (i + 1) % 1000 == 0 {
@@ -619,9 +699,32 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             let email_mail_dir = mail_dir.clone();
             info!(account = %imap_config.name, host = %imap_config.imap_host, "Starting email sync");
             let token = shutdown.clone();
+            // Notify on the 3rd consecutive sync failure (issue #3). The rate
+            // limiter dedups repeat streaks; the closure keeps tilde-email
+            // free of a notification dependency.
+            let email_sinks = notification_sinks.clone();
+            let email_limiter = notification_rate_limiter.clone();
+            let email_notify_db = state.db.clone();
+            let on_repeated_failure: tilde_email::imap::SyncFailureCallback =
+                std::sync::Arc::new(move |account: &str, error: &str| {
+                    if let Ok(conn) = email_notify_db.get() {
+                        tilde_notify::notify(
+                            &email_sinks,
+                            &email_limiter,
+                            &conn,
+                            tilde_notify::events::email_sync_error(account, error),
+                        );
+                    }
+                });
             tasks.spawn(async move {
-                tilde_email::imap::run_sync_loop(imap_config, email_db, email_mail_dir, token)
-                    .await;
+                tilde_email::imap::run_sync_loop(
+                    imap_config,
+                    email_db,
+                    email_mail_dir,
+                    token,
+                    Some(on_repeated_failure),
+                )
+                .await;
             });
         }
         if !accounts.is_empty() {
@@ -629,7 +732,20 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         }
     }
 
-    let app = build_router(state, dav_state, caldav_state, carddav_state);
+    // Brute-force detection: count 401s per client IP, notify on repeats (issue #3)
+    let auth_notifier = std::sync::Arc::new(tilde_server::AuthFailureNotifier::new(
+        notification_sinks.clone(),
+        notification_rate_limiter.clone(),
+        state.db.clone(),
+        state.config().server.trusted_proxies.clone(),
+    ));
+    let app = build_router(
+        state,
+        dav_state,
+        caldav_state,
+        carddav_state,
+        Some(auth_notifier),
+    );
 
     // Flag: if set, the process will exec() itself after graceful shutdown
     // instead of exiting. Used by SIGUSR2 for zero-downtime upgrades.
@@ -782,6 +898,7 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     _ = &mut shutdown_signal => break,
                     result = listener.accept() => {
                         let (tcp_stream, addr) = result?;
+                        let _ = tcp_stream.set_nodelay(true);
                         let acceptor = tls_acceptor.clone();
                         let mut make_svc = make_service.clone();
 

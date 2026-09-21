@@ -36,12 +36,82 @@ impl AppState {
 
 pub type SharedState = Arc<AppState>;
 
+/// Sliding-window tracker for failed authentication attempts per client IP.
+/// Fires `auth_failed_repeated` once the threshold is crossed; the shared
+/// notification rate limiter keeps an ongoing brute force to ~one ping/hour.
+pub struct AuthFailureNotifier {
+    sinks: Arc<Vec<Box<dyn tilde_notify::NotificationSink + Send + Sync>>>,
+    limiter: Arc<tilde_notify::NotificationRateLimiter>,
+    db: DbPool,
+    /// Peer IPs allowed to speak for clients via X-Forwarded-For.
+    trusted_proxies: Vec<String>,
+    window: std::sync::Mutex<std::collections::HashMap<String, Vec<Instant>>>,
+}
+
+const AUTH_FAILURE_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+const AUTH_FAILURE_THRESHOLD: usize = 10;
+
+impl AuthFailureNotifier {
+    pub fn new(
+        sinks: Arc<Vec<Box<dyn tilde_notify::NotificationSink + Send + Sync>>>,
+        limiter: Arc<tilde_notify::NotificationRateLimiter>,
+        db: DbPool,
+        trusted_proxies: Vec<String>,
+    ) -> Self {
+        Self {
+            sinks,
+            limiter,
+            db,
+            trusted_proxies,
+            window: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn record_failure(&self, peer_ip: Option<String>, forwarded_for: Option<String>) {
+        let Some(peer) = peer_ip else { return };
+        // Behind the reverse proxy every peer is the proxy itself — only then
+        // is X-Forwarded-For trustworthy (and needed) for per-client counting.
+        let ip = match forwarded_for {
+            Some(ff) if !ff.is_empty() && self.trusted_proxies.contains(&peer) => ff,
+            _ => peer,
+        };
+
+        let count = {
+            let mut map = self.window.lock().unwrap();
+            let now = Instant::now();
+            // A spray of spoofed source IPs must not grow the map unboundedly.
+            if map.len() > 1000 {
+                map.retain(|_, v| {
+                    v.retain(|t| now.duration_since(*t) < AUTH_FAILURE_WINDOW);
+                    !v.is_empty()
+                });
+            }
+            let hits = map.entry(ip.clone()).or_default();
+            hits.retain(|t| now.duration_since(*t) < AUTH_FAILURE_WINDOW);
+            hits.push(now);
+            hits.len()
+        };
+
+        if count >= AUTH_FAILURE_THRESHOLD
+            && let Ok(conn) = self.db.get()
+        {
+            tilde_notify::notify(
+                &self.sinks,
+                &self.limiter,
+                &conn,
+                tilde_notify::events::auth_failed_repeated(&ip, count as u32),
+            );
+        }
+    }
+}
+
 /// Build the axum router with all routes
 pub fn build_router(
     state: SharedState,
     dav_state: tilde_dav::SharedDavState,
     caldav_state: tilde_cal::SharedCalDavState,
     carddav_state: tilde_card::SharedCardDavState,
+    auth_notifier: Option<Arc<AuthFailureNotifier>>,
 ) -> Router {
     // WebDAV routes
     let dav_router = tilde_dav::build_dav_router(dav_state.clone());
@@ -91,7 +161,7 @@ pub fn build_router(
     let caldav_router = tilde_cal::build_caldav_router(caldav_state);
     let carddav_router = tilde_card::build_carddav_router(carddav_state);
 
-    Router::new()
+    let app = Router::new()
         // Root PROPFIND for DAV client discovery (DAVx5, etc.)
         .route("/", any(root_propfind_handler))
         // Public endpoints
@@ -133,6 +203,11 @@ pub fn build_router(
         // CalDAV and CardDAV
         .nest_service("/caldav", caldav_router)
         .nest_service("/carddav", carddav_router)
+        // Compression applies only to the routes above. The file-serving DAV
+        // mounts below are exempt: gzipping large (often incompressible) file
+        // bodies costs CPU, strips Content-Length (forcing chunked transfer),
+        // and corrupts 206 range responses — the "3x slower than scp" bug.
+        .layer(CompressionLayer::new())
         // WebDAV
         .nest_service("/dav/files", dav_router)
         .nest_service("/dav/notes", notes_router)
@@ -150,7 +225,6 @@ pub fn build_router(
                 .allow_headers(tower_http::cors::Any)
                 .expose_headers(tower_http::cors::Any),
         )
-        .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(add_request_id))
         .layer(axum::middleware::from_fn_with_state(
@@ -168,7 +242,34 @@ pub fn build_router(
         // request. Individual panics are still bugs and still get fixed; this
         // stops the unknown ones from being outages.
         .layer(tower_http::catch_panic::CatchPanicLayer::new())
-        .with_state(state)
+        .with_state(state);
+
+    // Outermost of all: count 401s per client IP and notify on brute force.
+    // Placed after with_state so it wraps every mount, DAV included.
+    match auth_notifier {
+        Some(notifier) => app.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: Next| {
+                let notifier = notifier.clone();
+                async move {
+                    let peer_ip = req
+                        .extensions()
+                        .get::<ConnectInfo<SocketAddr>>()
+                        .map(|ci| ci.0.ip().to_string());
+                    let forwarded_for = req
+                        .headers()
+                        .get("x-forwarded-for")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.split(',').next().unwrap_or("").trim().to_string());
+                    let resp = next.run(req).await;
+                    if resp.status() == StatusCode::UNAUTHORIZED {
+                        notifier.record_failure(peer_ip, forwarded_for);
+                    }
+                    resp
+                }
+            },
+        )),
+        None => app,
+    }
 }
 
 /// Add X-Request-Id header to all requests/responses

@@ -61,6 +61,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: PhotosCommands,
     },
+    /// Gadgetbridge health-data import
+    Gadgetbridge {
+        #[command(subcommand)]
+        command: GadgetbridgeCommands,
+    },
     /// Calendar operations
     Calendar {
         #[command(subcommand)]
@@ -251,6 +256,16 @@ pub enum PhotosCommands {
     Thumbnail {
         #[command(subcommand)]
         command: ThumbnailCommands,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub enum GadgetbridgeCommands {
+    /// Process the health inbox (or a specific database export) into CSVs
+    Import {
+        /// Path to a Gadgetbridge.db export; default: everything in files/health/_inbox/
+        #[arg(long)]
+        db: Option<String>,
     },
 }
 

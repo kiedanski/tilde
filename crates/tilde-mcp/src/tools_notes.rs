@@ -104,7 +104,7 @@ pub fn required_scope(tool: &str) -> Option<&'static str> {
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 /// Content-addressed version store for a given notes dir: `<data_dir>/blobs/by-id`.
-fn blobs_root(notes_dir: &Path) -> PathBuf {
+pub(crate) fn blobs_root(notes_dir: &Path) -> PathBuf {
     notes_dir
         .parent()
         .map(|d| d.join("blobs").join("by-id"))

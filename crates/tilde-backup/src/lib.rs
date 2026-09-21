@@ -53,6 +53,27 @@ pub fn post_restore_fixup(conn: &Connection) -> Result<PostRestoreReport> {
         );
     }
 
+    // Thumbnails live in the cache dir, which is not part of the backup — so
+    // queue regeneration now. Nothing else re-enqueues these: the watcher only
+    // fires on new files, so without this every thumbnail 404s until a manual
+    // `tilde photos thumbnail regenerate`.
+    let now = jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    let thumbnail_jobs_enqueued = conn
+        .execute(
+            "INSERT INTO jobs (job_type, payload_json, status, created_at)
+             SELECT 'thumbnail', json_object('photo_id', id), 'pending', ?1 FROM photos",
+            [&now],
+        )
+        .unwrap_or(0);
+    if thumbnail_jobs_enqueued > 0 {
+        info!(
+            count = thumbnail_jobs_enqueued,
+            "Enqueued thumbnail regeneration jobs"
+        );
+    }
+
     let fts_tables: Vec<String> = {
         let mut stmt = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts%'")
@@ -89,6 +110,7 @@ pub fn post_restore_fixup(conn: &Connection) -> Result<PostRestoreReport> {
     Ok(PostRestoreReport {
         jobs_deleted,
         thumbnails_reset,
+        thumbnail_jobs_enqueued,
         fts_tables_dropped,
         snapshots_cleared,
     })
@@ -98,6 +120,7 @@ pub fn post_restore_fixup(conn: &Connection) -> Result<PostRestoreReport> {
 pub struct PostRestoreReport {
     pub jobs_deleted: usize,
     pub thumbnails_reset: usize,
+    pub thumbnail_jobs_enqueued: usize,
     pub fts_tables_dropped: usize,
     pub snapshots_cleared: usize,
 }

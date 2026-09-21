@@ -19,15 +19,52 @@ pub fn hash_password(password: &str) -> anyhow::Result<String> {
     Ok(hash.to_string())
 }
 
+/// Successful verifications, cached briefly. Basic auth arrives on every DAV
+/// request, and Argon2id costs ~tens of ms plus a 19 MiB allocation per call —
+/// dominating small-file and range-request workloads. Only successes are
+/// cached, keyed by sha256(stored hash ‖ password), so a wrong password can
+/// neither hit nor poison the cache. Revocation is unaffected: revoked rows
+/// are filtered out by SQL before verification is ever attempted.
+static VERIFY_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<[u8; 32], std::time::Instant>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+const VERIFY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Verify a password against an Argon2id hash
 pub fn verify_password(password: &str, hash: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(hash.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(password.as_bytes());
+    let key: [u8; 32] = hasher.finalize().into();
+
+    {
+        let mut cache = VERIFY_CACHE.lock().unwrap();
+        if let Some(at) = cache.get(&key) {
+            if at.elapsed() < VERIFY_CACHE_TTL {
+                return true;
+            }
+            cache.remove(&key);
+        }
+    }
+
     let parsed_hash = match PasswordHash::new(hash) {
         Ok(h) => h,
         Err(_) => return false,
     };
-    Argon2::default()
+    let ok = Argon2::default()
         .verify_password(password.as_bytes(), &parsed_hash)
-        .is_ok()
+        .is_ok();
+    if ok {
+        let mut cache = VERIFY_CACHE.lock().unwrap();
+        if cache.len() > 1000 {
+            cache.retain(|_, t| t.elapsed() < VERIFY_CACHE_TTL);
+        }
+        cache.insert(key, std::time::Instant::now());
+    }
+    ok
 }
 
 /// Generate a random MCP token

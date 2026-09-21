@@ -145,15 +145,16 @@ fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             name: "notes.append".into(),
             description: "Append text to the end of an EXISTING note in the notes tree, after a \
-                 newline so the appended block starts on its own line. The note must already \
+                 newline so the appended block starts on its own line (no newline is added when \
+                 the note is empty). The note must already \
                  exist — a missing path fails with \"note not found: <path>\" and creates \
                  nothing; use notes.create for a new note, or notes.write to replace one \
-                 wholesale. Existing content is never read or rewritten, only added to, so unlike \
-                 notes.write there is no version-store archive of the pre-append state and no \
-                 archived_sha256 in the result. Paths are relative to the notes root (e.g. \
+                 wholesale. The pre-append content is archived to the version store first, same \
+                 as notes.write, so the operation is recoverable. Paths are relative to the \
+                 notes root (e.g. \
                  'journal/2026-03.md'); absolute paths and '..' are rejected. No size cap. \
-                 Returns {\"success\": true} and nothing else — no path, no byte count, no \
-                 resulting length. Requires notes:write scope."
+                 Returns {\"success\": true, \"archived_sha256\": <digest of the pre-append \
+                 content>}. Requires notes:write scope."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -178,7 +179,10 @@ fn all_tools() -> Vec<ToolDef> {
                  files root, type is \"file\" or \"directory\", size is bytes, and modified is \
                  ISO 8601 UTC. There is no limit and no pagination — every entry is returned — \
                  and `recursive: true` walks the whole subtree, silently stopping at 10 levels \
-                 deep. Requires files:read scope."
+                 deep. Invisible characters (control, private-use, zero-width) are escaped as \
+                 <U+XXXX> in `name` so look-alike entries are distinguishable; `path` keeps the \
+                 raw characters and is what the other files.* tools accept. Requires files:read \
+                 scope."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -993,17 +997,28 @@ fn exec_notes_append(notes_dir: &Path, params: &Value) -> Result<Value, String> 
         return Err(format!("note not found: {}", path));
     }
 
+    // Archive the pre-append content, same invariant as notes.write/delete:
+    // MCP must not destroy bytes the version store cannot give back.
+    let archived =
+        tilde_dav::versions::archive_version(&tools_notes::blobs_root(notes_dir), &full_path)
+            .map_err(|e| format!("failed to archive previous version: {}", e))?;
+
+    let existing_len = full_path.metadata().map(|m| m.len()).unwrap_or(0);
+
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .open(&full_path)
         .map_err(|e| e.to_string())?;
 
-    file.write_all(b"\n").map_err(|e| e.to_string())?;
+    // Separate from existing content with a newline — but not on an empty file.
+    if existing_len > 0 {
+        file.write_all(b"\n").map_err(|e| e.to_string())?;
+    }
     file.write_all(content.as_bytes())
         .map_err(|e| e.to_string())?;
 
-    Ok(json!({"success": true}))
+    Ok(json!({"success": true, "archived_sha256": archived}))
 }
 
 fn exec_files_list(files_dir: &Path, params: &Value) -> Result<Value, String> {
@@ -1022,6 +1037,40 @@ fn exec_files_list(files_dir: &Path, params: &Value) -> Result<Value, String> {
     list_dir_entries(&target, files_dir, recursive, &mut entries, 0);
 
     Ok(json!(entries))
+}
+
+/// Whether a character is invisible or deceptive in a file listing.
+fn is_invisible_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c as u32,
+            0xE000..=0xF8FF          // private use area (SMB/SFM-encoded chars land here)
+            | 0x200B..=0x200F        // zero-width + bidi marks
+            | 0x202A..=0x202E        // bidi embedding controls
+            | 0x2060..=0x2064        // word joiner / invisible operators
+            | 0xFEFF                 // zero-width no-break space / BOM
+            | 0xF0000..=0x10FFFD     // supplementary private use planes
+        )
+}
+
+/// Make invisible characters visible in a listing name.
+///
+/// A directory named "transferencias\u{F028}" (an SMB-style encoded trailing
+/// space) renders identically to a sibling "transferencias", so a listing shows
+/// two indistinguishable entries. Only the display `name` is escaped — `path`
+/// keeps the raw characters so it round-trips into the other files.* tools.
+fn escape_invisible(name: &str) -> String {
+    if !name.chars().any(is_invisible_char) {
+        return name.to_string();
+    }
+    name.chars()
+        .map(|c| {
+            if is_invisible_char(c) {
+                format!("<U+{:04X}>", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 fn list_dir_entries(
@@ -1062,7 +1111,7 @@ fn list_dir_entries(
                 .unwrap_or_default();
 
             entries.push(json!({
-                "name": name,
+                "name": escape_invisible(&name),
                 "path": rel,
                 "size": size,
                 "modified": modified,
@@ -1373,10 +1422,37 @@ pub fn handle_mcp_request(
                     "email.search" => exec_email_search(&conn, &arguments),
                     "email.thread" => exec_email_thread(&conn, &arguments),
                     "email.recent" => exec_email_recent(&conn, &arguments),
-                    _ => tools_notes::exec(tool_name, &notes_dir, &arguments)
-                        .or_else(|| tools_files::exec(tool_name, &files_dir, &arguments))
-                        .or_else(|| tools_photos::exec(tool_name, &conn, &arguments))
-                        .unwrap_or_else(|| Err(format!("unknown tool: {}", tool_name))),
+                    _ => {
+                        let r = tools_notes::exec(tool_name, &notes_dir, &arguments)
+                            .or_else(|| tools_files::exec(tool_name, &files_dir, &arguments))
+                            .or_else(|| tools_photos::exec(tool_name, &conn, &arguments))
+                            .unwrap_or_else(|| Err(format!("unknown tool: {}", tool_name)));
+                        // Preserve oc:id across MCP renames, mirroring DAV MOVE:
+                        // without moving the row, the next PROPFIND mints a fresh
+                        // UUID at the destination and sync clients treat the file
+                        // as brand new. (Files-tree rows are keyed without prefix.)
+                        if tool_name == "files.move"
+                            && r.is_ok()
+                            && let (Some(from), Some(to)) = (
+                                arguments.get("from").and_then(|v| v.as_str()),
+                                arguments.get("to").and_then(|v| v.as_str()),
+                            )
+                        {
+                            let now = jiff::Zoned::now()
+                                .strftime("%Y-%m-%dT%H:%M:%S%:z")
+                                .to_string();
+                            let name = to.rsplit('/').next().unwrap_or(to);
+                            let parent = match to.rfind('/') {
+                                Some(idx) => &to[..idx],
+                                None => "",
+                            };
+                            let _ = conn.execute(
+                                "UPDATE files SET path = ?1, parent_path = ?2, name = ?3, modified_at = ?4 WHERE path = ?5",
+                                rusqlite::params![to, parent, name, now, from],
+                            );
+                        }
+                        r
+                    }
                 }
             };
 
@@ -1785,6 +1861,28 @@ fn exec_contacts_delete(conn: &Connection, args: &Value) -> Result<Value, String
         .ok_or("uid is required")?;
     tilde_card::delete_contact(conn, uid).map_err(|e| e.to_string())?;
     Ok(json!({"uid": uid, "status": "deleted"}))
+}
+
+#[cfg(test)]
+mod listing_escape_tests {
+    use super::*;
+
+    #[test]
+    fn invisible_characters_are_escaped_in_names() {
+        // SMB/SFM-encoded trailing space: renders identically to "transferencias".
+        assert_eq!(
+            escape_invisible("transferencias\u{F028}"),
+            "transferencias<U+F028>"
+        );
+        // Encoded colon + newline from the same mangled upload family.
+        assert_eq!(
+            escape_invisible("12\u{F022}00\u{F00A}x"),
+            "12<U+F022>00<U+F00A>x"
+        );
+        // Ordinary names, including non-ASCII, pass through untouched.
+        assert_eq!(escape_invisible("señal año.pdf"), "señal año.pdf");
+        assert_eq!(escape_invisible("plain.txt"), "plain.txt");
+    }
 }
 
 #[cfg(test)]

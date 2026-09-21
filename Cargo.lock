@@ -3129,6 +3129,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilde-health"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "jiff",
+ "notify",
+ "rusqlite",
+ "serde_json",
+ "tilde-core",
+ "tracing",
+]
+
+[[package]]
 name = "tilde-mcp"
 version = "0.5.0"
 dependencies = [
@@ -3220,6 +3233,7 @@ dependencies = [
  "tilde-core",
  "tilde-dav",
  "tilde-email",
+ "tilde-health",
  "tilde-mcp",
  "tilde-notify",
  "tilde-photos",

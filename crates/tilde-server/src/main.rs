@@ -68,6 +68,9 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Photos { command }) => {
             commands::run_photos(config_path.as_deref(), command).await
         }
+        Some(Commands::Gadgetbridge { command }) => {
+            commands::run_gadgetbridge(config_path.as_deref(), command).await
+        }
         Some(Commands::Email { command }) => {
             commands::run_email(config_path.as_deref(), command).await
         }

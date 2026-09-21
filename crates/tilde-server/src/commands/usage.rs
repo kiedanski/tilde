@@ -13,6 +13,7 @@ fn recent_activity(conn: &rusqlite::Connection, limit: u32) -> Vec<(String, Stri
         "SELECT description, ts FROM (
             SELECT 'Uploaded ' || name AS description, modified_at AS ts
               FROM files WHERE is_directory = 0
+                AND name NOT LIKE '.%'  -- macOS drops .DS_Store/._* everywhere
             UNION ALL
             SELECT CASE component_type
                      WHEN 'VTODO' THEN 'Task: ' || COALESCE(summary, uid)

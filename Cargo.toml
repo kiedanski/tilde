@@ -12,6 +12,7 @@ members = [
     "crates/tilde-mcp",
     "crates/tilde-backup",
     "crates/tilde-notify",
+    "crates/tilde-health",
 ]
 
 [workspace.package]
@@ -154,3 +155,4 @@ tilde-email = { path = "crates/tilde-email" }
 tilde-mcp = { path = "crates/tilde-mcp" }
 tilde-backup = { path = "crates/tilde-backup" }
 tilde-notify = { path = "crates/tilde-notify" }
+tilde-health = { path = "crates/tilde-health" }

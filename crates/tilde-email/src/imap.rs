@@ -301,14 +301,23 @@ fn sync_cycle(
 /// Handles IDLE, polling fallback, and retry with exponential backoff.
 /// The `shutdown` token allows graceful termination — the loop checks it
 /// between sync cycles and uses short IDLE timeouts so it can exit promptly.
+/// Callback invoked with (account name, error) once per failure streak.
+/// Keeps this crate free of a notification dependency — the server passes a
+/// closure that owns the sinks.
+pub type SyncFailureCallback = std::sync::Arc<dyn Fn(&str, &str) + Send + Sync>;
+
 pub async fn run_sync_loop(
     config: ImapAccountConfig,
     db: DbPool,
     maildir_base: std::path::PathBuf,
     shutdown: tokio_util::sync::CancellationToken,
+    // Called once per failure streak (on the 3rd consecutive error).
+    on_repeated_failure: Option<SyncFailureCallback>,
 ) {
     let mut retry_delay = std::time::Duration::from_secs(5);
     let max_retry_delay = std::time::Duration::from_secs(300);
+    let mut consecutive_failures: u32 = 0;
+    const FAILURE_NOTIFY_THRESHOLD: u32 = 3;
 
     loop {
         if shutdown.is_cancelled() {
@@ -328,6 +337,7 @@ pub async fn run_sync_loop(
         match result {
             Ok(Ok(())) => {
                 retry_delay = std::time::Duration::from_secs(5);
+                consecutive_failures = 0;
                 info!(account = %config.name, "Sync cycle completed successfully");
             }
             Ok(Err(e)) => {
@@ -337,12 +347,24 @@ pub async fn run_sync_loop(
                     retry_secs = retry_delay.as_secs(),
                     "IMAP sync error — retrying with exponential backoff"
                 );
+                consecutive_failures += 1;
+                if consecutive_failures == FAILURE_NOTIFY_THRESHOLD
+                    && let Some(cb) = &on_repeated_failure
+                {
+                    cb(&config.name, &e.to_string());
+                }
                 tokio::time::sleep(retry_delay).await;
                 retry_delay = (retry_delay * 2).min(max_retry_delay);
                 continue;
             }
             Err(e) => {
                 error!(error = %e, "Sync task panicked");
+                consecutive_failures += 1;
+                if consecutive_failures == FAILURE_NOTIFY_THRESHOLD
+                    && let Some(cb) = &on_repeated_failure
+                {
+                    cb(&config.name, &e.to_string());
+                }
                 tokio::time::sleep(retry_delay).await;
                 retry_delay = (retry_delay * 2).min(max_retry_delay);
                 continue;

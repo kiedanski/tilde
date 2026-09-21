@@ -29,6 +29,8 @@ pub struct Config {
     #[serde(default)]
     pub photos: PhotosConfig,
     #[serde(default)]
+    pub gadgetbridge: GadgetbridgeConfig,
+    #[serde(default)]
     pub notes: NotesConfig,
     #[serde(default)]
     pub mcp: McpConfig,
@@ -312,6 +314,28 @@ impl Default for PhotosConfig {
             watch_debounce_seconds: default_watch_debounce(),
             exiftool_timeout_seconds: default_exiftool_timeout(),
             ffmpeg_timeout_seconds: default_ffmpeg_timeout(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GadgetbridgeConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// IANA timezone used to bucket samples into local days/months.
+    /// Empty means the system timezone.
+    #[serde(default)]
+    pub timezone: String,
+    #[serde(default = "default_watch_debounce")]
+    pub watch_debounce_seconds: u64,
+}
+
+impl Default for GadgetbridgeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timezone: String::new(),
+            watch_debounce_seconds: default_watch_debounce(),
         }
     }
 }

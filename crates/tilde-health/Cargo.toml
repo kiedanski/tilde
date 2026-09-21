@@ -1,0 +1,15 @@
+[package]
+name = "tilde-health"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rusqlite = { workspace = true }
+jiff = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+notify = { workspace = true }
+serde_json = { workspace = true }
+tilde-core = { workspace = true }
