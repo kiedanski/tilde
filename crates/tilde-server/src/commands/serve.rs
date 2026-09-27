@@ -295,6 +295,9 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         let job_thumb_quality = state.config().photos.thumbnail_quality;
         let job_files_root = data_dir.join("files");
         let job_gb_timezone = state.config().gadgetbridge.timezone.clone();
+        // Relative to the notes root; empty disables the Markdown mirror.
+        let job_gb_notes_dir = state.config().gadgetbridge.notes_dir.clone();
+        let job_notes_root = data_dir.join("notes");
         let token = shutdown.clone();
         const JOB_CONCURRENCY: usize = 4;
         tasks.spawn(async move {
@@ -350,6 +353,8 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     let quality = job_thumb_quality;
                     let files = job_files_root.clone();
                     let gb_timezone = job_gb_timezone.clone();
+                    let gb_notes_dir = job_gb_notes_dir.clone();
+                    let notes_root = job_notes_root.clone();
                     handles.push(tokio::task::spawn_blocking(move || {
                         let _permit = permit;
                         let conn = db.get().unwrap();
@@ -378,6 +383,23 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                                         workouts = stats.workouts_copied,
                                         "Gadgetbridge import complete"
                                     );
+                                }
+                                // Optional Markdown mirror for Obsidian. Lives in
+                                // the notes tree, so it needs its own reindex.
+                                if !gb_notes_dir.is_empty() {
+                                    let target = notes_root.join(&gb_notes_dir);
+                                    let notes = tilde_health::export_notes(
+                                        &files.join("health"),
+                                        &target,
+                                    )?;
+                                    if notes.files_written > 0 {
+                                        tilde_dav::reindex_tree(
+                                            &conn,
+                                            &target,
+                                            &format!("{}/", gb_notes_dir.trim_matches('/')),
+                                            true,
+                                        )?;
+                                    }
                                 }
                                 Ok(())
                             }),

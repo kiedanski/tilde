@@ -202,6 +202,9 @@ watch_debounce_seconds = 5
 enabled = true
 # IANA timezone for bucketing samples into local days ("" = system timezone)
 timezone = ""
+# Also mirror the health tree as one Markdown table per month, for reading in
+# Obsidian. Relative to the notes root; "" disables it.
+notes_dir = ""
 
 [notes]
 # WebDAV collection name for notes

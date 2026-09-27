@@ -542,9 +542,77 @@ pub fn export_gadgetbridge(gb_db: &Path, health_dir: &Path, tz: &TimeZone) -> Re
     Ok(stats)
 }
 
+/// Body-weight readings produced by the weightlog BLE daemon.
+#[derive(Debug, Default)]
+pub struct WeightStats {
+    pub rows: usize,
+    pub files_written: usize,
+}
+
+/// Regenerate `health/weight/` from a weightlog database export.
+///
+/// `weightlog_db` is opened read-only and never modified. The instant bucketed
+/// here is `ts` — when the reading was taken on the watch, already clock-
+/// corrected by the daemon — never `received_at`, which is merely when the row
+/// reached the Pi over BLE and can trail the weigh-in by hours.
+pub fn export_weightlog(
+    weightlog_db: &Path,
+    health_dir: &Path,
+    tz: &TimeZone,
+) -> Result<WeightStats> {
+    let conn = Connection::open_with_flags(
+        weightlog_db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("opening {} read-only", weightlog_db.display()))?;
+
+    let mut stats = WeightStats::default();
+    let mut weight_csv = MonthlyCsv::new("time,kg,device");
+
+    let mut stmt = conn.prepare("SELECT ts, kg, device_id FROM body_weights ORDER BY ts")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for (ts, kg, device) in rows.flatten() {
+        let Some(z) = local(to_seconds(ts), tz) else {
+            continue;
+        };
+        weight_csv.push(
+            month_key(&z),
+            &format!("{},{:.1},{}", rfc3339(&z), kg, device),
+        );
+        stats.rows += 1;
+    }
+
+    weight_csv.write(&health_dir.join("weight"), &mut stats.files_written)?;
+
+    info!(
+        rows = stats.rows,
+        files = stats.files_written,
+        "weightlog weight export complete"
+    );
+    Ok(stats)
+}
+
+/// Gadgetbridge and weightlog both drop a plain `.db` into the inbox, so the
+/// exporter is picked by schema rather than by filename.
+fn is_weightlog_db(path: &Path) -> bool {
+    Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map(|conn| table_exists(&conn, "body_weights"))
+    .unwrap_or(false)
+}
+
 #[derive(Debug, Default)]
 pub struct InboxStats {
     pub export: Option<ExportStats>,
+    pub weight: Option<WeightStats>,
     pub workouts_copied: usize,
 }
 
@@ -578,10 +646,19 @@ pub fn process_inbox(inbox: &Path, health_dir: &Path, tz: &TimeZone) -> Result<I
             .unwrap_or_default();
 
         match ext.as_str() {
-            "db" | "sqlite" => match export_gadgetbridge(&path, health_dir, tz) {
-                Ok(export) => stats.export = Some(export),
-                Err(e) => warn!(file = %name, error = %e, "Gadgetbridge export failed"),
-            },
+            "db" | "sqlite" => {
+                if is_weightlog_db(&path) {
+                    match export_weightlog(&path, health_dir, tz) {
+                        Ok(weight) => stats.weight = Some(weight),
+                        Err(e) => warn!(file = %name, error = %e, "weightlog export failed"),
+                    }
+                } else {
+                    match export_gadgetbridge(&path, health_dir, tz) {
+                        Ok(export) => stats.export = Some(export),
+                        Err(e) => warn!(file = %name, error = %e, "Gadgetbridge export failed"),
+                    }
+                }
+            }
             "fit" | "gpx" => {
                 let dest = workouts_dir.join(&name);
                 let src_len = entry.metadata().map(|m| m.len()).unwrap_or(0);
@@ -600,6 +677,152 @@ pub fn process_inbox(inbox: &Path, health_dir: &Path, tz: &TimeZone) -> Result<I
         }
     }
 
+    Ok(stats)
+}
+
+#[derive(Debug, Default)]
+pub struct NotesStats {
+    pub files_written: usize,
+}
+
+#[derive(Default, Clone)]
+struct NoteRow {
+    weight: Option<f64>,
+    steps: Option<String>,
+    hr_resting: Option<String>,
+    sleep_min: Option<i64>,
+    sleep_score: Option<String>,
+}
+
+/// Read every `YYYYMM.csv` in `dir` as month -> data rows, header dropped.
+fn monthly_csv_rows(dir: &Path) -> BTreeMap<String, Vec<Vec<String>>> {
+    let mut out: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map(|e| e != "csv").unwrap_or(true) {
+            continue;
+        }
+        let Some(month) = path.file_stem().map(|s| s.to_string_lossy().to_string()) else {
+            continue;
+        };
+        if month.starts_with('.') {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        out.insert(
+            month,
+            text.lines()
+                .skip(1)
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| line.split(',').map(str::to_string).collect())
+                .collect(),
+        );
+    }
+    out
+}
+
+fn field(row: &[String], i: usize) -> Option<String> {
+    row.get(i).filter(|s| !s.is_empty()).cloned()
+}
+
+fn hours_minutes(mins: i64) -> String {
+    format!("{}h{:02}m", mins / 60, mins % 60)
+}
+
+/// Render the health tree as one Obsidian-friendly Markdown table per month.
+///
+/// Reads the CSVs this module already wrote rather than the source databases,
+/// so it does not matter which artifact triggered the run — a weightlog-only
+/// upload still renders the Gadgetbridge columns from the existing tree.
+/// Nothing time-varying is written into the output, so an unchanged month keeps
+/// its mtime instead of churning through DAV sync on every import.
+pub fn export_notes(health_dir: &Path, notes_dir: &Path) -> Result<NotesStats> {
+    let mut months: BTreeMap<String, BTreeMap<String, NoteRow>> = BTreeMap::new();
+
+    // daily/: date,steps,hr_min,hr_avg,hr_max,hr_resting,stress_avg,stress_max,
+    //         sleep_light_min,sleep_deep_min,sleep_rem_min,sleep_awake_min,sleep_score,…
+    for (month, rows) in monthly_csv_rows(&health_dir.join("daily")) {
+        let days = months.entry(month).or_default();
+        for row in rows {
+            let Some(date) = field(&row, 0) else { continue };
+            let stage = |i: usize| row.get(i).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+            let asleep = stage(8) + stage(9) + stage(10); // light + deep + rem, awake excluded
+            let entry = days.entry(date).or_default();
+            entry.steps = field(&row, 1);
+            entry.hr_resting = field(&row, 5);
+            entry.sleep_min = if asleep > 0 { Some(asleep) } else { None };
+            entry.sleep_score = field(&row, 12);
+        }
+    }
+
+    // weight/: time,kg,device — the day is the first 10 chars of the local stamp.
+    for (month, rows) in monthly_csv_rows(&health_dir.join("weight")) {
+        let days = months.entry(month).or_default();
+        for row in rows {
+            let (Some(time), Some(kg)) = (field(&row, 0), field(&row, 1)) else {
+                continue;
+            };
+            let Ok(kg) = kg.parse::<f64>() else { continue };
+            if time.len() < 10 {
+                continue;
+            }
+            // Last reading of a day wins.
+            days.entry(time[..10].to_string()).or_default().weight = Some(kg);
+        }
+    }
+
+    let mut stats = NotesStats::default();
+    if months.is_empty() {
+        return Ok(stats);
+    }
+    std::fs::create_dir_all(notes_dir)
+        .with_context(|| format!("creating {}", notes_dir.display()))?;
+
+    for (month, days) in &months {
+        let title = if month.len() == 6 {
+            format!("{}-{}", &month[..4], &month[4..])
+        } else {
+            month.clone()
+        };
+        let mut body = String::from("---\nsource: tilde-health\ntags: [health]\n---\n\n");
+        body.push_str(&format!("# Health — {title}\n\n"));
+        body.push_str(
+            "Generated from `files/health/`. Rewritten on every import, so edits here are lost.\n\n",
+        );
+        body.push_str("| Date | Weight (kg) | Steps | Resting HR | Sleep | Score |\n");
+        body.push_str("| --- | ---: | ---: | ---: | ---: | ---: |\n");
+        for (date, row) in days {
+            body.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} |\n",
+                date,
+                row.weight.map(|w| format!("{w:.1}")).unwrap_or_default(),
+                row.steps.clone().unwrap_or_default(),
+                row.hr_resting.clone().unwrap_or_default(),
+                row.sleep_min.map(hours_minutes).unwrap_or_default(),
+                row.sleep_score.clone().unwrap_or_default(),
+            ));
+        }
+
+        let path = notes_dir.join(format!("{title}.md"));
+        if std::fs::read_to_string(&path)
+            .map(|c| c == body)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let tmp = notes_dir.join(format!(".{title}.md.tmp"));
+        std::fs::write(&tmp, &body).with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::rename(&tmp, &path)
+            .with_context(|| format!("renaming into {}", path.display()))?;
+        stats.files_written += 1;
+    }
+
+    info!(files = stats.files_written, "health notes export complete");
     Ok(stats)
 }
 
@@ -696,6 +919,133 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A weightlog daemon database: body weights keyed by the watch's own id.
+    fn weightlog_db(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("weightlog.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE body_weights (
+                id TEXT PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                kg REAL NOT NULL,
+                ts INTEGER NOT NULL,
+                received_at INTEGER NOT NULL,
+                clock_offset_s INTEGER NOT NULL DEFAULT 0
+             );",
+        )
+        .unwrap();
+        // ts values are real weigh-ins from September; received_at is
+        // deliberately in October, because bucketing must ignore it.
+        conn.execute(
+            "INSERT INTO body_weights VALUES ('a1', 'gtr4-74ca59da', 68.6, 1790337981, 1793000000, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO body_weights VALUES ('a2', 'gtr4-74ca59da', 67.6, 1790511269, 1793000000, 0)",
+            [],
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn exports_weightlog_weights_bucketed_by_measurement_time() {
+        let dir = temp_dir("weightlog");
+        let db = weightlog_db(&dir);
+        let tz = TimeZone::get("America/Montevideo").unwrap();
+
+        let stats = export_weightlog(&db, &dir.join("health"), &tz).unwrap();
+        assert_eq!(stats.rows, 2);
+        assert_eq!(stats.files_written, 1);
+
+        // Both rows land in September even though received_at is in October.
+        let weight = std::fs::read_to_string(dir.join("health/weight/202609.csv")).unwrap();
+        assert!(weight.starts_with("time,kg,device\n"), "{weight}");
+        assert!(
+            weight.contains("2026-09-25T09:06:21-03:00,68.6,gtr4-74ca59da"),
+            "{weight}"
+        );
+        assert!(
+            weight.contains("2026-09-27T09:14:29-03:00,67.6,gtr4-74ca59da"),
+            "{weight}"
+        );
+        assert!(!dir.join("health/weight/202610.csv").exists());
+    }
+
+    #[test]
+    fn inbox_routes_weightlog_db_away_from_the_gadgetbridge_exporter() {
+        let dir = temp_dir("weightlog-inbox");
+        let inbox = dir.join("health/_inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let db = weightlog_db(&dir);
+        std::fs::rename(&db, inbox.join("weightlog.db")).unwrap();
+        let tz = TimeZone::get("America/Montevideo").unwrap();
+
+        let stats = process_inbox(&inbox, &dir.join("health"), &tz).unwrap();
+        assert!(
+            stats.export.is_none(),
+            "must not run the Gadgetbridge exporter"
+        );
+        assert_eq!(stats.weight.map(|w| w.rows), Some(2));
+        assert!(dir.join("health/weight/202609.csv").exists());
+    }
+
+    #[test]
+    fn notes_export_merges_weight_into_the_daily_table() {
+        let dir = temp_dir("notes");
+        let health = dir.join("health");
+        std::fs::create_dir_all(health.join("daily")).unwrap();
+        std::fs::create_dir_all(health.join("weight")).unwrap();
+        std::fs::write(
+            health.join("daily/202609.csv"),
+            "date,steps,hr_min,hr_avg,hr_max,hr_resting,stress_avg,stress_max,\
+             sleep_light_min,sleep_deep_min,sleep_rem_min,sleep_awake_min,sleep_score,pai_total,spo2_min\n\
+             2026-09-25,8432,48,62,140,54,30,70,200,90,42,15,81,,\n",
+        )
+        .unwrap();
+        std::fs::write(
+            health.join("weight/202609.csv"),
+            "time,kg,device\n2026-09-25T09:06:21-03:00,68.6,gtr4-74ca59da\n",
+        )
+        .unwrap();
+
+        let notes = dir.join("vault/health");
+        let stats = export_notes(&health, &notes).unwrap();
+        assert_eq!(stats.files_written, 1);
+
+        let md = std::fs::read_to_string(notes.join("2026-09.md")).unwrap();
+        assert!(md.contains("# Health — 2026-09"), "{md}");
+        // Weight lands on the same row as that day's metrics; sleep is
+        // light+deep+rem (200+90+42 = 332 min), awake excluded.
+        assert!(
+            md.contains("| 2026-09-25 | 68.6 | 8432 | 54 | 5h32m | 81 |"),
+            "{md}"
+        );
+
+        // Unchanged data must not rewrite the file — otherwise every import
+        // would churn the note through DAV sync.
+        let again = export_notes(&health, &notes).unwrap();
+        assert_eq!(again.files_written, 0);
+    }
+
+    #[test]
+    fn notes_export_renders_weight_only_months() {
+        let dir = temp_dir("notes-weight-only");
+        let health = dir.join("health");
+        std::fs::create_dir_all(health.join("weight")).unwrap();
+        std::fs::write(
+            health.join("weight/202609.csv"),
+            "time,kg,device\n2026-09-27T09:14:29-03:00,67.6,gtr4-74ca59da\n",
+        )
+        .unwrap();
+
+        let notes = dir.join("vault/health");
+        assert_eq!(export_notes(&health, &notes).unwrap().files_written, 1);
+        let md = std::fs::read_to_string(notes.join("2026-09.md")).unwrap();
+        assert!(md.contains("| 2026-09-27 | 67.6 |"), "{md}");
     }
 
     #[test]

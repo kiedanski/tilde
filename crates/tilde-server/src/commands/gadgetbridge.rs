@@ -18,6 +18,7 @@ pub async fn run_gadgetbridge(
             let health_dir = files_root.join("health");
             let tz = tilde_health::resolve_timezone(&config.gadgetbridge.timezone)?;
 
+            let mut weight = None;
             let export = match db {
                 Some(db_path) => Some(tilde_health::export_gadgetbridge(
                     Path::new(&db_path),
@@ -30,18 +31,25 @@ pub async fn run_gadgetbridge(
                     if stats.workouts_copied > 0 {
                         println!("{} workout file(s) copied", stats.workouts_copied);
                     }
+                    weight = stats.weight;
                     stats.export
                 }
             };
 
-            match export {
-                Some(stats) => {
-                    println!(
-                        "Exported {} activity rows, {} sleep sessions, {} days, {} file(s) updated",
-                        stats.activity_rows, stats.sleep_sessions, stats.days, stats.files_written
-                    );
-                }
-                None => println!("No Gadgetbridge database found to import"),
+            if let Some(stats) = &export {
+                println!(
+                    "Exported {} activity rows, {} sleep sessions, {} days, {} file(s) updated",
+                    stats.activity_rows, stats.sleep_sessions, stats.days, stats.files_written
+                );
+            }
+            if let Some(stats) = &weight {
+                println!(
+                    "Exported {} body-weight reading(s), {} file(s) updated",
+                    stats.rows, stats.files_written
+                );
+            }
+            if export.is_none() && weight.is_none() {
+                println!("No database found to import");
             }
 
             // Server-side writes bypass DAV — refresh the stat cache for the subtree.
@@ -50,6 +58,17 @@ pub async fn run_gadgetbridge(
                 "Reindexed health tree: {} indexed, {} pruned",
                 reindex.indexed, reindex.pruned
             );
+
+            // Optional Markdown mirror for Obsidian, in the notes tree.
+            let notes_dir = config.gadgetbridge.notes_dir.trim_matches('/').to_string();
+            if !notes_dir.is_empty() {
+                let target = config.data_dir().join("notes").join(&notes_dir);
+                let notes = tilde_health::export_notes(&health_dir, &target)?;
+                println!("Health notes: {} file(s) updated", notes.files_written);
+                if notes.files_written > 0 {
+                    tilde_dav::reindex_tree(&conn, &target, &format!("{notes_dir}/"), true)?;
+                }
+            }
             Ok(())
         }
     }

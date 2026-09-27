@@ -328,6 +328,11 @@ pub struct GadgetbridgeConfig {
     pub timezone: String,
     #[serde(default = "default_watch_debounce")]
     pub watch_debounce_seconds: u64,
+    /// Where to mirror the health tree as Markdown, relative to the notes root
+    /// (e.g. "notes/health" when the Obsidian vault is the `notes/` subfolder).
+    /// Empty disables the Markdown export.
+    #[serde(default)]
+    pub notes_dir: String,
 }
 
 impl Default for GadgetbridgeConfig {
@@ -336,6 +341,7 @@ impl Default for GadgetbridgeConfig {
             enabled: true,
             timezone: String::new(),
             watch_debounce_seconds: default_watch_debounce(),
+            notes_dir: String::new(),
         }
     }
 }
