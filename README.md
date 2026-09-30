@@ -62,6 +62,11 @@ the CouchDB note unchanged so you can reconcile the edits. These commands access
 LiveSync note and chunk documents directly; production use needs no TypeScript service.
 Set up CouchDB and the existing Obsidian plug-in using the
 [LiveSync setup guide](https://github.com/vrtmrz/obsidian-livesync/blob/main/docs/setup_own_server.md).
+On Ubuntu 24.04, `scripts/install-couchdb-native.sh` installs Apache's native
+CouchDB package as a localhost-only service. With that package, add
+`additional_paths = ["/var/lib/couchdb", "/opt/couchdb/etc"]` under `[backup]`
+so Tilde's scheduled restic snapshot includes the CouchDB database and
+configuration. The Tilde service user must have read access to those paths.
 
 When this config is present, MCP `notes.read`, `notes.search`, `notes.create`,
 `notes.write`, `notes.append`, and `notes.delete` use the same CouchDB vault.

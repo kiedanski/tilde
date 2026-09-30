@@ -446,6 +446,9 @@ pub struct BackupConfig {
     /// Path to restic password file
     #[serde(default)]
     pub password_file: String,
+    /// Additional directories or files to include in the normal restic snapshot.
+    #[serde(default)]
+    pub additional_paths: Vec<String>,
     /// Env var name for B2 account ID
     #[serde(default = "default_b2_account_id_env")]
     pub b2_account_id_env: String,
@@ -471,6 +474,7 @@ impl Default for BackupConfig {
             binary: default_restic_binary(),
             repository_env: default_restic_repository_env(),
             password_file: String::new(),
+            additional_paths: Vec::new(),
             b2_account_id_env: default_b2_account_id_env(),
             b2_account_key_env: default_b2_account_key_env(),
             keep_daily: 7,

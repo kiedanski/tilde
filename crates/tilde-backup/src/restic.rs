@@ -14,6 +14,7 @@ pub struct ResticConfig {
     pub binary: String,
     pub repository: String,
     pub password_file: String,
+    pub additional_paths: Vec<String>,
     pub b2_account_id: String,
     pub b2_account_key: String,
     pub keep_daily: u32,
@@ -46,6 +47,7 @@ impl ResticConfig {
             binary: cfg.binary.clone(),
             repository,
             password_file: cfg.password_file.clone(),
+            additional_paths: cfg.additional_paths.clone(),
             b2_account_id,
             b2_account_key,
             keep_daily: cfg.keep_daily,
@@ -127,6 +129,20 @@ pub fn backup(
     data_dir: &Path,
     db_conn: &rusqlite::Connection,
 ) -> Result<()> {
+    let data_dir_str = data_dir
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Data dir path is not valid UTF-8"))?;
+    let mut paths = vec![data_dir_str];
+    for path in &config.additional_paths {
+        if !Path::new(path).is_absolute() {
+            bail!("backup.additional_paths must contain absolute paths: {path}");
+        }
+        if !Path::new(path).exists() {
+            bail!("backup.additional_paths entry does not exist: {path}");
+        }
+        paths.push(path);
+    }
+
     // 1. Create a consistent DB snapshot via VACUUM INTO
     let db_snapshot = data_dir.join(".tilde-backup.db");
     if db_snapshot.exists() {
@@ -138,12 +154,9 @@ pub fn backup(
     info!("Created consistent DB snapshot for backup");
 
     // 2. Run restic backup
-    let data_dir_str = data_dir
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Data dir path is not valid UTF-8"))?;
-
     let output = restic_cmd(config)
-        .args(["backup", data_dir_str])
+        .arg("backup")
+        .args(paths)
         .args(["--exclude", "backup"])
         .args(["--exclude", "_thumbnails"])
         .args(["--exclude", "tilde.db"])
