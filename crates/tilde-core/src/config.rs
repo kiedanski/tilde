@@ -350,12 +350,25 @@ impl Default for GadgetbridgeConfig {
 pub struct NotesConfig {
     #[serde(default = "default_notes_root")]
     pub root_path: String,
+    /// Optional CouchDB vault used by the experimental Rust LiveSync reader.
+    #[serde(default)]
+    pub livesync: Option<LiveSyncNotesConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LiveSyncNotesConfig {
+    pub server_url: String,
+    pub database: String,
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
 }
 
 impl Default for NotesConfig {
     fn default() -> Self {
         Self {
             root_path: default_notes_root(),
+            livesync: None,
         }
     }
 }

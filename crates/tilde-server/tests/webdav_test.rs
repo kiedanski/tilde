@@ -1197,6 +1197,14 @@ async fn base_version_advances_on_later_get() {
         .get("/dav/files/moving.txt")
         .add_header(header::AUTHORIZATION, &auth)
         .await;
+    // GET records its merge base in a detached task so serving a large file
+    // does not wait for the version archive. Allow that task to finish.
+    for _ in 0..100 {
+        if common::base_version(&env.pool, &cred, "moving.txt") == Some(sha256_hex(b"first")) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     assert_eq!(
         common::base_version(&env.pool, &cred, "moving.txt"),
         Some(sha256_hex(b"first"))
@@ -1208,6 +1216,13 @@ async fn base_version_advances_on_later_get() {
         .get("/dav/files/moving.txt")
         .add_header(header::AUTHORIZATION, &auth)
         .await;
+
+    for _ in 0..100 {
+        if common::base_version(&env.pool, &cred, "moving.txt") == Some(sha256_hex(b"second")) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     assert_eq!(
         common::base_version(&env.pool, &cred, "moving.txt"),

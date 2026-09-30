@@ -335,9 +335,9 @@ checksum = "40e38929add23cdf8a366df9b0e088953150724bcbe5fc330b0d8eb3b328eec8"
 
 [[package]]
 name = "bumpalo"
-version = "3.20.2"
+version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
+checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "bytemuck"
@@ -1580,13 +1580,12 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.95"
+version = "0.3.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2964e92d1d9dc3364cae4d718d93f227e3abb088e747d92e0395bfdedf1c12ca"
+checksum = "53b44bfcdb3f8d5837a46dae1ca9660a837176eee74a28b229bc626816589102"
 dependencies = [
  "cfg-if",
  "futures-util",
- "once_cell",
  "wasm-bindgen",
 ]
 
@@ -2994,7 +2993,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-backup"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "flate2",
@@ -3009,7 +3008,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-cal"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -3030,7 +3029,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-card"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -3048,7 +3047,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-cli"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -3062,7 +3061,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3086,7 +3085,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-dav"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -3111,7 +3110,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-email"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "imap",
@@ -3130,7 +3129,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-health"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "jiff",
@@ -3142,8 +3141,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilde-livesync"
+version = "0.6.2"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "tilde-mcp"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -3156,13 +3166,15 @@ dependencies = [
  "tilde-card",
  "tilde-core",
  "tilde-dav",
+ "tilde-livesync",
+ "tokio",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "tilde-notify"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "jiff",
@@ -3178,7 +3190,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-photos"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "image",
@@ -3200,7 +3212,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-server"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3234,6 +3246,7 @@ dependencies = [
  "tilde-dav",
  "tilde-email",
  "tilde-health",
+ "tilde-livesync",
  "tilde-mcp",
  "tilde-notify",
  "tilde-photos",
@@ -3731,9 +3744,9 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wasip2"
-version = "1.0.3+wasi-0.2.9"
+version = "1.0.4+wasi-0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20064672db26d7cdc89c7798c48a0fdfac8213434a1186e5ef29fd560ae223d6"
+checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
 dependencies = [
  "wit-bindgen 0.57.1",
 ]
@@ -3749,9 +3762,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.118"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bf938a0bacb0469e83c1e148908bd7d5a6010354cf4fb73279b7447422e3a89"
+checksum = "4b067c0c11094aef6b7a801c1e34a26affafdf3d051dba08456b868789aaf9a4"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -3762,9 +3775,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.68"
+version = "0.4.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f371d383f2fb139252e0bfac3b81b265689bf45b6874af544ffa4c975ac1ebf8"
+checksum = "c62df1340f32221cb9c54d6a27b030e3dba64361d4a95bed55f9aacb44da291d"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -3772,9 +3785,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.118"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eeff24f84126c0ec2db7a449f0c2ec963c6a49efe0698c4242929da037ca28ed"
+checksum = "167ce5e579f6bcf889c4f7175a8a5a585de84e8ff93976ce393efa5f2837aab1"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -3782,9 +3795,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.118"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d08065faf983b2b80a79fd87d8254c409281cf7de75fc4b773019824196c904"
+checksum = "f3997c7839262f4ef12cf90b818d6340c18e80f263f1a94bf157d0ec4420380e"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -3795,9 +3808,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.118"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fd04d9e306f1907bd13c6361b5c6bfc7b3b3c095ed3f8a9246390f8dbdee129"
+checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
 dependencies = [
  "unicode-ident",
 ]
@@ -3838,9 +3851,9 @@ dependencies = [
 
 [[package]]
 name = "web-sys"
-version = "0.3.95"
+version = "0.3.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f2dfbb17949fa2088e5d39408c48368947b86f7834484e87b73de55bc14d97d"
+checksum = "8622dcb61c0bcc9fffa6938bed81210af2da9a7e4a1a834b2e37a59b6dfb6141"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -4174,6 +4187,12 @@ dependencies = [
  "num_enum",
  "thiserror",
 ]
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
 
 [[package]]
 name = "yansi"

@@ -1,4 +1,4 @@
-use tilde_cli::NotesCommands;
+use tilde_cli::{LiveSyncNotesCommands, NotesCommands};
 use tilde_core::config::Config;
 
 use super::list_notes_recursive;
@@ -8,6 +8,77 @@ pub async fn run_notes(config_path: Option<&str>, command: NotesCommands) -> any
     let notes_dir = config.data_dir().join("notes");
 
     match command {
+        NotesCommands::LiveSync { command } => {
+            let remote = config.notes.livesync.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("configure [notes.livesync] before using this command")
+            })?;
+            let client = tilde_livesync::Client::new(
+                &remote.server_url,
+                &remote.database,
+                &remote.username,
+                &remote.password,
+            )?;
+            match command {
+                LiveSyncNotesCommands::InitDb => {
+                    println!(
+                        "{}",
+                        if client.create_database().await? {
+                            "created"
+                        } else {
+                            "exists"
+                        }
+                    );
+                }
+                LiveSyncNotesCommands::List => {
+                    for note in client.list_notes().await? {
+                        println!("{}", note.path);
+                    }
+                }
+                LiveSyncNotesCommands::Read { path, json } => {
+                    let note = client
+                        .get_note(&path)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("note not found: {path}"))?;
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "path": note.path,
+                                "content": note.content,
+                                "revision": note.revision,
+                                "modified_ms": note.modified_ms,
+                            })
+                        );
+                    } else {
+                        print!("{}", note.content);
+                    }
+                }
+                LiveSyncNotesCommands::Stat { path } => {
+                    let note = client
+                        .get_note_meta(&path)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("note not found: {path}"))?;
+                    println!("{}", note.revision);
+                }
+                LiveSyncNotesCommands::Write { path, file, if_rev } => {
+                    let content = match file {
+                        Some(file) => std::fs::read_to_string(file)?,
+                        None => {
+                            use std::io::Read;
+                            let mut content = String::new();
+                            std::io::stdin().read_to_string(&mut content)?;
+                            content
+                        }
+                    };
+                    let saved = client.put_note(&path, &content, if_rev.as_deref()).await?;
+                    println!("{}", saved.revision);
+                }
+                LiveSyncNotesCommands::Delete { path, if_rev } => {
+                    let revision = client.delete_note(&path, &if_rev).await?;
+                    println!("{revision}");
+                }
+            }
+        }
         NotesCommands::Search { query } => {
             if !notes_dir.exists() {
                 println!("Notes directory not found: {}", notes_dir.display());

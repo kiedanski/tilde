@@ -73,6 +73,7 @@ pub fn create_test_server() -> TestEnv {
     let mcp_state: tilde_mcp::SharedMcpState = Arc::new(tilde_mcp::McpState {
         db: pool.clone(),
         data_dir: data_dir.clone(),
+        livesync: None,
         rate_limits: Mutex::new(HashMap::new()),
     });
 

@@ -817,7 +817,8 @@ async fn mcp_handler(
         rate_limit,
         &source_ip,
         state.config().mcp.audit_log_retention_days,
-    );
+    )
+    .await;
 
     (StatusCode::OK, Json(json!(response))).into_response()
 }

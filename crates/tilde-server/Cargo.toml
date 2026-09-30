@@ -24,6 +24,7 @@ tilde-mcp = { workspace = true }
 tilde-backup = { workspace = true }
 tilde-notify = { workspace = true }
 tilde-health = { workspace = true }
+tilde-livesync = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }

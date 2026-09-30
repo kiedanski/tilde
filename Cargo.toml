@@ -13,10 +13,11 @@ members = [
     "crates/tilde-backup",
     "crates/tilde-notify",
     "crates/tilde-health",
+    "crates/tilde-livesync",
 ]
 
 [workspace.package]
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 license = "AGPL-3.0-only"
 rust-version = "1.85"
@@ -65,6 +66,7 @@ jsonwebtoken = "9"
 
 # Crypto
 sha2 = "0.10"
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
 hmac = "0.12"
 hex = "0.4"
 rand = "0.8"
@@ -156,3 +158,4 @@ tilde-mcp = { path = "crates/tilde-mcp" }
 tilde-backup = { path = "crates/tilde-backup" }
 tilde-notify = { path = "crates/tilde-notify" }
 tilde-health = { path = "crates/tilde-health" }
+tilde-livesync = { path = "crates/tilde-livesync" }

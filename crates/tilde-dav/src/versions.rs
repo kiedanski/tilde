@@ -53,6 +53,27 @@ pub fn archive_version(blobs_root: &Path, src: &Path) -> std::io::Result<String>
     Ok(sha256)
 }
 
+/// Archive bytes already held in memory, using the same content-addressed store.
+pub fn archive_bytes(blobs_root: &Path, bytes: &[u8]) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let sha256 = format!("{:x}", Sha256::digest(bytes));
+    let dest = blob_path(blobs_root, &sha256);
+    if dest.exists() {
+        return Ok(sha256);
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = dest.with_extension(format!("tmp{}", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, bytes)?;
+    if let Err(error) = std::fs::rename(&tmp, &dest) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+    Ok(sha256)
+}
+
 /// Archive a file whose digest the caller already knows.
 ///
 /// [`archive_version`] hashes the whole file *before* its "already present"

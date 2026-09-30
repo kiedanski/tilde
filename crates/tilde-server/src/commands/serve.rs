@@ -101,9 +101,23 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     let state_config_tls_mode = state_config_tls.mode.clone();
     let tunnel_config = config.tunnel.clone();
 
+    let livesync = config
+        .notes
+        .livesync
+        .as_ref()
+        .map(|remote| {
+            tilde_livesync::Client::new(
+                &remote.server_url,
+                &remote.database,
+                &remote.username,
+                &remote.password,
+            )
+        })
+        .transpose()?;
     let mcp_state: tilde_mcp::SharedMcpState = Arc::new(tilde_mcp::McpState {
         db: pool.clone(),
         data_dir: data_dir.clone(),
+        livesync,
         rate_limits: Mutex::new(std::collections::HashMap::new()),
     });
 

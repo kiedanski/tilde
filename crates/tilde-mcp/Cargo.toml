@@ -9,6 +9,7 @@ tilde-core = { workspace = true }
 tilde-cal = { workspace = true }
 tilde-card = { workspace = true }
 tilde-dav = { workspace = true }
+tilde-livesync = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
@@ -20,3 +21,4 @@ axum = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { workspace = true }

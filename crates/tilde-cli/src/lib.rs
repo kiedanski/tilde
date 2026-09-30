@@ -235,6 +235,44 @@ pub enum NotesCommands {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Read and write an unencrypted Obsidian LiveSync vault in CouchDB
+    LiveSync {
+        #[command(subcommand)]
+        command: LiveSyncNotesCommands,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub enum LiveSyncNotesCommands {
+    /// Create the configured CouchDB database if it does not exist
+    InitDb,
+    /// List note paths in CouchDB
+    List,
+    /// Read a note from CouchDB
+    Read {
+        path: String,
+        /// Include the note revision and metadata in a JSON object
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a note's current CouchDB revision
+    Stat { path: String },
+    /// Create a note, or replace the exact revision given by --if-rev
+    Write {
+        path: String,
+        /// Read UTF-8 content from this file; stdin is used if omitted
+        #[arg(long)]
+        file: Option<std::path::PathBuf>,
+        /// Revision returned by stat or a previous write
+        #[arg(long)]
+        if_rev: Option<String>,
+    },
+    /// Soft-delete the exact revision given by --if-rev
+    Delete {
+        path: String,
+        #[arg(long)]
+        if_rev: String,
+    },
 }
 
 #[derive(clap::Subcommand)]

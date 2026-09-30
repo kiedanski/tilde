@@ -6,6 +6,7 @@
 //! Bearer token auth with scope enforcement, rate limiting, and audit logging.
 
 pub mod tools_files;
+pub mod tools_livesync;
 pub mod tools_notes;
 pub mod tools_photos;
 
@@ -24,6 +25,7 @@ use tracing::{info, warn};
 pub struct McpState {
     pub db: DbPool,
     pub data_dir: PathBuf,
+    pub livesync: Option<tilde_livesync::Client>,
     /// Token name → list of recent request timestamps for rate limiting
     pub rate_limits: Mutex<HashMap<String, Vec<Instant>>>,
 }
@@ -93,7 +95,7 @@ pub struct ToolDef {
     pub input_schema: Value,
 }
 
-fn all_tools() -> Vec<ToolDef> {
+fn all_tools(livesync: bool) -> Vec<ToolDef> {
     let mut tools = vec![
         ToolDef {
             name: "notes.search".into(),
@@ -692,6 +694,9 @@ fn all_tools() -> Vec<ToolDef> {
     tools.extend(tools_notes::defs());
     tools.extend(tools_files::defs());
     tools.extend(tools_photos::defs());
+    if livesync {
+        tools_livesync::configure_definitions(&mut tools);
+    }
     tools
 }
 
@@ -1314,7 +1319,7 @@ fn basic_validate(data: &Value, schema: &Value) -> Result<(), String> {
 
 /// Handle an MCP JSON-RPC request.
 /// Returns (response, was_tool_call) — was_tool_call is used for audit logging.
-pub fn handle_mcp_request(
+pub async fn handle_mcp_request(
     state: &McpState,
     request: &JsonRpcRequest,
     token_name: &str,
@@ -1350,7 +1355,7 @@ pub fn handle_mcp_request(
         }
 
         "tools/list" => {
-            let tools = all_tools();
+            let tools = all_tools(state.livesync.is_some());
             JsonRpcResponse::success(
                 request.id.clone(),
                 json!({
@@ -1391,7 +1396,12 @@ pub fn handle_mcp_request(
             let notes_dir = state.data_dir.join("notes");
             let files_dir = state.data_dir.join("files");
 
-            let result = {
+            let result = if let Some(client) = &state.livesync
+                && tool_name.starts_with("notes.")
+            {
+                let blobs_root = state.data_dir.join("blobs").join("by-id");
+                tools_livesync::exec(client, &blobs_root, tool_name, &arguments).await
+            } else {
                 let conn = state.db.get().unwrap();
                 match tool_name {
                     "notes.search" => exec_notes_search(&conn, &notes_dir, &arguments),
