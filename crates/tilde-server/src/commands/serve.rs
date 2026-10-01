@@ -534,15 +534,6 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                         rusqlite::params![&now_str, &now_str],
                     );
 
-                    let next_run = jiff::Zoned::now()
-                        .checked_add(jiff::SignedDuration::from_secs(interval_secs as i64))
-                        .unwrap_or_else(|_| jiff::Zoned::now());
-                    let next_str = next_run.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
-                    let _ = conn.execute(
-                        "INSERT OR REPLACE INTO kv_meta (key, value, updated_at) VALUES ('backup:next_scheduled', ?1, ?2)",
-                        rusqlite::params![&next_str, &now_str],
-                    );
-
                     match tilde_backup::restic::ResticConfig::from_backup_config(&backup_config) {
                         Ok(restic_config) => {
                             match tilde_backup::restic::backup(&restic_config, &backup_data_dir, &conn) {
@@ -575,10 +566,25 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     }
                 }
 
-                // Wait for next interval
+                // Recalculate against the wall clock after each run. A fixed
+                // interval drifts when backups take time or daylight saving changes.
+                let next_wait = secs_until_next_run(&backup_schedule);
+                if let Ok(conn) = backup_db.get() {
+                    let now = jiff::Zoned::now();
+                    let next_run = now
+                        .checked_add(jiff::SignedDuration::from_secs(next_wait as i64))
+                        .unwrap_or_else(|_| now.clone());
+                    let next_str = next_run.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+                    let now_str = now.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string();
+                    let _ = conn.execute(
+                        "INSERT OR REPLACE INTO kv_meta (key, value, updated_at) VALUES ('backup:next_scheduled', ?1, ?2)",
+                        rusqlite::params![&next_str, &now_str],
+                    );
+                }
+
                 tokio::select! {
                     _ = token.cancelled() => break,
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(next_wait)) => {}
                 }
             }
         });

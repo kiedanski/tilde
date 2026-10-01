@@ -130,34 +130,64 @@ pub(crate) fn parse_schedule_interval(schedule: &str) -> u64 {
 /// Supports formats like "daily@04:00", "daily@23:30".
 /// For non-time-specific schedules (e.g., "hourly"), returns the interval directly.
 pub(crate) fn secs_until_next_run(schedule: &str) -> u64 {
+    secs_until_next_run_at(schedule, &jiff::Zoned::now())
+}
+
+fn secs_until_next_run_at(schedule: &str, now: &jiff::Zoned) -> u64 {
     let s = schedule.to_lowercase();
     if let Some(time_part) = s.split('@').nth(1) {
         // Parse HH:MM
         let parts: Vec<&str> = time_part.split(':').collect();
         if parts.len() == 2
-            && let (Ok(hour), Ok(minute)) = (parts[0].parse::<i8>(), parts[1].parse::<i8>())
+            && let (Ok(hour), Ok(minute)) = (parts[0].parse::<u8>(), parts[1].parse::<u8>())
+            && hour < 24
+            && minute < 60
         {
-            let now = jiff::Zoned::now();
             let today_target = now
                 .date()
-                .at(hour, minute, 0, 0)
+                .at(hour as i8, minute as i8, 0, 0)
                 .to_zoned(now.time_zone().clone());
             if let Ok(today_target) = today_target {
-                let until = today_target.since(&now);
-                if let Ok(dur) = until {
-                    let secs = dur.get_seconds();
-                    if secs > 0 {
-                        return secs as u64;
-                    }
-                    // Already past today's time — schedule for tomorrow
-                    let interval = parse_schedule_interval(schedule);
-                    return (secs + interval as i64) as u64;
+                if today_target > *now {
+                    return now.duration_until(&today_target).as_secs().max(1) as u64;
+                }
+                if let Ok(tomorrow) = now.date().tomorrow()
+                    && let Ok(tomorrow_target) = tomorrow
+                        .at(hour as i8, minute as i8, 0, 0)
+                        .to_zoned(now.time_zone().clone())
+                {
+                    return now.duration_until(&tomorrow_target).as_secs().max(1) as u64;
                 }
             }
         }
     }
     // No @HH:MM — just use the interval
     parse_schedule_interval(schedule)
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::secs_until_next_run_at;
+    use jiff::{civil::date, tz::TimeZone};
+
+    #[test]
+    fn daily_schedule_uses_clock_time_before_and_after_target() {
+        let before = date(2026, 10, 1)
+            .at(3, 30, 0, 0)
+            .to_zoned(TimeZone::UTC)
+            .unwrap();
+        let after = date(2026, 10, 1)
+            .at(12, 11, 0, 0)
+            .to_zoned(TimeZone::UTC)
+            .unwrap();
+
+        assert_eq!(secs_until_next_run_at("daily@04:00", &before), 30 * 60);
+        assert_eq!(
+            secs_until_next_run_at("daily@04:00", &after),
+            15 * 3600 + 49 * 60
+        );
+        assert_eq!(secs_until_next_run_at("hourly", &after), 3600);
+    }
 }
 
 /// Basic JSON Schema validation (supports type, required, properties)
