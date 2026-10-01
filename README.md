@@ -64,6 +64,11 @@ in a browser. Sign in with any username and that app password. The private page
 generates a Setup URI and a separate passphrase and walks through connecting
 Obsidian. An administrator can also generate those with
 `tilde notes live-sync setup-uri --public-url https://notes.example.com/couchdb/`.
+The setup page address is not the CouchDB server URL. In Obsidian, choose
+**Use a Setup URI** and copy the long `obsidian://setuplivesync?settings=...`
+value from the page. The page provides separate copy buttons for it and its
+passphrase. Manual CouchDB setup uses `public_url`, the restricted CouchDB
+username and password, and the database name instead of the Tilde app password.
 The URI carries CouchDB credentials, so keep it private and store its passphrase
 separately. The page and CLI use Rust; no TypeScript service is needed.
 

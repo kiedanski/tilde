@@ -52,6 +52,21 @@ async fn livesync_setup_requires_its_own_app_password_scope() {
             .text()
             .contains("obsidian://setuplivesync?settings=")
     );
+    assert!(response.text().contains("Copy Setup URI"));
+    assert!(response.text().contains("Copy passphrase"));
+    assert!(response.text().contains("https://example.com/couchdb/"));
+    let csp = response.header("content-security-policy");
+    let csp = csp.to_str().expect("CSP header text");
+    let nonce = csp
+        .split("script-src 'nonce-")
+        .nth(1)
+        .and_then(|value| value.split('\'').next())
+        .expect("CSP script nonce");
+    assert!(
+        response
+            .text()
+            .contains(&format!("<script nonce=\"{nonce}\">"))
+    );
     assert!(!response.text().contains("couchdb-test-secret"));
 }
 
