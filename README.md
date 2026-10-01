@@ -78,6 +78,8 @@ complete any compatibility review, and run **Self-hosted LiveSync: Sync now**.
 Check a note in both directions before enabling the LiveSync preset for ongoing
 sync. The Setup URI sets end-to-end encryption and path obfuscation off because
 Tilde's Rust reader and MCP tools cannot read encrypted or obfuscated vaults.
+The Rust client follows LiveSync's default case-insensitive document ID mapping,
+including the special handling for note paths beginning with `_`.
 
 Once the same vault is connected in Obsidian, you can run `tilde notes live-sync list` or
 `tilde notes live-sync read path/to/note.md`. Use `read path/to/note.md --json`

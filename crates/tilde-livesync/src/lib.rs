@@ -116,6 +116,17 @@ impl Client {
         Ok(url)
     }
 
+    /// Match LiveSync's unobfuscated, case-insensitive `path2id_base` mapping.
+    /// CouchDB reserves IDs beginning with `_`, so LiveSync prefixes `/`.
+    fn note_id(path: &str) -> String {
+        let lower = path.to_lowercase();
+        if lower.starts_with('_') {
+            format!("/{lower}")
+        } else {
+            lower
+        }
+    }
+
     /// Create the configured CouchDB database explicitly. Returns `false` if
     /// it already exists. A restricted database member may use this to check a
     /// database which an administrator has already provisioned.
@@ -243,7 +254,7 @@ impl Client {
     /// Return the current note revision without fetching chunks.
     pub async fn get_note_meta(&self, path: &str) -> Result<Option<NoteMeta>, Error> {
         validate_path(path)?;
-        let Some(doc) = self.document(path).await? else {
+        let Some(doc) = self.document(&Self::note_id(path)).await? else {
             return Ok(None);
         };
         let meta = note_meta(&doc)?;
@@ -265,7 +276,8 @@ impl Client {
         expected_revision: Option<&str>,
     ) -> Result<NoteMeta, Error> {
         validate_write_path(path)?;
-        let existing = self.document_with_conflicts(path).await?;
+        let id = Self::note_id(path);
+        let existing = self.document_with_conflicts(&id).await?;
         if let Some(doc) = &existing {
             ensure_writable_doc(doc, path)?;
             if doc
@@ -319,7 +331,7 @@ impl Client {
             .and_then(Value::as_i64)
             .unwrap_or(now);
         let mut note = json!({
-            "_id": path,
+            "_id": id,
             "children": children,
             "path": path,
             "ctime": ctime,
@@ -331,7 +343,7 @@ impl Client {
         if let Some(rev) = existing_revision {
             note["_rev"] = Value::String(rev.into());
         }
-        let revision = self.put_document(path, &note).await?;
+        let revision = self.put_document(&id, &note).await?;
         Ok(NoteMeta {
             path: path.into(),
             revision,
@@ -342,8 +354,9 @@ impl Client {
     /// Soft-delete a note at the revision last observed by the caller.
     pub async fn delete_note(&self, path: &str, expected_revision: &str) -> Result<String, Error> {
         validate_write_path(path)?;
+        let id = Self::note_id(path);
         let mut doc = self
-            .document_with_conflicts(path)
+            .document_with_conflicts(&id)
             .await?
             .ok_or(Error::NotFound)?;
         if doc
@@ -368,13 +381,13 @@ impl Client {
         }
         doc["deleted"] = Value::Bool(true);
         doc["mtime"] = json!(now_ms()?);
-        self.put_document(path, &doc).await
+        self.put_document(&id, &doc).await
     }
 
     /// Read one note. A missing or logically deleted note returns `None`.
     pub async fn get_note(&self, path: &str) -> Result<Option<Note>, Error> {
         validate_path(path)?;
-        let Some(doc) = self.document(path).await? else {
+        let Some(doc) = self.document(&Self::note_id(path)).await? else {
             return Ok(None);
         };
         if doc.get("deleted").and_then(Value::as_bool) == Some(true)
@@ -637,6 +650,11 @@ mod tests {
             client.document_url("folder/a b.md").unwrap().as_str(),
             "https://example.com/proxy/vault/folder%2Fa%20b.md"
         );
+        assert_eq!(
+            Client::note_id("Folder/Mixed Case.md"),
+            "folder/mixed case.md"
+        );
+        assert_eq!(Client::note_id("_Private.md"), "/_private.md");
         assert!(validate_path("../escape.md").is_err());
     }
 
