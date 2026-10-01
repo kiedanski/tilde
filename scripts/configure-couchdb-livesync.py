@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -66,16 +67,48 @@ status, _ = couch("GET", "/tilde_notes", user="tilde_sync", password=sync_passwo
 if status != 200:
     raise SystemExit(f"Restricted sync user cannot read tilde_notes: HTTP {status}")
 
+version_path = "/tilde_notes/obsydian_livesync_version"
+status, body = couch("GET", version_path)
+if status == 404:
+    status, _ = couch(
+        "PUT", version_path,
+        {"_id": "obsydian_livesync_version", "type": "versioninfo", "version": 12},
+    )
+    if status not in (201, 202):
+        raise SystemExit(f"Create LiveSync version document failed: HTTP {status}")
+elif status == 200:
+    version = json.loads(body)
+    if version.get("type") != "versioninfo" or version.get("version") != 12:
+        raise SystemExit("Existing LiveSync database version is incompatible")
+else:
+    raise SystemExit(f"Read LiveSync version document failed: HTTP {status}")
+
 config = Path("/etc/tilde/config.toml")
 config_text = config.read_text()
+hostname = tomllib.loads(config_text).get("server", {}).get("hostname", "")
+public_url = os.environ.get("TILDE_COUCHDB_PUBLIC_URL") or (
+    f"https://{hostname}/couchdb/" if hostname else ""
+)
+if not public_url:
+    raise SystemExit("Set TILDE_COUCHDB_PUBLIC_URL or [server].hostname")
 if "[notes.livesync]" not in config_text:
     config_text += (
         "\n[notes.livesync]\n"
         'server_url = "http://127.0.0.1:5984"\n'
+        f"public_url = {json.dumps(public_url)}\n"
         'database = "tilde_notes"\n'
         'username = "tilde_sync"\n'
     )
     config.write_text(config_text)
+else:
+    section = config_text.split("[notes.livesync]", 1)[1].split("\n[", 1)[0]
+    if "public_url" not in section:
+        config_text = config_text.replace(
+            "[notes.livesync]\n",
+            f"[notes.livesync]\npublic_url = {json.dumps(public_url)}\n",
+            1,
+        )
+        config.write_text(config_text)
 
 env_file = Path("/etc/tilde/.env")
 env_text = env_file.read_text()

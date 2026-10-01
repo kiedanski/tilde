@@ -1,5 +1,6 @@
 //! tilde-server: axum app assembly and HTTP routing
 
+mod livesync_setup;
 pub mod tunnel;
 
 use axum::{
@@ -168,6 +169,7 @@ pub fn build_router(
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/status.php", get(status_php_handler))
+        .route("/notes/live-sync/setup", get(livesync_setup::setup_page))
         .route(
             "/ocs/v2.php/cloud/capabilities",
             get(ocs_capabilities_handler),

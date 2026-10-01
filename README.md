@@ -44,21 +44,52 @@ to migrate them. Add this to Tilde's `config.toml`:
 ```toml
 [notes.livesync]
 server_url = "http://127.0.0.1:5984"
+public_url = "https://notes.example.com/couchdb/"
 database = "tilde_notes"
-username = "tilde"
+username = "tilde_sync"
 ```
 
 Provide the CouchDB password through `TILDE_NOTES__LIVESYNC__PASSWORD` in the
-service environment, then run `tilde notes live-sync init-db` to create the
-empty database explicitly. Configure the existing Obsidian LiveSync plug-in to
-use that same database. You can then run `tilde notes live-sync list` or
+service environment. Provision the database and its restricted member account
+with `scripts/configure-couchdb-livesync.py`, or by equivalent CouchDB admin
+steps. Run `tilde notes live-sync init-db` to verify the connection and create
+the LiveSync version document if needed. This command leaves existing notes
+untouched.
+
+Create a Tilde app password with
+`tilde auth app-password create --name obsidian-setup --scope /notes/live-sync/setup`
+(or use an existing wildcard app password), then open
+`https://YOUR-TILDE-HOST/notes/live-sync/setup`
+in a browser. Sign in with any username and that app password. The private page
+generates a Setup URI and a separate passphrase and walks through connecting
+Obsidian. An administrator can also generate those with
+`tilde notes live-sync setup-uri --public-url https://notes.example.com/couchdb/`.
+The URI carries CouchDB credentials, so keep it private and store its passphrase
+separately. The page and CLI use Rust; no TypeScript service is needed.
+
+In LiveSync onboarding, choose **I am adding a device to an existing
+synchronisation setup** even for the first device. Its fetch path works with the
+restricted CouchDB member and preserves local-only files when **Keep local
+files even if not on remote** is chosen. Do not choose **Restart and Initialise
+Server**: that action deletes and recreates the database, requires CouchDB
+server-admin rights, and can erase MCP notes. After the fetch, select **Use this
+device's settings** if the new remote has no saved synchronisation settings,
+complete any compatibility review, and run **Self-hosted LiveSync: Sync now**.
+Check a note in both directions before enabling the LiveSync preset for ongoing
+sync. The Setup URI sets end-to-end encryption and path obfuscation off because
+Tilde's Rust reader and MCP tools cannot read encrypted or obfuscated vaults.
+
+Once the same vault is connected in Obsidian, you can run `tilde notes live-sync list` or
 `tilde notes live-sync read path/to/note.md`. Use `read path/to/note.md --json`
 to get the content and its CouchDB revision together. To create a note, pipe
 UTF-8 content to `tilde notes live-sync write path/to/note.md`, or pass
 `--file local.md`. To update it, pass `--if-rev REV` using the revision returned
 by `read --json` or a previous write. Deletion also requires `--if-rev REV`.
 If Obsidian updates a note first, Tilde reports a revision conflict and leaves
-the CouchDB note unchanged so you can reconcile the edits. These commands access
+the CouchDB note unchanged so you can reconcile the edits. If CouchDB has
+unresolved branches for a note, Tilde refuses further writes to that note until
+you resolve them in Obsidian; the winning branch may not contain the latest
+text. These commands access
 LiveSync note and chunk documents directly; production use needs no TypeScript service.
 Set up CouchDB and the existing Obsidian plug-in using the
 [LiveSync setup guide](https://github.com/vrtmrz/obsidian-livesync/blob/main/docs/setup_own_server.md).

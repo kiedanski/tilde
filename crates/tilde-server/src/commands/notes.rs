@@ -20,14 +20,18 @@ pub async fn run_notes(config_path: Option<&str>, command: NotesCommands) -> any
             )?;
             match command {
                 LiveSyncNotesCommands::InitDb => {
-                    println!(
-                        "{}",
-                        if client.create_database().await? {
-                            "created"
-                        } else {
-                            "exists"
-                        }
-                    );
+                    let created = client.create_database().await?;
+                    client.ensure_version_document().await?;
+                    println!("{}", if created { "created" } else { "exists" });
+                }
+                LiveSyncNotesCommands::SetupUri { public_url } => {
+                    let setup = tilde_livesync::generate_setup_uri(
+                        &public_url,
+                        &remote.database,
+                        &remote.username,
+                        &remote.password,
+                    )?;
+                    println!("{}", serde_json::to_string(&setup)?);
                 }
                 LiveSyncNotesCommands::List => {
                     for note in client.list_notes().await? {

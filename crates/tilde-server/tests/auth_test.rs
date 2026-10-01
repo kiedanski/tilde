@@ -5,6 +5,55 @@
 mod common;
 
 use axum::http::{Method, StatusCode, header};
+use std::sync::Arc;
+use tilde_core::config::LiveSyncNotesConfig;
+
+#[tokio::test]
+async fn livesync_setup_requires_its_own_app_password_scope() {
+    let env = common::create_test_server();
+    let mut config = (*env.state.config()).as_ref().clone();
+    config.notes.livesync = Some(LiveSyncNotesConfig {
+        server_url: "http://127.0.0.1:5984".into(),
+        public_url: Some("https://example.com/couchdb/".into()),
+        database: "notes".into(),
+        username: "sync".into(),
+        password: "couchdb-test-secret".into(),
+    });
+    env.state.config.store(Arc::new(config));
+
+    let path = "/notes/live-sync/setup";
+    env.server
+        .get(path)
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    let dav_password = common::create_app_password(&env.pool, "dav-only", "/dav/*");
+    env.server
+        .get(path)
+        .add_header(
+            header::AUTHORIZATION,
+            common::basic_auth_header(&dav_password),
+        )
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+
+    let setup_password = common::create_app_password(&env.pool, "notes-setup", path);
+    let response = env
+        .server
+        .get(path)
+        .add_header(
+            header::AUTHORIZATION,
+            common::basic_auth_header(&setup_password),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(response.header(header::CACHE_CONTROL), "no-store, private");
+    assert!(
+        response
+            .text()
+            .contains("obsidian://setuplivesync?settings=")
+    );
+    assert!(!response.text().contains("couchdb-test-secret"));
+}
 
 // ─── App password authentication ──────────────────────────────────────────────
 

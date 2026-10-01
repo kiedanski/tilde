@@ -4,6 +4,9 @@
 //! chunk documents; it does not implement CouchDB replication or write into a
 //! vault. Writes use CouchDB revisions to reject concurrent updates.
 
+mod setup_uri;
+pub use setup_uri::{SetupUri, generate_setup_uri};
+
 use reqwest::{StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -24,6 +27,10 @@ pub enum Error {
     NotFound,
     #[error("note changed since it was read; fetch its latest revision and retry")]
     Conflict,
+    #[error(
+        "note has unresolved CouchDB revision conflicts; resolve them in Obsidian before writing"
+    )]
+    UnresolvedConflict,
     #[error("CouchDB request failed: {0}")]
     Http(#[from] reqwest::Error),
     #[error("LiveSync document has an unsupported or malformed format: {0}")]
@@ -110,8 +117,21 @@ impl Client {
     }
 
     /// Create the configured CouchDB database explicitly. Returns `false` if
-    /// it already exists. No note data is copied from Tilde's local files.
+    /// it already exists. A restricted database member may use this to check a
+    /// database which an administrator has already provisioned.
     pub async fn create_database(&self) -> Result<bool, Error> {
+        let existing = self
+            .http
+            .get(self.database_url.clone())
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await?;
+        if existing.status().is_success() {
+            return Ok(false);
+        }
+        if existing.status() != StatusCode::NOT_FOUND {
+            existing.error_for_status()?;
+        }
         let response = self
             .http
             .put(self.database_url.clone())
@@ -125,8 +145,69 @@ impl Client {
         Ok(true)
     }
 
+    /// Seed LiveSync's version document without touching any existing notes.
+    /// The supported format is pinned to the version used by LiveSync 1.0.30.
+    pub async fn ensure_version_document(&self) -> Result<(), Error> {
+        const ID: &str = "obsydian_livesync_version";
+        if let Some(document) = self.document(ID).await? {
+            if document.get("type").and_then(Value::as_str) == Some("versioninfo")
+                && document.get("version").and_then(Value::as_i64) == Some(12)
+            {
+                return Ok(());
+            }
+            return Err(Error::Unsupported(
+                "incompatible LiveSync database version".into(),
+            ));
+        }
+        match self
+            .put_document(
+                ID,
+                &json!({"_id": ID, "type": "versioninfo", "version": 12}),
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(Error::Conflict) => {
+                let document = self.document(ID).await?;
+                if document
+                    .as_ref()
+                    .and_then(|doc| doc.get("version"))
+                    .and_then(Value::as_i64)
+                    == Some(12)
+                    && document
+                        .as_ref()
+                        .and_then(|doc| doc.get("type"))
+                        .and_then(Value::as_str)
+                        == Some("versioninfo")
+                {
+                    Ok(())
+                } else {
+                    Err(Error::Unsupported(
+                        "incompatible LiveSync database version".into(),
+                    ))
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     async fn document(&self, id: &str) -> Result<Option<Value>, Error> {
         let url = self.document_url(id)?;
+        let response = self
+            .http
+            .get(url)
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Ok(Some(response.error_for_status()?.json().await?))
+    }
+
+    async fn document_with_conflicts(&self, id: &str) -> Result<Option<Value>, Error> {
+        let mut url = self.document_url(id)?;
+        url.query_pairs_mut().append_pair("conflicts", "true");
         let response = self
             .http
             .get(url)
@@ -184,9 +265,16 @@ impl Client {
         expected_revision: Option<&str>,
     ) -> Result<NoteMeta, Error> {
         validate_write_path(path)?;
-        let existing = self.document(path).await?;
+        let existing = self.document_with_conflicts(path).await?;
         if let Some(doc) = &existing {
             ensure_writable_doc(doc, path)?;
+            if doc
+                .get("_conflicts")
+                .and_then(Value::as_array)
+                .is_some_and(|conflicts| !conflicts.is_empty())
+            {
+                return Err(Error::UnresolvedConflict);
+            }
         }
         let existing_revision = existing
             .as_ref()
@@ -254,7 +342,17 @@ impl Client {
     /// Soft-delete a note at the revision last observed by the caller.
     pub async fn delete_note(&self, path: &str, expected_revision: &str) -> Result<String, Error> {
         validate_write_path(path)?;
-        let mut doc = self.document(path).await?.ok_or(Error::NotFound)?;
+        let mut doc = self
+            .document_with_conflicts(path)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if doc
+            .get("_conflicts")
+            .and_then(Value::as_array)
+            .is_some_and(|conflicts| !conflicts.is_empty())
+        {
+            return Err(Error::UnresolvedConflict);
+        }
         if is_deleted(&doc) {
             return Err(Error::NotFound);
         }

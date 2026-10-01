@@ -358,6 +358,9 @@ pub struct NotesConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LiveSyncNotesConfig {
     pub server_url: String,
+    /// Public HTTPS CouchDB URL used by Obsidian devices for Setup URIs.
+    #[serde(default)]
+    pub public_url: Option<String>,
     pub database: String,
     pub username: String,
     #[serde(default)]

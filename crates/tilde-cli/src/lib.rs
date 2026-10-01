@@ -244,8 +244,14 @@ pub enum NotesCommands {
 
 #[derive(clap::Subcommand)]
 pub enum LiveSyncNotesCommands {
-    /// Create the configured CouchDB database if it does not exist
+    /// Verify an existing database or create one with admin rights; seed its version document
     InitDb,
+    /// Generate an Obsidian Setup URI for a pre-provisioned vault
+    SetupUri {
+        /// Public CouchDB URL, including any reverse-proxy path
+        #[arg(long)]
+        public_url: String,
+    },
     /// List note paths in CouchDB
     List,
     /// Read a note from CouchDB
