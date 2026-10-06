@@ -114,10 +114,22 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             )
         })
         .transpose()?;
+    let notes_index =
+        livesync
+            .as_ref()
+            .zip(config.notes.livesync.as_ref())
+            .map(|(client, remote)| {
+                Arc::new(tilde_mcp::notes_index::NotesIndex::new(
+                    client.clone(),
+                    pool.clone(),
+                    &remote.database,
+                ))
+            });
     let mcp_state: tilde_mcp::SharedMcpState = Arc::new(tilde_mcp::McpState {
         db: pool.clone(),
         data_dir: data_dir.clone(),
         livesync,
+        notes_index: notes_index.clone(),
         rate_limits: Mutex::new(std::collections::HashMap::new()),
     });
 
@@ -275,6 +287,17 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 message: format!("tilde started on {}", label),
             },
         );
+    }
+
+    // Keep the LiveSync notes search index following CouchDB.
+    if let Some(index) = notes_index {
+        let token = shutdown.clone();
+        tasks.spawn(async move {
+            tokio::select! {
+                _ = token.cancelled() => {}
+                _ = index.run() => {}
+            }
+        });
     }
 
     // Periodic disk usage check (every 6 hours)

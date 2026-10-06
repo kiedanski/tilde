@@ -5,6 +5,7 @@
 //!
 //! Bearer token auth with scope enforcement, rate limiting, and audit logging.
 
+pub mod notes_index;
 pub mod tools_files;
 pub mod tools_livesync;
 pub mod tools_notes;
@@ -26,6 +27,8 @@ pub struct McpState {
     pub db: DbPool,
     pub data_dir: PathBuf,
     pub livesync: Option<tilde_livesync::Client>,
+    /// Full-text index of the LiveSync vault; present exactly when `livesync` is.
+    pub notes_index: Option<Arc<notes_index::NotesIndex>>,
     /// Token name → list of recent request timestamps for rate limiting
     pub rate_limits: Mutex<HashMap<String, Vec<Instant>>>,
 }
@@ -1396,7 +1399,11 @@ pub async fn handle_mcp_request(
             let notes_dir = state.data_dir.join("notes");
             let files_dir = state.data_dir.join("files");
 
-            let result = if let Some(client) = &state.livesync
+            let result = if let Some(index) = &state.notes_index
+                && tool_name == "notes.search"
+            {
+                index.search(&arguments).await
+            } else if let Some(client) = &state.livesync
                 && tool_name.starts_with("notes.")
             {
                 let blobs_root = state.data_dir.join("blobs").join("by-id");

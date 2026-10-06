@@ -9,9 +9,11 @@ pub fn configure_definitions(tools: &mut [ToolDef]) {
     for tool in tools {
         match tool.name.as_str() {
             "notes.search" => {
-                tool.description = "Search Markdown note contents in the configured LiveSync CouchDB vault. Query is a case-sensitive substring. Returns up to 100 matching notes with path, title, and modified time. Requires notes:read scope.".into();
+                tool.description = "Keyword search over Markdown notes in the configured LiveSync CouchDB vault. Matching ignores case and accents (\"cafe\" finds \"café\"). Every word must match unless joined by OR. Syntax: \"exact phrase\", prefix* (nutri* finds nutrition), -word to exclude, a OR b. Words match whole tokens, so use prefix* for partial words. Optional `path` limits results to notes whose path starts with it (e.g. \"journal/\"). Results are ranked best first, weighting title and path matches above body text: [{path, title, modified, snippet}], where snippet shows the match between « and ». An empty array means nothing matched. Requires notes:read scope.".into();
                 tool.input_schema = json!({"type":"object","properties":{
-                    "query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}
+                    "query":{"type":"string"},
+                    "path":{"type":"string","description":"Only notes whose path starts with this prefix"},
+                    "limit":{"type":"integer","minimum":1,"maximum":100}
                 },"required":["query"]});
             }
             "notes.read" => {
@@ -47,7 +49,7 @@ fn str_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("{key} parameter required"))
 }
 
-fn title(path: &str, content: &str) -> String {
+pub(crate) fn title(path: &str, content: &str) -> String {
     content
         .lines()
         .find_map(|line| line.strip_prefix("# "))
@@ -58,7 +60,7 @@ fn title(path: &str, content: &str) -> String {
         })
 }
 
-fn modified_iso(ms: i64) -> String {
+pub(crate) fn modified_iso(ms: i64) -> String {
     jiff::Timestamp::from_second(ms.div_euclid(1000))
         .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
         .strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -72,36 +74,6 @@ pub async fn exec(
     params: &Value,
 ) -> Result<Value, String> {
     match tool {
-        "notes.search" => {
-            let query = str_param(params, "query")?;
-            let limit = params
-                .get("limit")
-                .and_then(Value::as_u64)
-                .unwrap_or(20)
-                .clamp(1, 100);
-            let mut found = Vec::new();
-            for meta in client.list_notes().await.map_err(|e| e.to_string())? {
-                let Some(note) = client
-                    .get_note(&meta.path)
-                    .await
-                    .map_err(|e| e.to_string())?
-                else {
-                    continue;
-                };
-                if note.content.contains(query) {
-                    let note_title = title(&note.path, &note.content);
-                    found.push(json!({
-                        "path": note.path,
-                        "title": note_title,
-                        "modified": modified_iso(note.modified_ms),
-                    }));
-                    if found.len() >= limit as usize {
-                        break;
-                    }
-                }
-            }
-            Ok(json!(found))
-        }
         "notes.read" => {
             let path = str_param(params, "path")?;
             let note = client

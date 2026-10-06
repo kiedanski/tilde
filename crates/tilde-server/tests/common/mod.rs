@@ -75,6 +75,7 @@ pub fn create_test_server() -> TestEnv {
         db: pool.clone(),
         data_dir: data_dir.clone(),
         livesync: None,
+        notes_index: None,
         rate_limits: Mutex::new(HashMap::new()),
     });
 

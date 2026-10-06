@@ -18,7 +18,7 @@ rusqlite = { workspace = true }
 uuid = { workspace = true }
 jiff = { workspace = true }
 axum = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true }

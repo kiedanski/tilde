@@ -74,21 +74,16 @@ async fn mcp_notes_share_the_livesync_vault() {
         .await
         .unwrap();
     assert_eq!(read["content"], "# MCP\n\nFrom Tilde\nfrom agent");
-    let matches = exec(
-        &client,
-        &blobs,
-        "notes.search",
-        &json!({"query":"from agent"}),
-    )
-    .await
-    .unwrap();
-    assert!(
-        matches
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|note| note["path"] == path)
-    );
+    let db_path = temp.path().join("tilde.db");
+    let pool = tilde_core::db::init_pool(db_path.to_str().unwrap()).unwrap();
+    tilde_core::db::run_migrations(&pool.get().unwrap(), temp.path()).unwrap();
+    let index = tilde_mcp::notes_index::NotesIndex::new(client.clone(), pool, &database);
+    let matches = index
+        .search(&json!({"query":"\"from agent\"", "path": "mcp/"}))
+        .await
+        .unwrap();
+    assert_eq!(matches[0]["path"], path);
+    assert_eq!(matches[0]["snippet"], "# MCP\n\nFrom Tilde\n«from agent»");
 
     let disposable = exec(
         &client,
@@ -111,4 +106,9 @@ async fn mcp_notes_share_the_livesync_vault() {
         tilde_dav::versions::read_version(&blobs, archived).unwrap(),
         b"keep this version"
     );
+    let gone = index
+        .search(&json!({"query":"\"keep this version\""}))
+        .await
+        .unwrap();
+    assert_eq!(gone, json!([]));
 }

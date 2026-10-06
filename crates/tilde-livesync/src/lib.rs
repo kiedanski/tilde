@@ -10,10 +10,16 @@ pub use setup_uri::{SetupUri, generate_setup_uri};
 use reqwest::{StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use xxhash_rust::xxh64::xxh64;
 
 const CHUNK_BYTES: usize = 16 * 1024;
+/// Bounds every CouchDB request. Without it a stalled CouchDB held MCP calls
+/// open until nginx's 60s upstream timeout answered 504 on tilde's behalf.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Keys per bulk `_all_docs` lookup, keeping request bodies modest.
+const BULK_KEYS: usize = 200;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -35,6 +41,8 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("LiveSync document has an unsupported or malformed format: {0}")]
     Unsupported(String),
+    #[error("LiveSync chunk {0} is missing")]
+    MissingChunk(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +78,27 @@ struct AllDocsRow {
     doc: Option<Value>,
 }
 
+/// One row of CouchDB's `_changes` feed. `doc` is the winning revision; a
+/// hard-deleted document arrives as a tombstone with `deleted` set.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Change {
+    pub seq: Value,
+    pub id: String,
+    #[serde(default)]
+    pub deleted: bool,
+    pub doc: Option<Value>,
+}
+
+/// A page of the `_changes` feed. Pass `last_seq` back as `since` to resume;
+/// CouchDB sequences are opaque, so they are carried as raw JSON values.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChangesPage {
+    pub results: Vec<Change>,
+    pub last_seq: Value,
+    #[serde(default)]
+    pub pending: u64,
+}
+
 #[derive(Deserialize)]
 struct PutResponse {
     id: String,
@@ -101,7 +130,9 @@ impl Client {
             .pop_if_empty()
             .push(database);
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()?,
             database_url,
             username: username.into(),
             password: password.into(),
@@ -399,35 +430,64 @@ impl Client {
         if meta.path != path {
             return Err(Error::Unsupported(format!("path mismatch for {path}")));
         }
-        let children = doc
-            .get("children")
-            .and_then(Value::as_array)
-            .ok_or_else(|| Error::Unsupported(format!("missing children for {path}")))?;
-        let mut chunk_docs = Vec::new();
-        let eden = doc.get("eden").and_then(Value::as_object);
-        for child in children {
-            let id = child
-                .as_str()
-                .ok_or_else(|| Error::Unsupported(format!("invalid child for {path}")))?;
-            if id.starts_with("h:+") {
-                return Err(Error::Unsupported("encrypted chunks".into()));
+        let chunks = self
+            .fetch_documents(&missing_chunk_ids(&doc, &HashMap::new())?)
+            .await?;
+        note_from_doc(&doc, &chunks)
+    }
+
+    /// Fetch documents by ID in bulk; IDs that do not exist are absent from
+    /// the result. One request per `BULK_KEYS` IDs instead of one per ID.
+    pub async fn fetch_documents(&self, ids: &[String]) -> Result<HashMap<String, Value>, Error> {
+        let mut found = HashMap::with_capacity(ids.len());
+        let mut url = self.document_url("_all_docs")?;
+        url.query_pairs_mut().append_pair("include_docs", "true");
+        for batch in ids.chunks(BULK_KEYS) {
+            let rows: AllDocs = self
+                .http
+                .post(url.clone())
+                .basic_auth(&self.username, Some(&self.password))
+                .json(&json!({ "keys": batch }))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            for doc in rows.rows.into_iter().filter_map(|row| row.doc) {
+                if let Some(id) = doc.get("_id").and_then(Value::as_str) {
+                    found.insert(id.to_owned(), doc);
+                }
             }
-            let chunk = match eden.and_then(|e| e.get(id)) {
-                Some(chunk) => chunk.clone(),
-                None => self
-                    .document(id)
-                    .await?
-                    .ok_or_else(|| Error::Unsupported(format!("missing chunk {id}")))?,
-            };
-            chunk_docs.push(chunk);
         }
-        let content = assemble_content(&doc, &chunk_docs, path)?;
-        Ok(Some(Note {
-            path: meta.path,
-            content,
-            revision: meta.revision,
-            modified_ms: meta.modified_ms,
-        }))
+        Ok(found)
+    }
+
+    /// Read one page of the `_changes` feed after `since` (`None` = from the
+    /// beginning), winning revisions included.
+    pub async fn changes(&self, since: Option<&Value>, limit: usize) -> Result<ChangesPage, Error> {
+        let mut url = self.document_url("_changes")?;
+        {
+            let mut query = url.query_pairs_mut();
+            query
+                .append_pair("include_docs", "true")
+                .append_pair("limit", &limit.to_string());
+            if let Some(since) = since {
+                let since = match since {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                query.append_pair("since", &since);
+            }
+        }
+        Ok(self
+            .http
+            .get(url)
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
     }
 
     /// Enumerate note metadata. System documents and chunk documents are skipped.
@@ -580,6 +640,62 @@ fn note_meta(doc: &Value) -> Result<Option<NoteMeta>, Error> {
         path: path.into(),
         revision: revision.into(),
         modified_ms,
+    }))
+}
+
+fn children(doc: &Value) -> Result<Vec<&str>, Error> {
+    doc.get("children")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Unsupported("missing children".into()))?
+        .iter()
+        .map(|child| {
+            let id = child
+                .as_str()
+                .ok_or_else(|| Error::Unsupported("invalid child".into()))?;
+            if id.starts_with("h:+") {
+                return Err(Error::Unsupported("encrypted chunks".into()));
+            }
+            Ok(id)
+        })
+        .collect()
+}
+
+/// Chunk IDs a note document references that are neither inlined in its
+/// `eden` nor present in `known`.
+pub fn missing_chunk_ids(
+    doc: &Value,
+    known: &HashMap<String, Value>,
+) -> Result<Vec<String>, Error> {
+    let eden = doc.get("eden").and_then(Value::as_object);
+    Ok(children(doc)?
+        .into_iter()
+        .filter(|id| !known.contains_key(*id) && eden.is_none_or(|e| !e.contains_key(*id)))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Build a note from its document and the chunk documents it references.
+/// `Ok(None)` means the document is not a readable note (deleted, a chunk, a
+/// binary file, settings); `Err(MissingChunk)` means a chunk has not arrived.
+pub fn note_from_doc(doc: &Value, chunks: &HashMap<String, Value>) -> Result<Option<Note>, Error> {
+    let Some(meta) = note_meta(doc)? else {
+        return Ok(None);
+    };
+    let eden = doc.get("eden").and_then(Value::as_object);
+    let mut chunk_docs = Vec::new();
+    for id in children(doc)? {
+        let chunk = eden
+            .and_then(|e| e.get(id))
+            .or_else(|| chunks.get(id))
+            .ok_or_else(|| Error::MissingChunk(id.to_owned()))?;
+        chunk_docs.push(chunk.clone());
+    }
+    let content = assemble_content(doc, &chunk_docs, &meta.path)?;
+    Ok(Some(Note {
+        path: meta.path,
+        content,
+        revision: meta.revision,
+        modified_ms: meta.modified_ms,
     }))
 }
 

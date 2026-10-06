@@ -119,6 +119,10 @@ const EMBEDDED_MIGRATIONS: &[(&str, &str)] = &[
         "010_client_base_versions",
         include_str!("../../../migrations/010_client_base_versions.sql"),
     ),
+    (
+        "011_livesync_notes_index",
+        include_str!("../../../migrations/011_livesync_notes_index.sql"),
+    ),
 ];
 
 /// Load embedded migrations (compiled into the binary).

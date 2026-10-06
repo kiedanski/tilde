@@ -112,8 +112,8 @@ fn e2e_upgrade_applies_new_migrations_to_a_populated_database() {
 
     let max: i64 = query_one(&db, "SELECT MAX(version) FROM migrations");
     assert_eq!(
-        max, 10,
-        "009 and 010 must apply on top of an existing database"
+        max, 11,
+        "009 through 011 must apply on top of an existing database"
     );
 
     let has_cols: i64 = query_one(
@@ -128,6 +128,16 @@ fn e2e_upgrade_applies_new_migrations_to_a_populated_database() {
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='client_base_versions'",
     );
     assert_eq!(has_table, 1);
+
+    let has_index: i64 = query_one(
+        &db,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
+         AND name IN ('livesync_notes', 'livesync_notes_fts', 'livesync_index_state')",
+    );
+    assert_eq!(
+        has_index, 3,
+        "LiveSync search index tables must exist after upgrade"
+    );
 }
 
 #[test]

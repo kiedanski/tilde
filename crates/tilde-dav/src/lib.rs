@@ -172,7 +172,7 @@ fn ensure_within_root(
 
 /// Escape SQL LIKE wildcard characters so user-supplied paths
 /// don't match unrelated rows.
-fn escape_like(s: &str) -> String {
+pub fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
