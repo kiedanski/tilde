@@ -76,6 +76,8 @@ jobs:
         run: bash tests/integration/test_caldav.sh
       - name: Run CardDAV tests
         run: bash tests/integration/test_carddav.sh
+      - name: Run upgrade (SIGUSR2 re-exec) tests
+        run: bash tests/integration/test_upgrade.sh
 
   clippy:
     name: Clippy

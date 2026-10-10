@@ -14,6 +14,12 @@ use super::{parse_schedule_interval, secs_until_next_run, walkdir_media};
 pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     info!("Starting tilde server...");
 
+    // Resolve our own path before anything can replace the binary: once
+    // `tilde update apply` swaps it, Linux reports the running image as
+    // "<path> (deleted)", which cannot be exec'd. The path itself then holds
+    // the new binary, which is exactly what a SIGUSR2 re-exec wants.
+    let exe_path = std::env::current_exe().ok();
+
     let config = Config::load(config_path)?;
     let db_path = config.db_path();
 
@@ -885,7 +891,19 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         });
     }
 
-    let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
+    let listener = match inherited_listener(&listen_addr)? {
+        Some(listener) => listener,
+        None => tokio::net::TcpListener::bind(&listen_addr).await?,
+    };
+    // A second handle on the listening socket, held until a SIGUSR2 re-exec
+    // hands it to the new binary. While any handle is open the kernel keeps
+    // queueing connections, so clients wait out the upgrade instead of being
+    // refused.
+    #[cfg(unix)]
+    let reexec_listen_fd = {
+        use std::os::fd::AsFd;
+        listener.as_fd().try_clone_to_owned()?
+    };
 
     // Notify systemd we're ready (no-op if not running under systemd)
     let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
@@ -913,7 +931,9 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         );
     }
 
-    // Build a future that resolves on SIGTERM or SIGINT for graceful shutdown
+    // Resolves on SIGTERM or SIGINT, or once the token is cancelled elsewhere
+    // (the SIGUSR2 upgrade). Without that last arm an upgrade stopped every
+    // background task but left the HTTP server running, so it never re-exec'd.
     let shutdown_signal = {
         let token = shutdown.clone();
         async move {
@@ -926,12 +946,15 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                 tokio::select! {
                     _ = ctrl_c => info!("Received SIGINT, shutting down..."),
                     _ = sigterm.recv() => info!("Received SIGTERM, shutting down..."),
+                    _ = token.cancelled() => info!("Shutdown requested, stopping HTTP server..."),
                 }
             }
             #[cfg(not(unix))]
             {
-                ctrl_c.await.ok();
-                info!("Received SIGINT, shutting down...");
+                tokio::select! {
+                    _ = ctrl_c => info!("Received SIGINT, shutting down..."),
+                    _ = token.cancelled() => info!("Shutdown requested, stopping HTTP server..."),
+                }
             }
             token.cancel();
         }
@@ -1016,12 +1039,27 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
         _ => {
             // "upstream" mode or default: plain HTTP
             println!("tilde server listening on http://{}", listen_addr);
-            axum::serve(
+            let server = axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
-            .with_graceful_shutdown(shutdown_signal)
-            .await?;
+            .with_graceful_shutdown(shutdown_signal);
+            // Graceful shutdown waits for every open connection; one stuck
+            // upload must not hold a stop or an upgrade hostage indefinitely.
+            let drain_deadline = {
+                let token = shutdown.clone();
+                async move {
+                    token.cancelled().await;
+                    tokio::time::sleep(HTTP_DRAIN_TIMEOUT).await;
+                }
+            };
+            tokio::select! {
+                result = std::future::IntoFuture::into_future(server) => result?,
+                _ = drain_deadline => warn!(
+                    secs = HTTP_DRAIN_TIMEOUT.as_secs(),
+                    "HTTP connections still open after shutdown; abandoning them"
+                ),
+            }
         }
     }
 
@@ -1046,40 +1084,97 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
     // If SIGUSR2 triggered the shutdown, re-exec the new binary
     if should_reexec.load(Ordering::SeqCst) {
         info!("Re-executing with upgraded binary...");
+        #[cfg(unix)]
+        reexec(exe_path.as_deref(), &reexec_listen_fd);
+        #[cfg(not(unix))]
         reexec();
     }
 
     Ok(())
 }
 
-/// Replace the current process with a fresh exec of the same binary + args.
-/// Same PID — systemd doesn't notice, zero downtime.
-#[cfg(unix)]
-fn reexec() -> ! {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
+/// How long open HTTP connections may delay a stop or an upgrade.
+const HTTP_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-    let exe = std::env::current_exe().expect("cannot determine current exe path");
-    let args: Vec<CString> = std::env::args()
-        .map(|a| CString::new(a).expect("arg contains null byte"))
-        .collect();
+/// Hands the listening socket across a SIGUSR2 re-exec, as `<pid>:<fd>`. A
+/// re-exec keeps the PID, so the PID check makes any child process that
+/// inherits the environment ignore it (systemd's LISTEN_PID trick).
+#[cfg(unix)]
+const INHERITED_LISTEN_FD: &str = "TILDE_INHERITED_LISTEN_FD";
+
+/// Adopt the listening socket handed over by the previous process image.
+/// Returns `None` on a normal start, or when the inherited socket is no longer
+/// bound to `listen_addr` (the port changed in the config meanwhile).
+#[cfg(unix)]
+fn inherited_listener(listen_addr: &str) -> anyhow::Result<Option<tokio::net::TcpListener>> {
+    use std::net::ToSocketAddrs;
+    use std::os::fd::{FromRawFd, RawFd};
+
+    let Ok(value) = std::env::var(INHERITED_LISTEN_FD) else {
+        return Ok(None);
+    };
+    let Some((pid, fd)) = value.split_once(':') else {
+        anyhow::bail!("malformed {INHERITED_LISTEN_FD}={value}");
+    };
+    if pid.parse::<u32>().ok() != Some(std::process::id()) {
+        return Ok(None);
+    }
+    let fd: RawFd = fd
+        .parse()
+        .map_err(|_| anyhow::anyhow!("malformed {INHERITED_LISTEN_FD}={value}"))?;
+
+    // SAFETY: the previous image of this very process cleared FD_CLOEXEC on
+    // this fd immediately before exec, and nothing has claimed it since.
+    let listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+    // Keep it out of anything this image spawns (backups, thumbnailers).
+    // SAFETY: plain fcntl on an fd we own.
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+
+    let local = listener.local_addr()?;
+    if !listen_addr.to_socket_addrs()?.any(|addr| addr == local) {
+        warn!(inherited = %local, wanted = %listen_addr, "inherited listener is bound elsewhere; rebinding");
+        return Ok(None);
+    }
+    listener.set_nonblocking(true)?;
+    info!(addr = %local, "adopted the listening socket from the previous binary");
+    Ok(Some(tokio::net::TcpListener::from_std(listener)?))
+}
+
+#[cfg(not(unix))]
+fn inherited_listener(_listen_addr: &str) -> anyhow::Result<Option<tokio::net::TcpListener>> {
+    Ok(None)
+}
+
+/// Replace the current process with a fresh exec of the binary at `exe`,
+/// same args, handing over the listening socket. Same PID, so systemd does
+/// not notice, and connections queue in the socket's backlog meanwhile.
+/// If the exec fails the process exits and systemd's restart takes over.
+#[cfg(unix)]
+fn reexec(exe: Option<&std::path::Path>, listen_fd: &std::os::fd::OwnedFd) -> ! {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+
+    let Some(exe) = exe else {
+        eprintln!("cannot re-exec: the binary's path was not known at startup");
+        std::process::exit(1);
+    };
+    let mut command = std::process::Command::new(exe);
+    let mut args = std::env::args_os();
+    if let Some(arg0) = args.next() {
+        command.arg0(arg0);
+    }
+    command.args(args);
+
+    let fd = listen_fd.as_raw_fd();
+    // SAFETY: plain fcntl on an fd we own; clearing FD_CLOEXEC lets it survive exec.
+    unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
+    command.env(INHERITED_LISTEN_FD, format!("{}:{fd}", std::process::id()));
 
     // Notify systemd we're reloading (keeps watchdog happy during exec gap)
     let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Reloading]);
 
-    let exe_c = CString::new(exe.as_os_str().as_bytes()).expect("exe path contains null byte");
-    let arg_ptrs: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
-
-    // execv expects a null-terminated array
-    let mut argv = arg_ptrs;
-    argv.push(std::ptr::null());
-
-    unsafe {
-        libc::execv(exe_c.as_ptr(), argv.as_ptr());
-    }
-    // If execv returns, it failed
-    let err = std::io::Error::last_os_error();
-    eprintln!("execv failed: {}", err);
+    let err = command.exec();
+    eprintln!("execv failed: {err}");
     std::process::exit(1);
 }
 
