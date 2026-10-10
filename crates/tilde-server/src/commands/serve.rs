@@ -114,6 +114,8 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
             )
         })
         .transpose()?;
+    // The health import mirrors its notes here once a vault is configured.
+    let job_livesync = livesync.clone();
     let notes_index =
         livesync
             .as_ref()
@@ -392,6 +394,8 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                     let gb_timezone = job_gb_timezone.clone();
                     let gb_notes_dir = job_gb_notes_dir.clone();
                     let notes_root = job_notes_root.clone();
+                    let livesync = job_livesync.clone();
+                    let runtime = tokio::runtime::Handle::current();
                     handles.push(tokio::task::spawn_blocking(move || {
                         let _permit = permit;
                         let conn = db.get().unwrap();
@@ -421,9 +425,23 @@ pub async fn run_serve(config_path: Option<&str>) -> anyhow::Result<()> {
                                         "Gadgetbridge import complete"
                                     );
                                 }
-                                // Optional Markdown mirror for Obsidian. Lives in
-                                // the notes tree, so it needs its own reindex.
-                                if !gb_notes_dir.is_empty() {
+                                // Optional Markdown mirror for Obsidian. With a
+                                // LiveSync vault it goes to CouchDB, which is what
+                                // Obsidian reads; otherwise to the on-disk notes
+                                // tree, which then needs its own reindex.
+                                if !gb_notes_dir.is_empty()
+                                    && let Some(client) = &livesync
+                                {
+                                    let notes = tilde_health::render_notes(&files.join("health"));
+                                    let written = runtime.block_on(
+                                        super::health_notes::mirror_to_livesync(
+                                            client,
+                                            &gb_notes_dir,
+                                            &notes,
+                                        ),
+                                    )?;
+                                    info!(notes = written, "health notes mirrored to LiveSync");
+                                } else if !gb_notes_dir.is_empty() {
                                     let target = notes_root.join(&gb_notes_dir);
                                     let notes = tilde_health::export_notes(
                                         &files.join("health"),

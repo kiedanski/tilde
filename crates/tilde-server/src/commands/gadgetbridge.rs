@@ -59,9 +59,23 @@ pub async fn run_gadgetbridge(
                 reindex.indexed, reindex.pruned
             );
 
-            // Optional Markdown mirror for Obsidian, in the notes tree.
+            // Optional Markdown mirror for Obsidian: into the LiveSync vault
+            // when one is configured, else into the on-disk notes tree.
             let notes_dir = config.gadgetbridge.notes_dir.trim_matches('/').to_string();
-            if !notes_dir.is_empty() {
+            if !notes_dir.is_empty()
+                && let Some(remote) = &config.notes.livesync
+            {
+                let client = tilde_livesync::Client::new(
+                    &remote.server_url,
+                    &remote.database,
+                    &remote.username,
+                    &remote.password,
+                )?;
+                let notes = tilde_health::render_notes(&health_dir);
+                let written =
+                    super::health_notes::mirror_to_livesync(&client, &notes_dir, &notes).await?;
+                println!("Health notes: {written} note(s) updated in LiveSync");
+            } else if !notes_dir.is_empty() {
                 let target = config.data_dir().join("notes").join(&notes_dir);
                 let notes = tilde_health::export_notes(&health_dir, &target)?;
                 println!("Health notes: {} file(s) updated", notes.files_written);

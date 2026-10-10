@@ -9,6 +9,7 @@ mod contacts;
 mod email;
 mod export_import;
 mod gadgetbridge;
+mod health_notes;
 mod init;
 mod mcp;
 mod notes;

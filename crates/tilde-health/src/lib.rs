@@ -734,14 +734,22 @@ fn hours_minutes(mins: i64) -> String {
     format!("{}h{:02}m", mins / 60, mins % 60)
 }
 
-/// Render the health tree as one Obsidian-friendly Markdown table per month.
+/// One month of the health mirror: `title` is `YYYY-MM`, the note's file stem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealthNote {
+    pub title: String,
+    pub body: String,
+}
+
+/// Render the health tree as one Obsidian-friendly Markdown table per month,
+/// oldest first.
 ///
 /// Reads the CSVs this module already wrote rather than the source databases,
 /// so it does not matter which artifact triggered the run — a weightlog-only
 /// upload still renders the Gadgetbridge columns from the existing tree.
-/// Nothing time-varying is written into the output, so an unchanged month keeps
-/// its mtime instead of churning through DAV sync on every import.
-pub fn export_notes(health_dir: &Path, notes_dir: &Path) -> Result<NotesStats> {
+/// Nothing time-varying is written into the output, so an unchanged month
+/// renders byte-identical and writers can skip it instead of churning sync.
+pub fn render_notes(health_dir: &Path) -> Vec<HealthNote> {
     let mut months: BTreeMap<String, BTreeMap<String, NoteRow>> = BTreeMap::new();
 
     // daily/: date,steps,hr_min,hr_avg,hr_max,hr_resting,stress_avg,stress_max,
@@ -776,13 +784,7 @@ pub fn export_notes(health_dir: &Path, notes_dir: &Path) -> Result<NotesStats> {
         }
     }
 
-    let mut stats = NotesStats::default();
-    if months.is_empty() {
-        return Ok(stats);
-    }
-    std::fs::create_dir_all(notes_dir)
-        .with_context(|| format!("creating {}", notes_dir.display()))?;
-
+    let mut notes = Vec::with_capacity(months.len());
     for (month, days) in &months {
         let title = if month.len() == 6 {
             format!("{}-{}", &month[..4], &month[4..])
@@ -808,15 +810,32 @@ pub fn export_notes(health_dir: &Path, notes_dir: &Path) -> Result<NotesStats> {
             ));
         }
 
+        notes.push(HealthNote { title, body });
+    }
+    notes
+}
+
+/// Write [`render_notes`] into `notes_dir` on disk, one `YYYY-MM.md` per month.
+/// An unchanged month keeps its mtime, so it does not churn through DAV sync.
+pub fn export_notes(health_dir: &Path, notes_dir: &Path) -> Result<NotesStats> {
+    let mut stats = NotesStats::default();
+    let notes = render_notes(health_dir);
+    if notes.is_empty() {
+        return Ok(stats);
+    }
+    std::fs::create_dir_all(notes_dir)
+        .with_context(|| format!("creating {}", notes_dir.display()))?;
+
+    for HealthNote { title, body } in &notes {
         let path = notes_dir.join(format!("{title}.md"));
         if std::fs::read_to_string(&path)
-            .map(|c| c == body)
+            .map(|c| c == *body)
             .unwrap_or(false)
         {
             continue;
         }
         let tmp = notes_dir.join(format!(".{title}.md.tmp"));
-        std::fs::write(&tmp, &body).with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, &path)
             .with_context(|| format!("renaming into {}", path.display()))?;
         stats.files_written += 1;

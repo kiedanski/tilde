@@ -328,8 +328,10 @@ pub struct GadgetbridgeConfig {
     pub timezone: String,
     #[serde(default = "default_watch_debounce")]
     pub watch_debounce_seconds: u64,
-    /// Where to mirror the health tree as Markdown, relative to the notes root
-    /// (e.g. "notes/health" when the Obsidian vault is the `notes/` subfolder).
+    /// Where to mirror the health tree as Markdown. With `[notes.livesync]`
+    /// configured this is relative to the vault root (e.g. "health") and the
+    /// notes are written to CouchDB; otherwise it is relative to the on-disk
+    /// notes root (e.g. "notes/health" when the vault is its `notes/` subfolder).
     /// Empty disables the Markdown export.
     #[serde(default)]
     pub notes_dir: String,
