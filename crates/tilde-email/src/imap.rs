@@ -299,8 +299,8 @@ fn sync_cycle(
 
 /// Run the email sync loop for one account (async wrapper).
 /// Handles IDLE, polling fallback, and retry with exponential backoff.
-/// The `shutdown` token allows graceful termination — the loop checks it
-/// between sync cycles and uses short IDLE timeouts so it can exit promptly.
+/// The `shutdown` token allows graceful termination — a sync cycle in progress
+/// is allowed to finish, but every wait (IDLE, back-off, poll) ends at once.
 /// Callback invoked with (account name, error) once per failure streak.
 /// Keeps this crate free of a notification dependency — the server passes a
 /// closure that owns the sinks.
@@ -353,7 +353,9 @@ pub async fn run_sync_loop(
                 {
                     cb(&config.name, &e.to_string());
                 }
-                tokio::time::sleep(retry_delay).await;
+                if wait_or_shutdown(retry_delay, &shutdown).await {
+                    return;
+                }
                 retry_delay = (retry_delay * 2).min(max_retry_delay);
                 continue;
             }
@@ -365,7 +367,9 @@ pub async fn run_sync_loop(
                 {
                     cb(&config.name, &e.to_string());
                 }
-                tokio::time::sleep(retry_delay).await;
+                if wait_or_shutdown(retry_delay, &shutdown).await {
+                    return;
+                }
                 retry_delay = (retry_delay * 2).min(max_retry_delay);
                 continue;
             }
@@ -373,12 +377,14 @@ pub async fn run_sync_loop(
 
         // After successful sync: IDLE or poll
         if config.idle_enabled {
-            // Use short IDLE cycles (30s) so we can check the shutdown token
-            // between iterations. IMAP IDLE is a blocking TCP read that can't
-            // be interrupted, so this is the maximum shutdown delay.
+            // IMAP IDLE is a blocking TCP read that can't be interrupted, so it
+            // runs in 30s cycles on a blocking thread. On shutdown, stop waiting
+            // for that thread instead of sitting out the cycle: nothing is
+            // written while idling, and it ends with the process. Waiting here
+            // made every upgrade re-exec sit out the full 10s drain timeout.
             let config_for_idle = config.clone();
             let shutdown_flag = shutdown.clone();
-            let idle_result = tokio::task::spawn_blocking(move || {
+            let idle = tokio::task::spawn_blocking(move || {
                 let mut session = connect_and_login(&config_for_idle)?;
                 session.select("INBOX")?;
                 info!("Entering IMAP IDLE mode on INBOX (30s cycles)");
@@ -391,8 +397,14 @@ pub async fn run_sync_loop(
                 }
                 session.logout()?;
                 Ok::<_, anyhow::Error>(())
-            })
-            .await;
+            });
+            let idle_result = tokio::select! {
+                result = idle => result,
+                _ = shutdown.cancelled() => {
+                    info!(account = %config.name, "Shutting down email sync");
+                    return;
+                }
+            };
 
             match idle_result {
                 Ok(Ok(())) => {
@@ -403,12 +415,16 @@ pub async fn run_sync_loop(
                 }
                 Ok(Err(e)) => {
                     warn!(error = %e, "IDLE error — will retry");
-                    tokio::time::sleep(retry_delay).await;
+                    if wait_or_shutdown(retry_delay, &shutdown).await {
+                        return;
+                    }
                     retry_delay = (retry_delay * 2).min(max_retry_delay);
                 }
                 Err(e) => {
                     error!(error = %e, "IDLE task panicked");
-                    tokio::time::sleep(retry_delay).await;
+                    if wait_or_shutdown(retry_delay, &shutdown).await {
+                        return;
+                    }
                 }
             }
         } else {
@@ -422,6 +438,17 @@ pub async fn run_sync_loop(
                 _ = tokio::time::sleep(std::time::Duration::from_secs(config.poll_interval_seconds)) => {},
             }
         }
+    }
+}
+
+/// Sleep for `delay`, returning `true` early if `shutdown` is cancelled first.
+async fn wait_or_shutdown(
+    delay: std::time::Duration,
+    shutdown: &tokio_util::sync::CancellationToken,
+) -> bool {
+    tokio::select! {
+        _ = shutdown.cancelled() => true,
+        _ = tokio::time::sleep(delay) => false,
     }
 }
 
@@ -515,6 +542,38 @@ pub fn record_sync(conn: &rusqlite::Connection, account: &str) -> anyhow::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shutdown must cut a back-off short: the server's drain waits for this
+    /// loop, and the first retry delay alone is 5s.
+    #[tokio::test]
+    async fn shutdown_interrupts_retry_backoff() {
+        let dir = std::env::temp_dir().join(format!("tilde-imap-backoff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = tilde_core::db::init_pool(dir.join("t.db").to_str().unwrap()).unwrap();
+        // Nothing listens on port 1, so every sync cycle fails at connect.
+        let config = ImapAccountConfig {
+            imap_host: "127.0.0.1".into(),
+            imap_port: 1,
+            use_ssl: false,
+            ..Default::default()
+        };
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let sync = tokio::spawn(run_sync_loop(
+            config,
+            db,
+            dir.join("mail"),
+            shutdown.clone(),
+            None,
+        ));
+        // Well inside the first 5s back-off by now.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        shutdown.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), sync)
+            .await
+            .expect("sync loop sat out its back-off after shutdown")
+            .unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn test_folder_filtering_exclude() {
