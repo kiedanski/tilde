@@ -499,3 +499,49 @@ fn e2e_mcp_search_query_is_not_parsed_as_a_grep_option() {
     let hits = mcp.call("notes.search", json!({"query": "genuine"}));
     assert!(!hits.as_array().unwrap().is_empty(), "normal search broke");
 }
+
+/// A tool that runs and fails ("collection not found") must come back as a normal
+/// result flagged `isError`, not as a JSON-RPC error. MCP clients read JSON-RPC
+/// errors as a failing server: Hermes opened its circuit breaker after three of
+/// them and told the model tilde was unreachable. An unknown tool is still a
+/// protocol error (-32602).
+#[test]
+fn e2e_mcp_tool_failures_are_is_error_results() {
+    let (server, _pws) = start_server(&["phone"]);
+    let mcp = Mcp::new(&server, &create_mcp_token(&server, "agent", "*"));
+
+    let r = mcp.rpc(
+        "tools/call",
+        json!({"name": "trackers.query", "arguments": {"collection": "no-such-collection"}}),
+    );
+    assert!(
+        r.get("error").is_none(),
+        "tool failure leaked as a JSON-RPC error: {}",
+        r
+    );
+    assert_eq!(
+        r["result"]["isError"],
+        json!(true),
+        "missing isError flag: {}",
+        r
+    );
+    let text = r["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        text.contains("not found"),
+        "error text should name the problem, got: {}",
+        text
+    );
+
+    let r = mcp.rpc(
+        "tools/call",
+        json!({"name": "no.such.tool", "arguments": {}}),
+    );
+    assert_eq!(
+        r["error"]["code"],
+        json!(-32602),
+        "unknown tool should be -32602: {}",
+        r
+    );
+}

@@ -280,7 +280,8 @@ impl Mcp {
             .collect()
     }
 
-    /// Call a tool, returning its decoded JSON payload. Panics on a JSON-RPC error.
+    /// Call a tool, returning its decoded JSON payload. Panics on a JSON-RPC error
+    /// or on a tool result flagged `isError`.
     pub fn call(&self, tool: &str, args: serde_json::Value) -> serde_json::Value {
         let r = self.rpc(
             "tools/call",
@@ -289,19 +290,33 @@ impl Mcp {
         if let Some(e) = r.get("error") {
             panic!("tool {} failed: {}", tool, e);
         }
+        if r["result"]["isError"].as_bool() == Some(true) {
+            panic!(
+                "tool {} failed: {}",
+                tool, r["result"]["content"][0]["text"]
+            );
+        }
         let text = r["result"]["content"][0]["text"].as_str().unwrap_or("null");
         serde_json::from_str(text).unwrap_or(serde_json::Value::String(text.to_string()))
     }
 
-    /// Call a tool expecting a JSON-RPC error; returns the message.
+    /// Call a tool expecting it to fail; returns the message. Accepts both a JSON-RPC
+    /// error (scope, rate limit, unknown tool) and a tool result flagged `isError`
+    /// (the tool ran and failed).
     pub fn call_expecting_error(&self, tool: &str, args: serde_json::Value) -> String {
         let r = self.rpc(
             "tools/call",
             serde_json::json!({"name": tool, "arguments": args}),
         );
-        r["error"]["message"]
-            .as_str()
-            .unwrap_or_else(|| panic!("expected an error from {}, got {}", tool, r))
-            .to_string()
+        if let Some(m) = r["error"]["message"].as_str() {
+            return m.to_string();
+        }
+        if r["result"]["isError"].as_bool() == Some(true) {
+            return r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+        }
+        panic!("expected an error from {}, got {}", tool, r)
     }
 }

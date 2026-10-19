@@ -1529,7 +1529,28 @@ pub async fn handle_mcp_request(
                         );
                     }
 
-                    JsonRpcResponse::error(request.id.clone(), -32603, e)
+                    // An unknown tool is a protocol error (MCP spec: -32602). Anything that
+                    // went wrong while running a known tool — "collection 'x' not found",
+                    // "note not found", bad arguments — is a tool execution error and goes
+                    // back as a normal result with isError: true. Clients may read a
+                    // JSON-RPC error as a failing server: after three "not found" replies
+                    // Hermes opened its circuit breaker and told the model tilde was
+                    // unreachable. As an isError result the message reaches the model,
+                    // which can then fix its arguments.
+                    if e.starts_with("unknown tool:") {
+                        JsonRpcResponse::error(request.id.clone(), -32602, e)
+                    } else {
+                        JsonRpcResponse::success(
+                            request.id.clone(),
+                            json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": e
+                                }],
+                                "isError": true
+                            }),
+                        )
+                    }
                 }
             }
         }
