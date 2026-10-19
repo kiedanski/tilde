@@ -5,9 +5,24 @@
 //! Uses sync imap crate with tokio::task::spawn_blocking for async compat.
 
 use anyhow::{Context, Result};
+use imap::extensions::idle::{SetReadTimeout, WaitOutcome};
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
 use tilde_core::db::DbPool;
 use tracing::{debug, error, info, warn};
+
+/// How long to wait for the TCP connection to the IMAP server.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long any one IMAP read or write may block. Without it a server that
+/// goes silent mid-command wedges the sync thread for good: in production a
+/// cycle sat waiting for the reply to LOGIN for two days. Short under test.
+const IO_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 60 });
+
+/// IDLE runs in cycles of this length, so its thread notices a shutdown.
+const IDLE_CYCLE: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 30 });
 
 /// Configuration for a single IMAP email account.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,10 +85,60 @@ impl ImapAccountConfig {
     }
 }
 
+/// An IMAP transport whose reads all give up after `IO_TIMEOUT`.
+///
+/// The timeout is set on the socket at connect, but imap's IDLE swaps in its
+/// own for the wait and then clears it to "none", after which its handle's
+/// drop sends DONE and reads the reply. Here clearing restores `IO_TIMEOUT`
+/// instead, so that read and every one after it stay bounded.
+struct Bounded<S>(S);
+
+impl<S: Read> Read for Bounded<S> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl<S: Write> Write for Bounded<S> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+/// The TCP socket under a transport, which is where its timeouts live.
+trait Socket {
+    fn socket(&self) -> &TcpStream;
+}
+
+impl Socket for TcpStream {
+    fn socket(&self) -> &TcpStream {
+        self
+    }
+}
+
+impl Socket for native_tls::TlsStream<TcpStream> {
+    fn socket(&self) -> &TcpStream {
+        self.get_ref()
+    }
+}
+
+impl<S: Socket> SetReadTimeout for Bounded<S> {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> imap::Result<()> {
+        self.0
+            .socket()
+            .set_read_timeout(Some(timeout.unwrap_or(IO_TIMEOUT)))
+            .map_err(imap::Error::Io)
+    }
+}
+
 /// Abstraction over SSL and plain IMAP sessions.
 enum ImapSession {
-    Ssl(imap::Session<native_tls::TlsStream<std::net::TcpStream>>),
-    Plain(imap::Session<std::net::TcpStream>),
+    Ssl(imap::Session<Bounded<native_tls::TlsStream<TcpStream>>>),
+    Plain(imap::Session<Bounded<TcpStream>>),
 }
 
 impl ImapSession {
@@ -113,18 +178,14 @@ impl ImapSession {
             .collect())
     }
 
-    fn idle_wait(&mut self, timeout_secs: u64) -> Result<()> {
-        match self {
-            ImapSession::Ssl(s) => {
-                let idle = s.idle()?;
-                let _ = idle.wait_with_timeout(std::time::Duration::from_secs(timeout_secs));
-            }
-            ImapSession::Plain(s) => {
-                let idle = s.idle()?;
-                let _ = idle.wait_with_timeout(std::time::Duration::from_secs(timeout_secs));
-            }
-        }
-        Ok(())
+    /// IDLE on the selected mailbox for up to `timeout`, reporting whether the
+    /// server announced a change meanwhile.
+    fn idle_wait(&mut self, timeout: Duration) -> Result<WaitOutcome> {
+        let outcome = match self {
+            ImapSession::Ssl(s) => s.idle()?.wait_with_timeout(timeout)?,
+            ImapSession::Plain(s) => s.idle()?.wait_with_timeout(timeout)?,
+        };
+        Ok(outcome)
     }
 
     fn logout(&mut self) -> Result<()> {
@@ -150,14 +211,27 @@ fn connect_and_login(config: &ImapAccountConfig) -> Result<ImapSession> {
         "Connecting to IMAP server"
     );
 
+    let tcp = connect_tcp(&config.imap_host, config.imap_port)?;
+
     if config.use_ssl {
         let tls = native_tls::TlsConnector::builder().build()?;
-        let client = imap::connect(
-            (config.imap_host.as_str(), config.imap_port),
-            &config.imap_host,
-            &tls,
-        )
-        .context("Failed to connect to IMAP server via SSL")?;
+        let stream = match tls.connect(&config.imap_host, tcp) {
+            Ok(stream) => stream,
+            Err(native_tls::HandshakeError::Failure(e)) => {
+                return Err(e).context("IMAP TLS handshake failed");
+            }
+            // The socket's read timeout ran out mid-handshake.
+            Err(native_tls::HandshakeError::WouldBlock(_)) => {
+                anyhow::bail!(
+                    "IMAP TLS handshake timed out after {}s",
+                    IO_TIMEOUT.as_secs()
+                );
+            }
+        };
+        let mut client = imap::Client::new(Bounded(stream));
+        client
+            .read_greeting()
+            .context("No greeting from IMAP server")?;
 
         info!("IMAP SSL connection established");
 
@@ -168,9 +242,10 @@ fn connect_and_login(config: &ImapAccountConfig) -> Result<ImapSession> {
         info!(username = %config.username, "IMAP login successful");
         Ok(ImapSession::Ssl(session))
     } else {
-        let tcp = std::net::TcpStream::connect((config.imap_host.as_str(), config.imap_port))
-            .context("Failed to connect to IMAP server via TCP")?;
-        let client = imap::Client::new(tcp);
+        let mut client = imap::Client::new(Bounded(tcp));
+        client
+            .read_greeting()
+            .context("No greeting from IMAP server")?;
 
         info!("IMAP plain connection established");
 
@@ -180,6 +255,29 @@ fn connect_and_login(config: &ImapAccountConfig) -> Result<ImapSession> {
 
         info!(username = %config.username, "IMAP login successful");
         Ok(ImapSession::Plain(session))
+    }
+}
+
+/// Open a TCP connection to the IMAP server, trying each address the host
+/// resolves to, with every later read and write bounded by `IO_TIMEOUT`.
+fn connect_tcp(host: &str, port: u16) -> Result<TcpStream> {
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .with_context(|| format!("Failed to resolve IMAP host {host}"))?;
+    let mut last_error = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
+            Ok(tcp) => {
+                tcp.set_read_timeout(Some(IO_TIMEOUT))?;
+                tcp.set_write_timeout(Some(IO_TIMEOUT))?;
+                return Ok(tcp);
+            }
+            Err(e) => last_error = Some(e),
+        }
+    }
+    match last_error {
+        Some(e) => Err(e).context("Failed to connect to IMAP server"),
+        None => anyhow::bail!("IMAP host {host} resolved to no addresses"),
     }
 }
 
@@ -399,13 +497,19 @@ pub async fn run_sync_loop(
             let idle = tokio::task::spawn_blocking(move || {
                 let mut session = connect_and_login(&config_for_idle)?;
                 session.select("INBOX")?;
-                info!("Entering IMAP IDLE mode on INBOX (30s cycles)");
-                // Loop with short timeouts until shutdown or server notification
+                info!(
+                    cycle_secs = IDLE_CYCLE.as_secs(),
+                    "Entering IMAP IDLE mode on INBOX"
+                );
+                // Idle cycle after cycle until shutdown or a server notification;
+                // a notification returns Ok so the loop re-syncs.
                 loop {
                     if shutdown_flag.is_cancelled() {
                         break;
                     }
-                    session.idle_wait(30)?;
+                    if session.idle_wait(IDLE_CYCLE)? == WaitOutcome::MailboxChanged {
+                        break;
+                    }
                 }
                 session.logout()?;
                 Ok::<_, anyhow::Error>(())
@@ -625,6 +729,220 @@ mod tests {
             .expect("sync loop waited on a stalled sync cycle after shutdown")
             .unwrap();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    const GREETING: &[u8] = b"* OK [CAPABILITY IMAP4rev1 IDLE] fake ready\r\n";
+
+    /// What the fake server does once it has accepted an IDLE.
+    #[derive(Clone, Copy)]
+    enum OnIdle {
+        /// Say nothing until the client sends DONE.
+        Quiet,
+        /// Announce a new message.
+        NewMail,
+        /// Announce a new message, then never answer again.
+        NewMailThenSilence,
+    }
+
+    /// A local IMAP server with one empty INBOX. `on_idle(n)` picks how it
+    /// answers the n-th IDLE (from 0) on a connection. Every command it gets
+    /// is reported as (connection number, verb).
+    fn fake_imap(
+        on_idle: fn(usize) -> OnIdle,
+    ) -> (u16, std::sync::mpsc::Receiver<(usize, String)>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (events, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for (conn, stream) in listener.incoming().enumerate() {
+                let Ok(stream) = stream else { return };
+                let events = events.clone();
+                std::thread::spawn(move || serve_fake_imap(conn, stream, on_idle, events));
+            }
+        });
+        (port, received)
+    }
+
+    fn serve_fake_imap(
+        conn: usize,
+        stream: TcpStream,
+        on_idle: fn(usize) -> OnIdle,
+        events: std::sync::mpsc::Sender<(usize, String)>,
+    ) {
+        use std::io::BufRead;
+        let mut out = stream.try_clone().unwrap();
+        let mut lines = std::io::BufReader::new(stream).lines();
+        let mut idles = 0;
+        out.write_all(GREETING).unwrap();
+        while let Some(Ok(line)) = lines.next() {
+            let (tag, command) = line.split_once(' ').unwrap_or((line.as_str(), ""));
+            let verb = command.split(' ').next().unwrap_or("").to_ascii_uppercase();
+            let _ = events.send((conn, verb.clone()));
+            let reply = match verb.as_str() {
+                "LIST" => format!("* LIST (\\HasNoChildren) \"/\" INBOX\r\n{tag} OK LIST done\r\n"),
+                "SELECT" => format!(
+                    "* 0 EXISTS\r\n* OK [UIDVALIDITY 1] ok\r\n{tag} OK [READ-WRITE] SELECT done\r\n"
+                ),
+                "IDLE" => {
+                    let mode = on_idle(idles);
+                    idles += 1;
+                    out.write_all(b"+ idling\r\n").unwrap();
+                    if !matches!(mode, OnIdle::Quiet) {
+                        out.write_all(b"* 1 EXISTS\r\n").unwrap();
+                    }
+                    let Some(Ok(done)) = lines.next() else { return };
+                    let _ = events.send((conn, done.to_ascii_uppercase()));
+                    if matches!(mode, OnIdle::NewMailThenSilence) {
+                        // Keep the connection open, and never say another word.
+                        for _ in lines.by_ref() {}
+                        return;
+                    }
+                    format!("{tag} OK IDLE done\r\n")
+                }
+                "LOGOUT" => {
+                    let _ = out.write_all(format!("* BYE\r\n{tag} OK LOGOUT done\r\n").as_bytes());
+                    return;
+                }
+                // LOGIN, and a UID FETCH that finds nothing.
+                _ => format!("{tag} OK done\r\n"),
+            };
+            if out.write_all(reply.as_bytes()).is_err() {
+                return;
+            }
+        }
+    }
+
+    /// A server that goes silent must fail the connection within `IO_TIMEOUT`
+    /// rather than wedge the sync thread. In production a cycle sat waiting on
+    /// LOGIN for two days, and email sync was dead the whole time.
+    #[test]
+    fn a_silent_server_times_out_instead_of_hanging() {
+        // (TLS, sends a greeting): silent from the start, as in a stalled TLS
+        // handshake or a missing greeting, and silent from LOGIN on.
+        for (use_ssl, greet) in [(false, false), (false, true), (true, false)] {
+            let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let config = ImapAccountConfig {
+                imap_host: "127.0.0.1".into(),
+                imap_port: server.local_addr().unwrap().port(),
+                use_ssl,
+                ..Default::default()
+            };
+            let (done, result) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = done.send(connect_and_login(&config).map(|_| ()));
+            });
+            let (mut silent, _) = server.accept().unwrap();
+            if greet {
+                silent.write_all(GREETING).unwrap();
+            }
+            let result = result.recv_timeout(IO_TIMEOUT * 3).unwrap_or_else(|_| {
+                panic!("connect hung on a silent server (ssl={use_ssl}, greeting={greet})")
+            });
+            assert!(
+                result.is_err(),
+                "a silent server cannot log us in (ssl={use_ssl}, greeting={greet})"
+            );
+        }
+    }
+
+    /// imap's IDLE clears the socket's read timeout once its wait ends, and
+    /// its handle's drop then sends DONE and reads the reply. A server that
+    /// announces mail and then goes silent must not hang that read.
+    #[test]
+    fn idle_stays_bounded_after_a_notification() {
+        let (port, _events) = fake_imap(|_| OnIdle::NewMailThenSilence);
+        let config = ImapAccountConfig {
+            imap_host: "127.0.0.1".into(),
+            imap_port: port,
+            use_ssl: false,
+            ..Default::default()
+        };
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let outcome = connect_and_login(&config).and_then(|mut session| {
+                session.select("INBOX")?;
+                session.idle_wait(IDLE_CYCLE)
+            });
+            let _ = done.send(outcome);
+        });
+        let outcome = result
+            .recv_timeout(IO_TIMEOUT * 3)
+            .expect("IDLE hung waiting for the reply to DONE")
+            .unwrap();
+        assert_eq!(outcome, WaitOutcome::MailboxChanged);
+    }
+
+    /// New mail announced during IDLE must end the IDLE and re-sync. The
+    /// outcome used to be thrown away, so mail only arrived at boot or after
+    /// an IDLE error. An IDLE cycle that just times out keeps idling instead,
+    /// on the same connection.
+    #[tokio::test]
+    async fn new_mail_during_idle_triggers_a_resync() {
+        let dir = std::env::temp_dir().join(format!("tilde-imap-resync-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = tilde_core::db::init_pool(dir.join("t.db").to_str().unwrap()).unwrap();
+        // A cycle has to complete for the loop to go on to IDLE.
+        tilde_core::db::run_embedded_migrations(&db.get().unwrap()).unwrap();
+        // Quiet for the first IDLE cycle on a connection, new mail in the next.
+        let (port, events) = fake_imap(|nth| {
+            if nth == 0 {
+                OnIdle::Quiet
+            } else {
+                OnIdle::NewMail
+            }
+        });
+        let config = ImapAccountConfig {
+            imap_host: "127.0.0.1".into(),
+            imap_port: port,
+            use_ssl: false,
+            idle_enabled: true,
+            ..Default::default()
+        };
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let sync = tokio::spawn(run_sync_loop(
+            config,
+            db,
+            dir.join("mail"),
+            shutdown.clone(),
+            None,
+        ));
+
+        // Connection 0 syncs, 1 idles, and 2 must be the re-sync.
+        let seen = tokio::task::spawn_blocking(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut seen = Vec::new();
+            while let Ok(event) =
+                events.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            {
+                let resynced = event == (2, "LIST".to_string());
+                seen.push(event);
+                if resynced {
+                    break;
+                }
+            }
+            seen
+        })
+        .await
+        .unwrap();
+        shutdown.cancel();
+        sync.await.unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+
+        let on = |conn: usize| -> Vec<&str> {
+            seen.iter()
+                .filter(|(c, _)| *c == conn)
+                .map(|(_, verb)| verb.as_str())
+                .collect()
+        };
+        assert_eq!(
+            on(1),
+            ["LOGIN", "SELECT", "IDLE", "DONE", "IDLE", "DONE", "LOGOUT"],
+            "a timed-out IDLE cycle re-idles; new mail ends the IDLE"
+        );
+        assert!(
+            on(2).contains(&"LIST"),
+            "new mail during IDLE never triggered a re-sync: {seen:?}"
+        );
     }
 
     #[test]
