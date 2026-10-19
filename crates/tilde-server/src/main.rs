@@ -3,8 +3,21 @@ use tilde_cli::{Cli, Commands};
 
 mod commands;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// How long exiting waits on blocking threads that are still running. `serve`
+/// abandons threads stuck on network reads at shutdown (an IMAP server that
+/// went silent), and dropping the runtime would otherwise wait for every one:
+/// a SIGTERM stop hung until systemd sent SIGKILL. Budget against the unit's
+/// TimeoutStopSec=30: 15s HTTP drain + 10s background drain + this.
+const BLOCKING_THREADS_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn main() -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let result = runtime.block_on(run());
+    runtime.shutdown_timeout(BLOCKING_THREADS_GRACE);
+    result
+}
+
+async fn run() -> anyhow::Result<()> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info,nom_exif=warn,xmp_toolkit=warn".into());
 
