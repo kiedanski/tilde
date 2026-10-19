@@ -343,10 +343,12 @@ Then start tilde normally.
 ## Updating
 
 ```bash
-sudo -u tilde tilde --config /etc/tilde/config.toml update apply
+sudo tilde --config /etc/tilde/config.toml update apply
 ```
 
 This downloads the latest release from GitHub and performs a zero-downtime restart.
+Run it as root, not as the `tilde` user: it replaces `/usr/local/bin/tilde`, which
+is root-owned, so `sudo -u tilde` fails with "Permission denied (os error 13)".
 
 ---
 
