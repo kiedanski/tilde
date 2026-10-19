@@ -299,8 +299,8 @@ fn sync_cycle(
 
 /// Run the email sync loop for one account (async wrapper).
 /// Handles IDLE, polling fallback, and retry with exponential backoff.
-/// The `shutdown` token allows graceful termination — a sync cycle in progress
-/// is allowed to finish, but every wait (IDLE, back-off, poll) ends at once.
+/// The `shutdown` token allows graceful termination — the loop returns at once,
+/// whether it is mid sync cycle, in IDLE, backing off, or waiting to poll.
 /// Callback invoked with (account name, error) once per failure streak.
 /// Keeps this crate free of a notification dependency — the server passes a
 /// closure that owns the sinks.
@@ -329,10 +329,22 @@ pub async fn run_sync_loop(
         let db_clone = db.clone();
         let maildir_clone = maildir_base.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
+        // The cycle's IMAP reads block until the server answers, and one that
+        // goes silent mid-cycle never does: a cycle once sat in LOGIN for two
+        // days, holding every upgrade for the full 10s drain. So on shutdown
+        // stop waiting for it, as for IDLE below. Each message is renamed into
+        // the Maildir atomically; the worst a cut-off cycle leaves is a folder
+        // whose last UID was not yet recorded, re-fetched on the next start.
+        let cycle = tokio::task::spawn_blocking(move || {
             sync_cycle(&config_clone, &db_clone, &maildir_clone)
-        })
-        .await;
+        });
+        let result = tokio::select! {
+            result = cycle => result,
+            _ = shutdown.cancelled() => {
+                info!(account = %config.name, "Shutting down email sync");
+                return;
+            }
+        };
 
         match result {
             Ok(Ok(())) => {
@@ -571,6 +583,46 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), sync)
             .await
             .expect("sync loop sat out its back-off after shutdown")
+            .unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Shutdown must not wait on a sync cycle either. A server that accepts
+    /// the connection and then goes silent leaves the cycle's thread blocked
+    /// on a read for good: in production one sat in LOGIN for two days, and
+    /// the upgrade drain then waited out its full 10s on it.
+    #[tokio::test]
+    async fn shutdown_abandons_a_stalled_sync_cycle() {
+        let dir = std::env::temp_dir().join(format!("tilde-imap-stalled-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = tilde_core::db::init_pool(dir.join("t.db").to_str().unwrap()).unwrap();
+        // Accepts the connection, then never says a word.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let config = ImapAccountConfig {
+            imap_host: "127.0.0.1".into(),
+            imap_port: server.local_addr().unwrap().port(),
+            use_ssl: false,
+            ..Default::default()
+        };
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let sync = tokio::spawn(run_sync_loop(
+            config,
+            db,
+            dir.join("mail"),
+            shutdown.clone(),
+            None,
+        ));
+        // Once accepted, the cycle is waiting for a reply that never comes.
+        let (silent, _) = tokio::task::spawn_blocking(move || server.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        shutdown.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), sync).await;
+        // Hang up so the abandoned thread ends and the test runtime can stop.
+        drop(silent);
+        result
+            .expect("sync loop waited on a stalled sync cycle after shutdown")
             .unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
